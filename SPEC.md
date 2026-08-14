@@ -183,6 +183,20 @@ UI language: English. Subtle starfield in the header only — no heavy animation
 Live overlay URL: `https://raw.githubusercontent.com/nerdrx/nx-hub/main/registry/overrides.json`
 (fetched with token if set — works if repo private), fallback = bundled copy.
 
+## Android companion (`android-app/`, own build, shares this repo)
+
+"NX Hub" APK for on-device installs — runs on the Pico and regular phones, no adb
+needed. Kotlin, single activity, minimal deps, same space branding (#7700FF /
+#00e5ff on #0a0714). Same discovery model reduced to APKs: sources (owners +
+extraRepos + optional token) in an in-app settings sheet, latest release per
+repo, `*.apk` assets only; installed versions via PackageManager (packageId from
+the overlay, else parsed from the downloaded APK). Install = download to app
+cache + PackageInstaller session (REQUEST_INSTALL_PACKAGES). Launch button for
+installed apps. Self-update: the hub's own releases carry
+`NX-Hub-<version>-android.apk` (packageId `com.nxhub.android`) which both hubs
+classify like any APK. Signing keystore lives OUTSIDE the repo in
+`Lex/claude/tools/nx-hub-keystore/` (creds gitignored, pattern as PulseNX).
+
 ## Future (not v1 — do not build, do not preclude)
 
 **NX Connector**: the hub as a local rendezvous for NX apps — a small always-on

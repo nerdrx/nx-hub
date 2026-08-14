@@ -80,7 +80,12 @@
     "nx-hub": {
       "name": "NX Hub",
       "tagline": "This launcher — installs and updates itself",
-      "order": 90
+      "order": 90,
+      "artifacts": [
+        { "assetPattern": "*-android.apk", "label": "Android/Pico companion", "kind": "apk-adb", "platform": "android", "packageId": "com.nxhub.android" },
+        { "assetPattern": "*linux.AppImage", "label": "Desktop hub (Linux)", "kind": "appimage", "platform": "linux" },
+        { "assetPattern": "*windows-portable.exe", "label": "Desktop hub (Windows)", "kind": "windows-portable", "platform": "windows" }
+      ]
     }
   }
 }
