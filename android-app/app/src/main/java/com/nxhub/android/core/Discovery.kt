@@ -11,8 +11,8 @@ object Discovery {
      * Build one row. Returns null when the repo is hidden by the overlay, has no
      * release, or the release ships no installable APK.
      */
-    fun entryFor(repo: Repo, release: Release?, overlay: Overlay): AppEntry? {
-        if (overlay.isHidden(repo.name)) return null
+    fun entryFor(repo: Repo, release: Release?, overlay: Overlay, primaryOwner: String? = null): AppEntry? {
+        if (overlay.isHidden(repo.name, repo.owner, primaryOwner)) return null
         if (release == null || release.draft) return null
 
         val ov = overlay.app(repo.name)

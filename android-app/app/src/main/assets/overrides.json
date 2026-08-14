@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "hidden": ["vrcx-modschnitstelle", "CDRP-for-Claude", "petri"],
+  "hidden": ["nerdrx/vrcx-modschnitstelle", "nerdrx/CDRP-for-Claude", "nerdrx/petri"],
   "apps": {
     "wivrn-nx": {
       "name": "WiVRn NX",

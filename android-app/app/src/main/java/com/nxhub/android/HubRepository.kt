@@ -57,7 +57,8 @@ class HubRepository(private val context: Context) {
             if (r == null) warnings += "Cannot read $ref" else repos[r.fullName.lowercase()] = r
         }
 
-        val visible = repos.values.filter { !overlay.isHidden(it.name) }
+        val primary = settings.owners.firstOrNull()
+        val visible = repos.values.filter { !overlay.isHidden(it.name, it.owner, primary) }
         onStatus("Checking ${visible.size} repos for releases…")
 
         val pool = Executors.newFixedThreadPool(POOL)

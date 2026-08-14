@@ -106,6 +106,25 @@ test("hidden repos stay listed but carry the overlayHidden flag (case-insensitiv
   assert.strictEqual(flags["quadforge"], false);
 });
 
+test("hidden is owner-scoped: another source's identically-named repo is NOT hidden", () => {
+  const apps = discovery.buildApps({
+    repos: [
+      helpers.repo("nerdrx", "petri"),
+      helpers.repo("Arikazei", "petri"),
+      helpers.repo("Arikazei", "quadforge"),
+    ],
+    releases: {},
+    overlay: { hidden: ["petri", "arikazei/quadforge"], apps: {} },
+    installedState: { installed: {} },
+    adb: {},
+    primaryOwner: "nerdrx",
+  });
+  const by = Object.fromEntries(apps.map((a) => [`${a.repo}`, a.overlayHidden]));
+  assert.strictEqual(by["nerdrx/petri"], true, "bare name hides the primary owner's repo");
+  assert.strictEqual(by["Arikazei/petri"], false, "…but never a foreign repo of the same name");
+  assert.strictEqual(by["Arikazei/quadforge"], true, "owner/repo entries hide exactly that repo");
+});
+
 test("installableHere: false when a release only ships foreign-platform assets", () => {
   const apps = discovery.buildApps({
     repos: [repoFor("winonly"), repoFor("quadforge")],

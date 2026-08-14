@@ -1,6 +1,7 @@
 package com.nxhub.android.core
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -197,7 +198,8 @@ class OverlayMergeTest {
         if (!bundled.exists()) return   // module dir differs → nothing to check
         val real = Overlay.parse(bundled.readText())
         assertTrue(real.appIds().contains("nx-hub"))
-        assertTrue(real.isHidden("petri"))
+        assertTrue(real.isHidden("petri", "nerdrx", "nerdrx"))
+        assertFalse("hiding must not leak to other owners", real.isHidden("petri", "Arikazei", "nerdrx"))
         val hub = real.app("nx-hub")!!
         val androidRule = hub.artifacts.first { it.assetPattern == "*-android.apk" }
         assertEquals("com.nxhub.android", androidRule.packageId)

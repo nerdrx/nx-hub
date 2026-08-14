@@ -31,7 +31,19 @@ class Overlay(
 ) {
     fun app(repoName: String): OverlayApp? = apps[repoName.lowercase()]
 
-    fun isHidden(repoName: String): Boolean = hidden.contains(repoName.lowercase())
+    /**
+     * Scoped like the desktop hub: an `owner/repo` entry hides exactly that
+     * repo; a bare name hides only the PRIMARY owner's repo of that name —
+     * another source's identically-named repo must never inherit the hiding.
+     */
+    fun isHidden(repoName: String, owner: String? = null, primaryOwner: String? = null): Boolean {
+        val name = repoName.lowercase()
+        val full = if (owner != null) "${owner.lowercase()}/$name" else null
+        return hidden.any { h ->
+            if (h.contains("/")) h == full
+            else h == name && (owner == null || primaryOwner == null || owner.equals(primaryOwner, ignoreCase = true))
+        }
+    }
 
     fun appIds(): Set<String> = apps.keys
 

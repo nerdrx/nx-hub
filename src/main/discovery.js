@@ -252,8 +252,21 @@ function overlayFor(overlay, repoName) {
   return (overlay && overlay.apps && overlay.apps[String(repoName).toLowerCase()]) || {};
 }
 
-function isHidden(overlay, repoName) {
-  return Boolean(overlay && overlay.hidden && overlay.hidden.includes(String(repoName).toLowerCase()));
+/**
+ * Overlay `hidden` entries are scoped: `owner/repo` matches exactly that repo;
+ * a bare `repo` name matches ONLY the primary owner's repo of that name.
+ * (Learned the hard way: a second source's identically-named repo — e.g. the
+ * upstream of a hidden fork — must not inherit the hiding.)
+ */
+function isHidden(overlay, repo, primaryOwner) {
+  if (!overlay || !Array.isArray(overlay.hidden) || !overlay.hidden.length) return false;
+  const name = String(repo && repo.name ? repo.name : repo).toLowerCase();
+  const full = String((repo && repo.full_name) || "").toLowerCase();
+  const owner = full.includes("/") ? full.split("/")[0] : "";
+  const primary = String(primaryOwner || "").toLowerCase();
+  return overlay.hidden.some((h) =>
+    h.includes("/") ? h === full : h === name && (!owner || owner === primary)
+  );
 }
 
 /**
@@ -531,7 +544,7 @@ function buildApps({ repos, releases, overlay, installedState, adb, primaryOwner
     const app = buildApp({ repo, release, overlay: ovl, installedState, adb, primaryOwner, settings: s });
     // Overlay-hidden repos are still listed (bottom section), just flagged —
     // the user asked to SEE everything that exists, installable or not.
-    app.overlayHidden = isHidden(ovl, repo.name);
+    app.overlayHidden = isHidden(ovl, repo, primaryOwner);
     out.push(app);
   }
   return sortApps(out);
@@ -634,7 +647,7 @@ async function refresh({ force = false, signal } = {}) {
       const { repos, errors: repoErrors } = await collectRepos(settings, { force, signal });
       errors.push(...repoErrors);
 
-      const visible = repos.filter((r) => !isHidden(overlay, r.name));
+      const visible = repos.filter((r) => !isHidden(overlay, r, (settings.owners || [])[0]));
       const releases = {};
       const releasesByApp = {};
       await mapLimit(visible, 6, async (repo) => {
