@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=NX Hub
+GenericName=Application Manager
+Comment=Installer, updater and launcher for the NX app family
+Exec=AppRun %U
+Icon=nx-hub
+Terminal=false
+Categories=Utility;System;PackageManager;
+Keywords=nx;install;update;launcher;appimage;
+StartupWMClass=NX Hub
+StartupNotify=true

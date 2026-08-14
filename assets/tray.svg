@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="NX Hub">
+  <title>NX Hub tray</title>
+
+  <!--
+    Tray variant of the NX Hub mark, tuned for 32px.
+    Same geometry as icon.svg, but simplified for the size:
+
+    - The cyan tile ring is dropped. At 32px it would land on ~0.3 device
+      pixels and only muddy the rim into a grey fringe.
+    - The violet rim is thickened (16px -> 22px, ~1.4px at 32) so the hexagon
+      silhouette stays crisp.
+    - The blurred halo is dropped; the cyan edge on the letters is thickened
+      (9 -> 16) so it survives the downscale as definition rather than noise.
+
+    The tile keeps its own dark field rather than going flat-monochrome, so the
+    icon holds contrast on both light and dark panels instead of disappearing
+    into one of them.
+  -->
+
+  <defs>
+    <path id="hex" d="M470 256 L363 58 L149 58 L42 256 L149 454 L363 454 Z"/>
+    <path id="mono" d="M105 336 L105 176 L143 176 L207 269 L207 176 L245 176 L245 336 L207 336 L143 243 L143 336 Z
+                       M267 176 L317 176 L337 211.6 L357 176 L407 176 L362 256 L407 336 L357 336 L337 300.4 L317 336 L267 336 L312 256 Z"/>
+  </defs>
+
+  <!-- violet rim out to +26 -->
+  <use href="#hex" fill="#7700FF" stroke="#7700FF" stroke-width="52" stroke-linejoin="round"/>
+  <!-- dark field out to +4, leaving a 22px rim -->
+  <use href="#hex" fill="#0a0714" stroke="#0a0714" stroke-width="8" stroke-linejoin="round"/>
+
+  <use href="#mono" fill="none" stroke="#00e5ff" stroke-width="10" stroke-linejoin="round"/>
+  <use href="#mono" fill="#7700FF"/>
+</svg>

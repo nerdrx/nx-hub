@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="NX Hub">
+  <title>NX Hub</title>
+
+  <!--
+    NX Hub mark. Hexagonal tile, violet #7700FF dominant, cyan #00e5ff as a
+    subordinate edge line, dark #0a0714 field, bold geometric "NX" monogram.
+
+    Two deliberate construction choices keep this stable across rasterisers:
+
+    1. All three concentric rings stroke the SAME base path (#hex) at different
+       widths. A stroke expands perpendicular to the path uniformly, so the
+       rings are exactly concentric and evenly thick by construction - no
+       hand-computed inner polygons that drift at the vertices. Measured as
+       perpendicular offset from the base path:
+           violet rim   +6 .. +22   (16px)
+           cyan edge    +2 .. +6    (4px)
+           dark field   inside +2
+       stroke-linejoin="round" supplies the corner rounding.
+
+    2. The monogram is explicit geometry, not <text> - no font dependency, so
+       it rasterises identically on any machine.
+
+    The hexagon is stretched ~7% taller than regular (h/R = 0.93) so it sits
+    evenly in the square canvas; a regular hexagon leaves 4x more padding above
+    and below than at the sides.
+  -->
+
+  <defs>
+    <!-- base hexagon: circumradius 214, half-height 198, centred (256,256) -->
+    <path id="hex" d="M470 256 L363 58 L149 58 L42 256 L149 454 L363 454 Z"/>
+
+    <!--
+      "NX" monogram, cap height 160 (y 176..336), stem width 38, centred on
+      x=256. N spans 105..245, X spans 267..407, 22px letter gap.
+      N diagonal: run 64 / drop 93 gives a perpendicular weight of 38.0,
+      optically identical to the vertical stems.
+      X arms: run 140 / drop 160 gives a horizontal terminal width of 50,
+      which is also the waist width - so the arms never pinch at the crossing.
+    -->
+    <path id="mono" d="M105 336 L105 176 L143 176 L207 269 L207 176 L245 176 L245 336 L207 336 L143 243 L143 336 Z
+                       M267 176 L317 176 L337 211.6 L357 176 L407 176 L362 256 L407 336 L357 336 L337 300.4 L317 336 L267 336 L312 256 Z"/>
+
+    <filter id="monoGlow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="7"/>
+    </filter>
+  </defs>
+
+  <!-- violet rim: fill + stroke covers the path out to +22 -->
+  <use href="#hex" fill="#7700FF" stroke="#7700FF" stroke-width="44" stroke-linejoin="round"/>
+  <!-- cyan edge: ring at +-6, only +2..+6 survives the dark field below -->
+  <use href="#hex" fill="none" stroke="#00e5ff" stroke-width="12" stroke-linejoin="round"/>
+  <!-- dark field: fill + stroke covers out to +2 -->
+  <use href="#hex" fill="#0a0714" stroke="#0a0714" stroke-width="4" stroke-linejoin="round"/>
+
+  <!-- monogram: soft cyan halo, crisp cyan edge, violet face -->
+  <use href="#mono" fill="#00e5ff" opacity="0.4" filter="url(#monoGlow)"/>
+  <use href="#mono" fill="none" stroke="#00e5ff" stroke-width="9" stroke-linejoin="round"/>
+  <use href="#mono" fill="#7700FF"/>
+</svg>

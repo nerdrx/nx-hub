@@ -33,9 +33,15 @@
     ],
     "linux": {
       "target": "AppImage",
-      "icon": "assets/icon.png",
+      "icon": "assets/icons",
       "category": "Utility",
-      "artifactName": "NX-Hub-${version}-linux.${ext}"
+      "artifactName": "NX-Hub-${version}-linux.${ext}",
+      "synopsis": "Installer, updater and launcher for the NX app family",
+      "desktop": {
+        "GenericName": "Application Manager",
+        "StartupWMClass": "NX Hub",
+        "Keywords": "nx;install;update;launcher;appimage;"
+      }
     },
     "win": {
       "target": "portable",
