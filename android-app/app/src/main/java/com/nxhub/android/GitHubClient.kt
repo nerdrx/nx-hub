@@ -152,6 +152,28 @@ class GitHubClient(private val cacheDir: File, private val tokenProvider: () -> 
      * redirects are followed by hand.
      */
     fun downloadAsset(apiUrl: String, dest: File, expectedSize: Long, onProgress: (Long, Long) -> Unit): String? {
+        // A stream the server closes early ends cleanly at the socket level, so
+        // the byte count must be verified against the API's asset size — and a
+        // truncated attempt is worth one retry before giving up.
+        var lastError: String? = null
+        repeat(3) { attempt ->
+            if (attempt > 0) Thread.sleep(1500L * attempt)
+            val err = downloadAssetOnce(apiUrl, dest, expectedSize, onProgress)
+                ?: run {
+                    if (expectedSize > 0 && dest.length() != expectedSize) {
+                        val got = dest.length()
+                        dest.delete()
+                        "truncated download ($got of $expectedSize bytes)"
+                    } else null
+                }
+            if (err == null) return null
+            Log.w(TAG, "download attempt ${attempt + 1} failed: $err")
+            lastError = err
+        }
+        return lastError ?: "download failed"
+    }
+
+    private fun downloadAssetOnce(apiUrl: String, dest: File, expectedSize: Long, onProgress: (Long, Long) -> Unit): String? {
         var url = apiUrl
         var authed = true
         var hops = 0

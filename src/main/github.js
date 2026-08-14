@@ -269,44 +269,75 @@ function createClient(opts = {}) {
     config.ensureDir(path.dirname(destPath));
     const partPath = `${destPath}.part`;
 
-    const res = await doFetch(assetApiUrl(asset), { headers, signal, redirect: "follow" });
-    if (res.status === 403 || res.status === 429) {
-      const remaining = res.headers.get("x-ratelimit-remaining");
-      if (remaining === "0" || res.status === 429) throw friendlyRateLimit(res);
-    }
-    if (!res.ok) throw new HttpError(`Download failed for ${asset.name} (${res.status})`, res.status);
-
-    const total = Number(res.headers.get("content-length") || asset.size || 0);
-    const hash = crypto.createHash("sha256");
+    // A stream that ends early without a network error would otherwise pass
+    // straight to the extractor as a truncated file (seen in the field: S3
+    // closing slow anonymous connections). So: verify the byte count against
+    // the API's authoritative asset.size and retry truncations.
+    const ATTEMPTS = 3;
+    let sha256 = null;
     let transferred = 0;
-    let lastPct = -1;
 
-    const source = Readable.fromWeb ? Readable.fromWeb(res.body) : res.body;
-    source.on("data", (chunk) => {
-      hash.update(chunk);
-      transferred += chunk.length;
-      const pct = total > 0 ? Math.min(99, Math.floor((transferred / total) * 100)) : 0;
-      if (pct !== lastPct) {
-        lastPct = pct;
-        onProgress({
-          phase: "download",
-          pct,
-          transferred,
-          total,
-          message: total ? `${fmtBytes(transferred)} / ${fmtBytes(total)}` : fmtBytes(transferred),
-        });
+    for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+      const res = await doFetch(assetApiUrl(asset), { headers, signal, redirect: "follow" });
+      if (res.status === 403 || res.status === 429) {
+        const remaining = res.headers.get("x-ratelimit-remaining");
+        if (remaining === "0" || res.status === 429) throw friendlyRateLimit(res);
       }
-    });
+      if (!res.ok) throw new HttpError(`Download failed for ${asset.name} (${res.status})`, res.status);
 
-    try {
-      await pipeline(source, fs.createWriteStream(partPath), { signal });
-    } catch (e) {
+      const total = Number(res.headers.get("content-length") || asset.size || 0);
+      const hash = crypto.createHash("sha256");
+      transferred = 0;
+      let lastPct = -1;
+
+      const source = Readable.fromWeb ? Readable.fromWeb(res.body) : res.body;
+      source.on("data", (chunk) => {
+        hash.update(chunk);
+        transferred += chunk.length;
+        const pct = total > 0 ? Math.min(99, Math.floor((transferred / total) * 100)) : 0;
+        if (pct !== lastPct) {
+          lastPct = pct;
+          onProgress({
+            phase: "download",
+            pct,
+            transferred,
+            total,
+            message: total ? `${fmtBytes(transferred)} / ${fmtBytes(total)}` : fmtBytes(transferred),
+          });
+        }
+      });
+
+      let streamErr = null;
+      try {
+        await pipeline(source, fs.createWriteStream(partPath), { signal });
+      } catch (e) {
+        if (e && (e.name === "AbortError" || e.code === "ABORT_ERR")) {
+          safeUnlink(partPath);
+          throw e;
+        }
+        streamErr = e;
+      }
+
+      const expectedBytes = Number(asset.size || 0) || total;
+      const truncated = expectedBytes > 0 && transferred !== expectedBytes;
+
+      if (!streamErr && !truncated) {
+        sha256 = hash.digest("hex");
+        break;
+      }
+
       safeUnlink(partPath);
-      throw e;
+      const why = streamErr
+        ? streamErr.message
+        : `got ${transferred} of ${expectedBytes} bytes`;
+      if (attempt === ATTEMPTS) {
+        throw new Error(`Download of ${asset.name} failed after ${ATTEMPTS} attempts (${why})`);
+      }
+      config.log(`download attempt ${attempt}/${ATTEMPTS} for ${asset.name} failed (${why}) — retrying`);
+      onProgress({ phase: "download", pct: 0, transferred: 0, total, message: `retrying (attempt ${attempt + 1})` });
+      await new Promise((r) => setTimeout(r, 1500 * attempt));
     }
-
-    const sha256 = hash.digest("hex");
-    onProgress({ phase: "download", pct: 100, transferred, total, message: "download complete" });
+    onProgress({ phase: "download", pct: 100, transferred, total: transferred, message: "download complete" });
 
     let expected = o.expectedSha256 || null;
     if (!expected && Array.isArray(o.siblings)) {

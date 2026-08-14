@@ -238,7 +238,7 @@ function defaultData(base) {
  * download endpoint (Accept: application/octet-stream) and /raw/... overlays.
  */
 function startMockGitHub(opts = {}) {
-  const stats = { requests: [], conditional: 0, notModified: 0, downloads: 0 };
+  const stats = { requests: [], conditional: 0, notModified: 0, downloads: 0, truncateDownloads: 0 };
   let data = null;
   let base = null;
   const token = opts.token || null; // when set, /user works and private repos are listed
@@ -338,7 +338,13 @@ function startMockGitHub(opts = {}) {
       if (!found) return notFound();
       stats.downloads += 1;
       stats.lastDownloadHeaders = req.headers;
-      const body = found._body;
+      let body = found._body;
+      // Test hook: serve a *cleanly terminated* short body N times — the
+      // server-closed-early case that must be caught by size verification.
+      if (stats.truncateDownloads > 0) {
+        stats.truncateDownloads -= 1;
+        body = body.subarray(0, Math.floor(body.length / 2));
+      }
       res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": body.length });
       return res.end(body);
     }

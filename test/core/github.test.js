@@ -124,6 +124,36 @@ test("downloadAsset streams with progress, uses the API asset endpoint and verif
   assert.strictEqual(headers.authorization, "Bearer tok", "token sent so private repos work");
 });
 
+test("downloadAsset retries a silently truncated download and fails hard when it keeps truncating", async (t) => {
+  const env = helpers.useTempEnv();
+  const mock = await helpers.startMockGitHub({});
+  t.after(async () => {
+    await mock.close();
+    env.cleanup();
+  });
+  const gh = clientFor(mock, env);
+  const rel = mock.data.releases["nerdrx/wivrn-nx"];
+  const target = rel.assets.find((a) => a.name.endsWith("linux-x86_64.tar.gz"));
+
+  // one clean-but-short response (server closed early), then a good one → recovers
+  mock.stats.truncateDownloads = 1;
+  const dest = path.join(env.root, "trunc", target.name);
+  const result = await gh.downloadAsset(target, dest, { onProgress: () => {} });
+  assert.strictEqual(fs.readFileSync(dest).length, target._body.length, "full file after retry");
+  assert.strictEqual(result.sha256, helpers.sha256(target._body));
+  assert.strictEqual(mock.stats.downloads, 2, "exactly one retry");
+
+  // every attempt truncated → hard failure, no partial file left behind
+  mock.stats.truncateDownloads = 99;
+  const dest2 = path.join(env.root, "trunc2", target.name);
+  await assert.rejects(
+    () => gh.downloadAsset(target, dest2, { onProgress: () => {} }),
+    /failed after 3 attempts/
+  );
+  assert.ok(!fs.existsSync(dest2), "no destination file");
+  assert.ok(!fs.existsSync(`${dest2}.part`), "no partial file");
+});
+
 test("downloadAsset rejects and removes the file when the checksum mismatches", async (t) => {
   const env = helpers.useTempEnv();
   const mock = await helpers.startMockGitHub({});
