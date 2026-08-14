@@ -1,0 +1,44 @@
+{
+  "name": "nx-hub",
+  "productName": "NX Hub",
+  "version": "0.1.0",
+  "description": "NX Hub — installer, updater and launcher for the NX app family",
+  "main": "src/main/index.js",
+  "author": "nerdrx",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/core test/install",
+    "e2e": "node test/e2e.js",
+    "dist:linux": "electron-builder --linux --publish never",
+    "dist:win": "electron-builder --win --publish never"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.nxhub.app",
+    "productName": "NX Hub",
+    "directories": { "output": "dist" },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "registry/**/*",
+      "package.json",
+      "!test/**/*",
+      "!dist/**/*"
+    ],
+    "linux": {
+      "target": "AppImage",
+      "icon": "assets/icon.png",
+      "category": "Utility",
+      "artifactName": "NX-Hub-${version}-linux.${ext}"
+    },
+    "win": {
+      "target": "portable",
+      "icon": "assets/icon.ico",
+      "artifactName": "NX-Hub-${version}-windows-portable.${ext}"
+    }
+  }
+}
