@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "hidden": ["nerdrx/vrcx-modschnitstelle", "nerdrx/CDRP-for-Claude", "nerdrx/petri"],
+  "hidden": ["nerdrx/CDRP-for-Claude", "nerdrx/petri"],
   "apps": {
     "wivrn-nx": {
       "name": "WiVRn NX",
@@ -70,6 +70,28 @@
       "artifacts": [
         { "assetPattern": "*linux*.zip", "label": "Linux build", "kind": "archive-dir", "platform": "linux" },
         { "assetPattern": "*windows*.zip", "label": "Windows build", "kind": "windows-zip", "platform": "windows" }
+      ]
+    },
+    "vrcx-modschnitstelle": {
+      "name": "VRCX with Mods",
+      "tagline": "VRCX fork with mod API — Wrapped, GlobalDB chat, voice sidecar",
+      "order": 8,
+      "artifacts": [
+        {
+          "assetPattern": "VRCX_*_x64.AppImage",
+          "label": "Linux app",
+          "kind": "appimage",
+          "platform": "linux",
+          "postInstallNote": "Shares its database with a regular VRCX installation — close one before starting the other."
+        },
+        {
+          "assetPattern": "VRCX-with-Mods-*.zip",
+          "label": "Windows portable",
+          "kind": "windows-zip",
+          "platform": "windows",
+          "postInstallNote": "Shares its database with a regular VRCX installation — close one before starting the other."
+        },
+        { "assetPattern": "VRCX_*_Setup.exe", "skip": true }
       ]
     },
     "nxtakt": {
