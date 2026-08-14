@@ -6,6 +6,11 @@
 
 **Installer, updater and launcher for the NX app family — auto-discovers your GitHub releases.**
 
+[![release](https://img.shields.io/github/v/release/nerdrx/nx-hub?display_name=tag&color=7700FF&labelColor=171028)](https://github.com/nerdrx/nx-hub/releases)
+[![license](https://img.shields.io/badge/license-MIT-00e5ff?labelColor=171028)](LICENSE)
+![platforms](https://img.shields.io/badge/linux%20·%20windows%20·%20android-efeaff?label=platforms&labelColor=171028)
+![tests](https://img.shields.io/badge/tests-373%20passing-00e5ff?labelColor=171028)
+
 </div>
 
 ---
@@ -36,24 +41,34 @@ next check — no registry edit, no new hub build.
 - **Exact uninstalls.** Every install writes a manifest listing the version and
   any file placed outside its own directory, so removal is precise rather than
   best-effort.
-- **Launcher mode.** The hub is also the daily launcher. Installed cards get a
-  **Launch** button, and the tray menu starts anything you have installed
-  without opening the window.
+- **Launcher mode.** A dedicated **Launch** view with big one-click tiles
+  (favorites first, then recently launched), plus a tray menu that starts
+  anything installed without opening the window. Installed APKs even launch on
+  the connected headset.
+- **Update policies.** Per app or globally: just notify, pre-download, or
+  install automatically — with desktop notifications and an update badge.
+  Prerelease opt-in, skip-a-version, and a full **version history** with
+  install-any-version and one-click **rollback** to the previous install.
+- **Headset friendly.** Wireless adb (connect by IP), a device picker, and
+  battery/free-storage shown before an APK goes on.
+- **Housekeeping.** Disk usage per app, download-cache cleanup, a log viewer,
+  and settings export/import (tokens are never exported).
 - **Self-update.** NX Hub is just another app in its own list, and updates
   itself the same way it updates everything else.
-- **Android companion app.** Installs on the headset or phone directly, for
-  on-device installs when no PC is in reach.
+- **Android companion app.** A 700 KB dependency-free APK that installs on the
+  headset or phone directly, for on-device installs when no PC is in reach.
 
 ## Screenshots
 
 <p align="center">
-  <img src="docs/screenshots/hub.png" width="80%" alt="NX Hub on the desktop">
-  <br><em>The hub — every app, its state, and one button that does the right thing.</em>
+  <img src="docs/screenshots/hub.png" width="90%" alt="NX Hub — Manage view with live discovery">
+  <br><em>Manage — every app, its state, and one button that does the right thing.
+  Live data: private repos included, sizes real, nothing mocked.</em>
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/android.png" width="45%" alt="NX Hub Android companion">
-  <br><em>The Android companion, for installing on-device.</em>
+  <img src="docs/screenshots/launch.png" width="90%" alt="NX Hub — Launch view">
+  <br><em>Launch — the daily-driver view. Big tiles, one click, update dots.</em>
 </p>
 
 ## Install
