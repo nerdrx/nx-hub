@@ -219,10 +219,17 @@ function wire() {
   });
   jobs.init({
     emit,
-    relaunch: () => {
-      config.log("relaunching after self-update");
+    relaunch: (newBinary) => {
+      config.log(`relaunching after self-update${newBinary ? ` via ${newBinary}` : ""}`);
       quitting = true;
-      app.relaunch();
+      // When the hub runs from an UNMANAGED location (hand-extracted copy),
+      // plain app.relaunch() would restart the OLD binary — exec the freshly
+      // installed one instead so the update actually takes effect.
+      if (newBinary && require("fs").existsSync(newBinary)) {
+        app.relaunch({ execPath: newBinary, args: [] });
+      } else {
+        app.relaunch();
+      }
       app.exit(0);
     },
   });

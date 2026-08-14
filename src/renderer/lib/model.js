@@ -110,6 +110,7 @@ export function normalizeApp(app) {
     // an older main process doesn't empty the grid.
     overlayHidden: !!a.overlayHidden,
     installableHere: a.installableHere !== false,
+    hasAnyRelease: !!a.hasAnyRelease,
   };
 }
 
@@ -245,8 +246,12 @@ export function splitPublished(apps) {
 /** Why an app sits in the bottom section, as a human label. */
 export function notInstallableReason(app) {
   if (!app) return '';
-  if (app.unpublished) return 'no releases yet';
   if (app.overlayHidden) return 'hidden by the overlay registry';
+  if (app.unpublished) {
+    return app.hasAnyRelease
+      ? 'releases exist, but no files the hub can install'
+      : 'no releases yet';
+  }
   const v = app.latest && app.latest.version ? ` — latest is ${app.latest.version}` : '';
   return `nothing installable on this machine${v}`;
 }

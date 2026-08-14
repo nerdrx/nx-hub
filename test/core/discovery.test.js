@@ -371,7 +371,8 @@ test("refresh() discovers owners + extraRepos and applies the live overlay", asy
 
   assert.ok(ids.includes("wivrn-nx"));
   assert.ok(ids.includes("cool-tool"), "extraRepos entry is discovered");
-  assert.ok(!ids.includes("petri"), "hidden repo is filtered");
+  assert.ok(ids.includes("petri"), "hidden repo is listed for the bottom section");
+  assert.strictEqual(apps.find((a) => a.id === "petri").overlayHidden, true, "…flagged overlayHidden");
   assert.ok(ids.includes("oscgoesbrrr-nx-patches"), "private repo listed via /user/repos when authed");
 
   const lonely = apps.find((a) => a.id === "lonely-repo");

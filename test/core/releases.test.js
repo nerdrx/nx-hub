@@ -204,8 +204,10 @@ test("appPrefs.hidden keeps the app discovered but flags it localHidden", async 
   assert.strictEqual(qf.favorite, true);
   assert.strictEqual(apps.find((a) => a.id === "wivrn-nx").localHidden, false);
 
-  // overlay-hidden repos remain filtered out entirely — that is a different thing
-  assert.ok(!apps.some((a) => a.id === "petri"));
+  // overlay-hidden repos are listed too now — flagged for the bottom section
+  const petri = apps.find((a) => a.id === "petri");
+  assert.ok(petri, "overlay-hidden repo is still listed");
+  assert.strictEqual(petri.overlayHidden, true);
 });
 
 /* ---------------- release list + per-release artifacts ---------------- */

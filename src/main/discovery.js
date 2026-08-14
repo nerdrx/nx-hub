@@ -353,6 +353,7 @@ function buildApp({ repo, release, overlay, installedState, adb, primaryOwner, s
   });
 
   const artifacts = chosen ? buildArtifacts(chosen, ovl) : [];
+  const hadAnyRelease = Array.isArray(release) ? release.length > 0 : Boolean(release);
   release = chosen;
 
   const latest = release
@@ -374,6 +375,9 @@ function buildApp({ repo, release, overlay, installedState, adb, primaryOwner, s
     private: Boolean(repo.private),
     order: Number.isFinite(Number(ovl.order)) ? Number(ovl.order) : 100,
     unpublished: !release || artifacts.length === 0,
+    // Distinguishes "repo has never released" from "released, but nothing the
+    // hub can classify" (e.g. only .mcpb files) — the UI words them differently.
+    hasAnyRelease: hadAnyRelease,
     latest,
     artifacts,
   };
@@ -674,7 +678,9 @@ async function refresh({ force = false, signal } = {}) {
 
       const adb = await getAdbStatus(settings);
       const apps = buildApps({
-        repos: visible,
+        // ALL repos — hidden ones skip the release fetch above but must still
+        // reach the app list so the UI's bottom section can show them.
+        repos,
         releases,
         overlay,
         installedState: stateStore.load(),

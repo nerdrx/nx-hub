@@ -494,9 +494,10 @@ async function runSelfUpdate(job, { app, artifact, filePath, settings }) {
   emit({ type: "toast", level: "info", message: "Hub updated — restarting…" });
   progress(job, "cleanup", 100, "restarting");
   if (typeof deps.relaunch === "function") {
+    const newBinary = path.join(target, "AppRun");
     setTimeout(() => {
       try {
-        deps.relaunch();
+        deps.relaunch(fs.existsSync(newBinary) ? newBinary : undefined);
       } catch (e) {
         config.log(`relaunch failed: ${e.message}`);
       }
