@@ -197,6 +197,36 @@ installed apps. Self-update: the hub's own releases carry
 classify like any APK. Signing keystore lives OUTSIDE the repo in
 `Lex/claude/tools/nx-hub-keystore/` (creds gitignored, pattern as PulseNX).
 
+## v0.2 additions (frozen 2026-08-14)
+
+Settings gains: `appPrefs: { <appId>: { updatePolicy: "notify"|"download"|"install",
+includePrereleases, skippedVersion, favorite, launchArgs: [..], launchEnv: {..},
+hidden } }`, plus global `updatePolicy` (default "notify"), `includePrereleases`
+(default false), `notifications` (default true), `autostart` (default false),
+`startMinimized` (default false), `createDesktopEntries` (default true),
+`maxConcurrentDownloads` (default 2), `preferredDeviceSerial`.
+
+`window.nxhub` additions:
+```js
+getReleases(appId)                    // full release list [{tag,version,notes,publishedAt,prerelease,assets}]
+installVersion(appId, artifactId, tag) // any version; UI confirms downgrades
+rollback(appId, artifactId)           // restore the kept previous install
+setAppPref(appId, patch)              // appPrefs merge-save
+adbConnect(hostPort); adbSelectDevice(serial)
+getDeviceInfo()                       // {serial, model, batteryPct, storageFreeBytes}
+getDiskUsage()                        // {perApp: {appId: bytes}, downloads: bytes, total: bytes}
+clearDownloadCache()
+getLogs(tailLines); exportSettings(); importSettings(json)
+```
+Events: `update-available {appId, version}` (also fires an OS notification when
+settings.notifications). Engines: launch() honors appPrefs launchArgs/launchEnv;
+install keeps the replaced version as `.prev` alongside (one level deep) for
+rollback; desktop-entry creation respects createDesktopEntries. Background
+scheduler applies per-app updatePolicy after each refresh. Autostart = XDG
+autostart .desktop toggle. Prerelease handling switches from /releases/latest to
+the /releases list, filtered per app pref. All new UI text stays English;
+formatting must be locale-independent (host machines may run de_DE).
+
 ## Future (not v1 — do not build, do not preclude)
 
 **NX Connector**: the hub as a local rendezvous for NX apps — a small always-on
