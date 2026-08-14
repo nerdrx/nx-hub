@@ -1,7 +1,7 @@
 {
   "name": "nx-hub",
   "productName": "NX Hub",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "NX Hub — installer, updater and launcher for the NX app family",
   "main": "src/main/index.js",
   "author": "nerdrx",

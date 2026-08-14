@@ -491,6 +491,20 @@ async function runSelfUpdate(job, { app, artifact, filePath, settings }) {
   rmrf(old);
   rmrf(staging);
 
+  // The staged engine install wrote its desktop entry pointing INTO the
+  // staging dir, which no longer exists after the swap — rewrite every staged
+  // path in it to the final location or the menu entry dangles.
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(target, ".nx-manifest.json"), "utf8"));
+    for (const entry of manifest.desktopEntries || []) {
+      if (!fs.existsSync(entry)) continue;
+      const txt = fs.readFileSync(entry, "utf8");
+      fs.writeFileSync(entry, txt.split(stagedPath).join(target));
+    }
+  } catch (e) {
+    config.log(`self-update: desktop entry rewrite skipped — ${e.message}`);
+  }
+
   emit({ type: "toast", level: "info", message: "Hub updated — restarting…" });
   progress(job, "cleanup", 100, "restarting");
   if (typeof deps.relaunch === "function") {
