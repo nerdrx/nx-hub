@@ -6,7 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { pipeline } = require("stream/promises");
-const { Readable } = require("stream");
+const { Readable, Transform } = require("stream");
 
 const config = require("./config");
 
@@ -291,25 +291,31 @@ function createClient(opts = {}) {
       let lastPct = -1;
 
       const source = Readable.fromWeb ? Readable.fromWeb(res.body) : res.body;
-      source.on("data", (chunk) => {
-        hash.update(chunk);
-        transferred += chunk.length;
-        const pct = total > 0 ? Math.min(99, Math.floor((transferred / total) * 100)) : 0;
-        if (pct !== lastPct) {
-          lastPct = pct;
-          onProgress({
-            phase: "download",
-            pct,
-            transferred,
-            total,
-            message: total ? `${fmtBytes(transferred)} / ${fmtBytes(total)}` : fmtBytes(transferred),
-          });
-        }
+      // The meter is a pipeline STAGE, not a bare "data" listener — a second
+      // consumer on the source can race the write stream for chunks; a stage
+      // guarantees hash/count describe exactly the bytes that reach the disk.
+      const meter = new Transform({
+        transform(chunk, _enc, cb) {
+          hash.update(chunk);
+          transferred += chunk.length;
+          const pct = total > 0 ? Math.min(99, Math.floor((transferred / total) * 100)) : 0;
+          if (pct !== lastPct) {
+            lastPct = pct;
+            onProgress({
+              phase: "download",
+              pct,
+              transferred,
+              total,
+              message: total ? `${fmtBytes(transferred)} / ${fmtBytes(total)}` : fmtBytes(transferred),
+            });
+          }
+          cb(null, chunk);
+        },
       });
 
       let streamErr = null;
       try {
-        await pipeline(source, fs.createWriteStream(partPath), { signal });
+        await pipeline(source, meter, fs.createWriteStream(partPath), { signal });
       } catch (e) {
         if (e && (e.name === "AbortError" || e.code === "ABORT_ERR")) {
           safeUnlink(partPath);
@@ -319,7 +325,15 @@ function createClient(opts = {}) {
       }
 
       const expectedBytes = Number(asset.size || 0) || total;
-      const truncated = expectedBytes > 0 && transferred !== expectedBytes;
+      // Verify what actually reached the DISK, not just what streamed past the
+      // progress listener — those can disagree if a consumer race drops chunks.
+      let onDisk = -1;
+      try {
+        onDisk = fs.statSync(partPath).size;
+      } catch (_) {
+        /* missing part file counts as truncated below */
+      }
+      const truncated = expectedBytes > 0 && (transferred !== expectedBytes || onDisk !== expectedBytes);
 
       if (!streamErr && !truncated) {
         sha256 = hash.digest("hex");
@@ -329,7 +343,7 @@ function createClient(opts = {}) {
       safeUnlink(partPath);
       const why = streamErr
         ? streamErr.message
-        : `got ${transferred} of ${expectedBytes} bytes`;
+        : `got ${transferred} bytes (file: ${onDisk}) of ${expectedBytes}`;
       if (attempt === ATTEMPTS) {
         throw new Error(`Download of ${asset.name} failed after ${ATTEMPTS} attempts (${why})`);
       }
