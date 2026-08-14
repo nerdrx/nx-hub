@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' file:; style-src 'self' file: 'unsafe-inline'; img-src 'self' file: data:; font-src 'self' file:; connect-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NX Hub</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header id="header">
+      <canvas id="stars" aria-hidden="true"></canvas>
+      <div class="star-glow s1" aria-hidden="true"></div>
+      <div class="star-glow s2" aria-hidden="true"></div>
+      <div class="star-glow s3" aria-hidden="true"></div>
+      <div class="head-inner">
+        <span id="logo" class="logo-slot"></span>
+        <h1>NX Hub</h1>
+        <div class="filter-wrap">
+          <span id="filter-icon" class="filter-icon"></span>
+          <input
+            id="filter"
+            class="filter"
+            type="search"
+            placeholder="Filter apps…"
+            aria-label="Filter apps"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <kbd class="slash">/</kbd>
+        </div>
+        <button id="refresh" class="btn btn-icon head-btn" data-act="refresh" title="Refresh — check GitHub for new releases" aria-label="Refresh"></button>
+        <button id="settings-btn" class="btn btn-icon head-btn" data-act="settings" title="Settings" aria-label="Settings"></button>
+      </div>
+    </header>
+
+    <main id="main">
+      <div id="banner" class="banner-host"></div>
+      <section id="grid" class="grid" aria-label="Apps"></section>
+      <section id="unpublished" class="unpub" aria-label="Unpublished repositories"></section>
+    </main>
+
+    <footer id="footer">
+      <span class="made">made with Claude</span>
+    </footer>
+
+    <div id="panel-root"></div>
+    <div id="toasts" class="toasts" aria-live="polite"></div>
+    <div id="boot-warning" hidden></div>
+
+    <script src="./boot-check.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
