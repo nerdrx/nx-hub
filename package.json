@@ -20,7 +20,9 @@
   "build": {
     "appId": "com.nxhub.app",
     "productName": "NX Hub",
-    "directories": { "output": "dist" },
+    "directories": {
+      "output": "dist"
+    },
     "files": [
       "src/**/*",
       "assets/**/*",
@@ -40,5 +42,9 @@
       "icon": "assets/icon.ico",
       "artifactName": "NX-Hub-${version}-windows-portable.${ext}"
     }
+  },
+  "allowScripts": {
+    "electron@31.7.7": true,
+    "electron-builder@24.13.3": true
   }
 }
