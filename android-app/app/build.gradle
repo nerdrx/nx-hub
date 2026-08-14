@@ -1,0 +1,86 @@
+apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+def keystorePropsFile = rootProject.file("keystore.properties")
+def keystoreProps = new Properties()
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
+android {
+    namespace 'com.nxhub.android'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.nxhub.android"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "0.1.0"   // keep in sync with the desktop hub's package.json
+    }
+
+    signingConfigs {
+        release {
+            if (keystoreProps.containsKey("storeFile")) {
+                storeFile file(keystoreProps["storeFile"])
+                storePassword keystoreProps["storePassword"]
+                keyAlias keystoreProps["keyAlias"]
+                keyPassword keystoreProps["keyPassword"]
+            }
+            // minSdk 26 → the v1 JAR signature buys nothing; v2 + v3 (key rotation) it is.
+            enableV1Signing false
+            enableV2Signing true
+            enableV3Signing true
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (keystoreProps.containsKey("storeFile")) {
+                signingConfig signingConfigs.release
+            }
+        }
+        debug {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    lint {
+        abortOnError false
+    }
+}
+
+dependencies {
+    // Runtime: nothing. HttpsURLConnection + org.json + plain android.widget views
+    // are all in the platform, which keeps the APK tiny and the Pico happy.
+    // Unit tests run on the JVM where android.jar is a stub, so pull in the real
+    // org.json there — core/ is pure Kotlin + org.json and needs a working impl.
+    testImplementation 'org.json:json:20240303'
+    testImplementation 'junit:junit:4.13.2'
+}
+
+// Copy the signed release APK to android-app/dist/NX-Hub-<version>-android.apk,
+// which is the exact name the hub's asset classifier looks for.
+tasks.register('copyReleaseApk', Copy) {
+    from("${layout.buildDirectory.get()}/outputs/apk/release")
+    include "*.apk"
+    into rootProject.file("dist")
+    rename { "NX-Hub-${android.defaultConfig.versionName}-android.apk" }
+}
+tasks.whenTaskAdded { task ->
+    if (task.name == 'assembleRelease') {
+        task.finalizedBy('copyReleaseApk')
+    }
+}

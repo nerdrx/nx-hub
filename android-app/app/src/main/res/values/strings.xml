@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NX Hub</string>
+    <string name="tagline">Installer and launcher for the NX apps</string>
+    <string name="made_with">made with Claude</string>
+    <string name="refresh">Refresh</string>
+    <string name="settings">Settings</string>
+    <string name="install">Install</string>
+    <string name="update">Update</string>
+    <string name="launch">Launch</string>
+    <string name="notes">Notes</string>
+    <string name="pull_to_refresh">Pull to refresh</string>
+    <string name="release_to_refresh">Release to refresh</string>
+    <string name="refreshing">Refreshing…</string>
+    <string name="sources">Sources</string>
+    <string name="owners_label">GitHub owners (one per line)</string>
+    <string name="extra_repos_label">Extra repos — owner/repo (one per line)</string>
+    <string name="token_label">GitHub token (needed for private repos)</string>
+    <string name="prerelease_label">Include pre-releases</string>
+    <string name="save">Save</string>
+    <string name="cancel">Cancel</string>
+    <string name="clear_cache">Clear cache</string>
+    <string name="unknown_sources_title">Allow installing apps</string>
+    <string name="unknown_sources_body">Android needs your permission before NX Hub can install
+        APKs.\n\nOn the next screen turn on “Allow from this source” for NX Hub, then come back
+        and press Install again.</string>
+    <string name="open_settings">Open Android settings</string>
+    <string name="not_now">Not now</string>
+</resources>

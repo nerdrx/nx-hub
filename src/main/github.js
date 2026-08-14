@@ -41,11 +41,12 @@ class HttpError extends Error {
 
 function friendlyRateLimit(res) {
   const reset = Number(res.headers.get("x-ratelimit-reset") || 0);
-  const when = reset ? new Date(reset * 1000).toLocaleTimeString() : null;
+  const resetAt = reset ? reset * 1000 : Date.now() + 60 * 60 * 1000;
+  const when = reset ? new Date(resetAt).toLocaleTimeString() : null;
   const msg = when
     ? `GitHub rate limit reached — try again after ${when}, or sign in (gh auth login) for a much higher limit.`
     : "GitHub rate limit reached — try again later, or sign in (gh auth login) for a much higher limit.";
-  return new HttpError(msg, res.status, { rateLimited: true });
+  return new HttpError(msg, res.status, { rateLimited: true, resetAt });
 }
 
 function cacheKey(url) {

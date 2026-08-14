@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "hidden": ["vrcx-modschnitstelle", "CDRP-for-Claude", "petri"],
+  "apps": {
+    "wivrn-nx": {
+      "name": "WiVRn NX",
+      "tagline": "OpenXR streaming to the Pico — NX transport stack",
+      "order": 1,
+      "artifacts": [
+        {
+          "assetPattern": "wivrn-nx-release*.apk",
+          "label": "Pico headset APK",
+          "kind": "apk-adb",
+          "platform": "android",
+          "packageId": "org.meumeu.wivrn.nx"
+        },
+        {
+          "assetPattern": "wivrn-nx-server-*-linux-x86_64.tar.gz",
+          "label": "Linux server + dashboard",
+          "kind": "tarball-prefix",
+          "platform": "linux",
+          "stripPrefix": "usr/",
+          "prefix": "~/.local",
+          "launchCmd": "~/.local/bin/wivrn-dashboard",
+          "postInstallNote": "Re-run: sudo setcap cap_sys_nice+ep ~/.local/bin/wivrn-server (required after every update)"
+        }
+      ]
+    },
+    "wivrn-nx-windows": {
+      "name": "WiVRn NX for SteamVR",
+      "tagline": "Windows port — real SteamVR streamed to the Pico",
+      "order": 2,
+      "artifacts": [
+        { "assetPattern": "*windows*.zip", "label": "SteamVR driver + helper", "kind": "windows-zip", "platform": "windows" }
+      ]
+    },
+    "pulsenx": {
+      "name": "PulseNX",
+      "tagline": "Heart-rate bridge — watch to VRChat, OBS, Discord",
+      "order": 3,
+      "artifacts": [
+        { "assetPattern": "*.apk", "label": "Android bridge APK", "kind": "apk-adb", "platform": "android", "packageId": "com.pulsenx.bridge" },
+        { "assetPattern": "*.AppImage", "label": "PC dashboard (Linux)", "kind": "appimage", "platform": "linux" },
+        { "assetPattern": "*.exe", "label": "PC dashboard (Windows)", "kind": "windows-portable", "platform": "windows" }
+      ]
+    },
+    "OscGoesBrrr-NX-Patches": {
+      "name": "OGB NX-Patches",
+      "tagline": "OscGoesBrrr with the Smooth mutator",
+      "order": 4,
+      "artifacts": [
+        { "assetPattern": "*linux*.AppImage", "label": "Linux app", "kind": "appimage", "platform": "linux" },
+        { "assetPattern": "*windows-portable*.exe", "label": "Windows portable", "kind": "windows-portable", "platform": "windows" },
+        { "assetPattern": "*windows-setup*.exe", "skip": true },
+        { "assetPattern": "*.rpm", "skip": true }
+      ]
+    },
+    "quadforge": {
+      "name": "QuadForge",
+      "tagline": "Auto-retopology for Blender",
+      "order": 5,
+      "artifacts": [
+        { "assetPattern": "quadforge-*.zip", "label": "Blender addon", "kind": "blender-addon", "platform": "linux", "addonsDir": "~/.config/blender/5.2/scripts/addons" }
+      ]
+    },
+    "banish-protocol": {
+      "name": "LIMBO PROTOCOL",
+      "tagline": "Co-op roguelite — invade a rogue AI",
+      "order": 6,
+      "artifacts": [
+        { "assetPattern": "*linux*.zip", "label": "Linux build", "kind": "archive-dir", "platform": "linux" },
+        { "assetPattern": "*windows*.zip", "label": "Windows build", "kind": "windows-zip", "platform": "windows" }
+      ]
+    },
+    "nxtakt": {
+      "name": "NxTakt",
+      "tagline": "Session-first native DAW for Linux",
+      "order": 7
+    },
+    "nx-hub": {
+      "name": "NX Hub",
+      "tagline": "This launcher — installs and updates itself",
+      "order": 90,
+      "artifacts": [
+        { "assetPattern": "*-android.apk", "label": "Android/Pico companion", "kind": "apk-adb", "platform": "android", "packageId": "com.nxhub.android" },
+        { "assetPattern": "*linux.AppImage", "label": "Desktop hub (Linux)", "kind": "appimage", "platform": "linux" },
+        { "assetPattern": "*windows-portable.exe", "label": "Desktop hub (Windows)", "kind": "windows-portable", "platform": "windows" }
+      ]
+    }
+  }
+}

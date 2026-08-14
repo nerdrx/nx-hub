@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- NX monogram: violet hexagon, cyan edge, NX in light violet-white. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="44dp"
+    android:height="44dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path
+        android:pathData="M24,2 L43,13 L43,35 L24,46 L5,35 L5,13 Z"
+        android:fillColor="#7700FF"
+        android:strokeColor="#00e5ff"
+        android:strokeWidth="2" />
+    <path
+        android:pathData="M24,2 L43,13 L43,35 L24,46 L5,35 L5,13 Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#00e5ff"
+        android:strokeAlpha="0.35"
+        android:strokeWidth="5" />
+    <path
+        android:pathData="M13,32 L13,16 L22,32 L22,16"
+        android:fillColor="#00000000"
+        android:strokeColor="#efeaff"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M27,16 L36,32 M36,16 L27,32"
+        android:fillColor="#00000000"
+        android:strokeColor="#efeaff"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

@@ -63,6 +63,7 @@ function emit(evt) {
 function publicJob(job) {
   return {
     id: job.id,
+    jobId: job.id, // renderer normalizes j.id || j.jobId; emit both
     type: job.type,
     appId: job.appId,
     artifactId: job.artifactId,
@@ -318,6 +319,7 @@ async function runInstall(job) {
     version: result.version || app.latest.version,
     path: result.path || null,
     launchable: result.launchable !== false,
+    iconPath: result.iconPath || null,
     installedAt: new Date().toISOString(),
   });
 

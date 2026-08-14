@@ -8,7 +8,7 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/core test/install",
+    "test": "node --test test/core test/install test/ui",
     "e2e": "node test/e2e.js",
     "dist:linux": "electron-builder --linux --publish never",
     "dist:win": "electron-builder --win --publish never"

@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:paddingLeft="22dp"
+    android:paddingTop="8dp"
+    android:paddingRight="22dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/owners_label"
+            android:textColor="@color/nx_muted"
+            android:textSize="13sp" />
+
+        <EditText
+            android:id="@+id/ownersInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="@drawable/edit_bg"
+            android:gravity="top"
+            android:hint="nerdrx"
+            android:inputType="textMultiLine|textNoSuggestions"
+            android:minLines="2"
+            android:padding="12dp"
+            android:textColor="@color/nx_text"
+            android:textSize="15sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/extra_repos_label"
+            android:textColor="@color/nx_muted"
+            android:textSize="13sp" />
+
+        <EditText
+            android:id="@+id/extraReposInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="@drawable/edit_bg"
+            android:gravity="top"
+            android:hint="owner/repo"
+            android:inputType="textMultiLine|textNoSuggestions"
+            android:minLines="2"
+            android:padding="12dp"
+            android:textColor="@color/nx_text"
+            android:textSize="15sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/token_label"
+            android:textColor="@color/nx_muted"
+            android:textSize="13sp" />
+
+        <EditText
+            android:id="@+id/tokenInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="@drawable/edit_bg"
+            android:hint="ghp_…"
+            android:importantForAutofill="no"
+            android:inputType="textPassword"
+            android:padding="12dp"
+            android:textColor="@color/nx_text"
+            android:textSize="15sp" />
+
+        <CheckBox
+            android:id="@+id/prereleaseCheck"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/prerelease_label"
+            android:textColor="@color/nx_text"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/clearCacheButton"
+            style="@style/NXButton"
+            android:layout_width="match_parent"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/btn_ghost"
+            android:text="@string/clear_cache"
+            android:textColor="@color/nx_muted" />
+    </LinearLayout>
+</ScrollView>

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Branding is frozen in SPEC.md ("Branding"): dark space theme. -->
+<resources>
+    <color name="nx_bg">#0a0714</color>
+    <color name="nx_bg_deep">#12091f</color>
+    <color name="nx_panel">#171028</color>
+    <color name="nx_panel_edge">#2a1c4a</color>
+    <color name="nx_field">#0d0719</color>
+
+    <color name="nx_violet">#7700FF</color>
+    <color name="nx_violet_soft">#9d3bff</color>
+    <color name="nx_violet_dim">#3a1a6b</color>
+    <color name="nx_cyan">#00e5ff</color>
+    <color name="nx_amber">#ffb300</color>
+    <color name="nx_amber_soft">#ffc740</color>
+    <color name="nx_red">#ff5470</color>
+
+    <color name="nx_text">#efeaff</color>
+    <color name="nx_muted">#9a8fc0</color>
+    <color name="nx_dim">#6b5f85</color>
+</resources>

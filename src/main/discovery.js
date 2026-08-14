@@ -29,10 +29,11 @@ const DEFAULT_LABELS = {
 let deps = { github: null, emit: () => {} };
 let cached = {
   apps: [],
-  adb: { available: false, devices: [], apkVersions: {} },
+  adb: { available: false, devices: [], versions: {}, apkVersions: {} },
   refreshing: false,
   lastRefresh: null,
   errors: [],
+  rateLimit: null, // { resetAt } while GitHub is throttling us
 };
 let inflight = null;
 
@@ -302,22 +303,44 @@ function buildApp({ repo, release, overlay, installedState, adb, primaryOwner })
   return app;
 }
 
+/**
+ * Can this artifact ever be launched? (UI hides the Launch button when false.)
+ * The engine's recorded `launchable` still overrides this after an install.
+ */
+function kindLaunchable(artifact) {
+  switch (artifact.kind) {
+    case "blender-addon":
+    case "generic-zip":
+      return false;
+    case "tarball-prefix":
+      return Boolean(artifact.launchCmd); // SPEC: hidden when the overlay names no launchCmd
+    case "apk-adb":
+      return Boolean(artifact.packageId); // needs a package to monkey-launch
+    case "windows-portable":
+    case "windows-zip":
+      return process.platform === "win32";
+    default:
+      return true;
+  }
+}
+
 /** Merge state.json + live adb versions into an app's artifacts. */
 function mergeInstalled(app, installedState, adb) {
   const st = installedState && installedState.installed ? installedState.installed : {};
   const forApp = st[app.id] || {};
   const adbInfo = adb || { available: false, devices: [], apkVersions: {} };
+  const liveVersions = adbInfo.versions || adbInfo.apkVersions || {};
   const deviceOnline = Boolean(adbInfo.available && (adbInfo.devices || []).some((d) => d && d.state === "device"));
 
   for (const artifact of app.artifacts) {
     const rec = forApp[artifact.id] || null;
     let installed = rec
-      ? { version: rec.version, path: rec.path, installedAt: rec.installedAt }
+      ? { version: rec.version, path: rec.path, installedAt: rec.installedAt, iconPath: rec.iconPath || null }
       : null;
 
     if (artifact.kind === "apk-adb") {
       if (deviceOnline && artifact.packageId) {
-        const live = (adbInfo.apkVersions || {})[artifact.packageId];
+        const live = liveVersions[artifact.packageId];
         installed = live
           ? { version: String(live), path: null, installedAt: (rec && rec.installedAt) || null }
           : null;
@@ -330,6 +353,7 @@ function mergeInstalled(app, installedState, adb) {
     artifact.updateAvailable = Boolean(
       installed && app.latest && installed.version && String(installed.version) !== String(app.latest.version)
     );
+    artifact.launchable = kindLaunchable(artifact) && (!rec || rec.launchable !== false);
   }
   return app;
 }
@@ -391,17 +415,20 @@ async function getAdbStatus(settings) {
     if (engine && typeof engine.getAdbStatus === "function") {
       const st = await engine.getAdbStatus(ctx);
       if (st && typeof st === "object") {
+        const versions = st.apkVersions && typeof st.apkVersions === "object" ? st.apkVersions : {};
+        // UI reads `versions`; `apkVersions` stays for the engine-side contract
         return {
           available: Boolean(st.available),
           devices: Array.isArray(st.devices) ? st.devices : [],
-          apkVersions: st.apkVersions && typeof st.apkVersions === "object" ? st.apkVersions : {},
+          versions,
+          apkVersions: versions,
         };
       }
     }
   } catch (_) {
     /* engine not present / adb missing */
   }
-  return { available: false, devices: [], apkVersions: {} };
+  return { available: false, devices: [], versions: {}, apkVersions: {} };
 }
 
 /** Collect repo objects from settings.owners + settings.extraRepos. */
@@ -415,7 +442,7 @@ async function collectRepos(settings, { force, signal } = {}) {
       const repos = await client.listOwnerRepos(owner, { force, signal });
       for (const r of repos) map.set(String(r.full_name || `${owner}/${r.name}`).toLowerCase(), r);
     } catch (e) {
-      errors.push({ source: owner, message: e.message, rateLimited: Boolean(e.rateLimited) });
+      errors.push({ source: owner, message: e.message, rateLimited: Boolean(e.rateLimited), resetAt: e.resetAt || null });
       config.log(`discovery: owner ${owner} failed — ${e.message}`);
     }
   }
@@ -429,7 +456,7 @@ async function collectRepos(settings, { force, signal } = {}) {
       const repo = await client.getRepo(owner, name, { force, signal });
       if (repo && repo.name) map.set(String(repo.full_name).toLowerCase(), repo);
     } catch (e) {
-      errors.push({ source: entry, message: e.message, rateLimited: Boolean(e.rateLimited) });
+      errors.push({ source: entry, message: e.message, rateLimited: Boolean(e.rateLimited), resetAt: e.resetAt || null });
       config.log(`discovery: repo ${entry} failed — ${e.message}`);
     }
   }
@@ -459,7 +486,7 @@ async function refresh({ force = false, signal } = {}) {
           const rel = await gh().latestRelease(owner, name, { force, signal });
           if (rel) releases[String(repo.full_name).toLowerCase()] = rel;
         } catch (e) {
-          errors.push({ source: repo.full_name, message: e.message, rateLimited: Boolean(e.rateLimited) });
+          errors.push({ source: repo.full_name, message: e.message, rateLimited: Boolean(e.rateLimited), resetAt: e.resetAt || null });
           config.log(`discovery: release ${repo.full_name} failed — ${e.message}`);
         }
       });
@@ -480,6 +507,8 @@ async function refresh({ force = false, signal } = {}) {
       cached.lastRefresh = new Date().toISOString();
       config.log(`discovery: ${apps.length} apps (${apps.filter((a) => !a.unpublished).length} published)`);
       const limited = errors.find((e) => e.rateLimited);
+      // set while throttled, cleared as soon as a pass comes back clean
+      cached.rateLimit = limited ? { resetAt: limited.resetAt || Date.now() + 60 * 60 * 1000, message: limited.message } : null;
       if (limited) deps.emit({ type: "toast", level: "warn", message: limited.message });
     } catch (e) {
       cached.errors = [{ source: "discovery", message: e.message }];

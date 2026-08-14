@@ -56,22 +56,30 @@ function hubVersion() {
 async function buildState() {
   const settings = config.load();
   const cached = discovery.getCached();
-  let tokenSource = "none";
+  // "settings" | "gh" | "" — the UI uses this for the "private repos need a token" hint
+  let tokenSource = "";
   if (settings.token) tokenSource = "settings";
   else {
     try {
-      tokenSource = (await config.resolveToken(settings)) ? "gh" : "none";
+      tokenSource = (await config.resolveToken(settings)) ? "gh" : "";
     } catch (_) {
-      tokenSource = "none";
+      tokenSource = "";
     }
   }
+  const adb = cached.adb || {};
   return {
     apps: cached.apps,
     settings: Object.assign({}, settings, { tokenSource }),
+    tokenSource, // top-level: where the renderer reads it
     jobs: jobs.list(),
-    adb: cached.adb,
+    adb: {
+      available: Boolean(adb.available),
+      devices: adb.devices || [],
+      versions: adb.versions || adb.apkVersions || {},
+    },
     hubVersion: hubVersion(),
     refreshing: cached.refreshing,
+    rateLimit: cached.rateLimit || null,
     errors: cached.errors || [],
     lastRefresh: cached.lastRefresh,
   };
@@ -159,9 +167,7 @@ function launchables() {
     for (const artifact of app.artifacts || []) {
       const rec = (st.installed[app.id] || {})[artifact.id];
       if (!rec) continue;
-      if (rec.launchable === false) continue;
-      if (artifact.kind === "blender-addon" || artifact.kind === "generic-zip") continue;
-      if (artifact.platform === "windows" && process.platform !== "win32") continue;
+      if (artifact.launchable === false) continue; // discovery decides (kind + engine result)
       out.push({ appId: app.id, artifactId: artifact.id, appName: app.name, label: artifact.label });
     }
   }

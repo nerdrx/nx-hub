@@ -121,11 +121,11 @@ async function install({ app, artifact, filePath, ctx }) {
     dirs: [],
     desktopEntries,
     binary: APPRUN,
-    extra: { appImageFile: keptName, sandboxed },
+    extra: { appImageFile: keptName, sandboxed, icon },
   });
 
   ctx.emitProgress("cleanup", 100, "Installed");
-  return { version: artifact.version, path: installDir, launchable: true };
+  return { version: artifact.version, path: installDir, launchable: true, iconPath: icon };
 }
 
 async function uninstall({ app, artifact, installedPath, ctx }) {

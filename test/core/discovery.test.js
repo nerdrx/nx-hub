@@ -220,6 +220,78 @@ test("apk artifacts use the live device version when a device is connected", () 
   assert.strictEqual(apkOff.deviceOffline, true);
 });
 
+test("every artifact carries a launchable flag the UI can trust", () => {
+  const rel = helpers.release("v1.0", [
+    { name: "app-linux.AppImage", id: 1, size: 1, url: "u1" },
+    { name: "addon-1.0.zip", id: 2, size: 1, url: "u2" },
+    { name: "game-windows.zip", id: 3, size: 1, url: "u3" },
+    { name: "thing.apk", id: 4, size: 1, url: "u4" },
+    { name: "server-linux.tar.gz", id: 5, size: 1, url: "u5" },
+  ]);
+  const overlay = {
+    apps: {
+      mixed: {
+        artifacts: [
+          { assetPattern: "addon-*.zip", label: "Addon", kind: "blender-addon", platform: "linux", addonsDir: "~/a" },
+          { assetPattern: "server-linux.tar.gz", label: "Server", kind: "tarball-prefix", platform: "linux", prefix: "~/.local" },
+        ],
+      },
+    },
+  };
+  const app = discovery.buildApps({
+    repos: [repoFor("mixed")],
+    releases: { "nerdrx/mixed": rel },
+    overlay,
+    installedState: { installed: {} },
+    adb: {},
+    primaryOwner: "nerdrx",
+  })[0];
+  const by = (kind) => app.artifacts.find((a) => a.kind === kind);
+
+  assert.strictEqual(by("appimage").launchable, true);
+  assert.strictEqual(by("blender-addon").launchable, false, "blender addons never launch");
+  assert.strictEqual(by("windows-zip").launchable, process.platform === "win32");
+  assert.strictEqual(by("apk-adb").launchable, false, "apk without a packageId cannot be launched");
+  assert.strictEqual(by("tarball-prefix").launchable, false, "no launchCmd in the overlay");
+
+  // overlay launchCmd flips tarball-prefix on
+  overlay.apps.mixed.artifacts[1].launchCmd = "~/.local/bin/wivrn-dashboard";
+  const app2 = discovery.buildApps({
+    repos: [repoFor("mixed")],
+    releases: { "nerdrx/mixed": rel },
+    overlay,
+    installedState: { installed: {} },
+    adb: {},
+    primaryOwner: "nerdrx",
+  })[0];
+  assert.strictEqual(app2.artifacts.find((a) => a.kind === "tarball-prefix").launchable, true);
+
+  // the engine's recorded result wins after an install
+  const installedState = {
+    installed: { mixed: { "appimage-linux": { version: "1.0", path: "/x", installedAt: "now", launchable: false } } },
+  };
+  const app3 = discovery.buildApps({
+    repos: [repoFor("mixed")],
+    releases: { "nerdrx/mixed": rel },
+    overlay,
+    installedState,
+    adb: {},
+    primaryOwner: "nerdrx",
+  })[0];
+  assert.strictEqual(app3.artifacts.find((a) => a.kind === "appimage").launchable, false);
+});
+
+test("adb status is exposed as versions{} keyed by packageId", () => {
+  const data = helpers.defaultData("http://mock");
+  const adb = {
+    available: true,
+    devices: [{ serial: "PICO123", model: "Pico4", state: "device" }],
+    versions: { "org.meumeu.wivrn.nx": "1.4.0" }, // UI-facing shape
+  };
+  const app = buildOne(repoFor("wivrn-nx"), data.releases["nerdrx/wivrn-nx"], { adb });
+  assert.strictEqual(app.artifacts.find((a) => a.kind === "apk-adb").installed.version, "1.4.0");
+});
+
 test("apps from a non-primary owner are flagged for the owner badge", () => {
   const app = discovery.buildApps({
     repos: [helpers.repo("someone-else", "cool-tool")],
