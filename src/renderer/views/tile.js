@@ -14,8 +14,8 @@ export function iconSrc(iconPath) {
   return `file://${p.split('/').map(encodeURIComponent).join('/')}`;
 }
 
-function menuMarkup(tile, open) {
-  const items = tileMenu(tile)
+function menuMarkup(tile, open, caps) {
+  const items = tileMenu(tile, caps)
     .map(
       (m) =>
         `<button class="menu-item" data-act="${esc(m.act)}" data-app="${esc(tile.appId)}" data-art="${esc(tile.artifactId)}"${m.disabled ? ' disabled' : ''}>${esc(m.label)}</button>`
@@ -47,7 +47,8 @@ export function renderTile(tile, ctx = {}) {
       ${tile.disabled ? `<span class="tile-off">${esc(tile.disabledReason || 'unavailable')}</span>` : ''}
     </button>
     ${tile.updateAvailable ? '<span class="tile-dot" title="update available"></span>' : ''}
-    ${menuMarkup(tile, open)}
+    ${tile.favorite ? `<span class="tile-star" title="favorite">${icons.starFilled}</span>` : ''}
+    ${menuMarkup(tile, open, ctx.caps)}
   </div>`;
 }
 

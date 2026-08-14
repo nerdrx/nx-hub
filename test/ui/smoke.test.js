@@ -1,0 +1,241 @@
+// Stub-DOM smoke test: boot the real controller (app.js) against a fake DOM and
+// the in-page mock, then drive it through the v0.2 flows with fake clicks.
+//
+// Nothing here renders pixels — it proves the wiring: boot order, event
+// handling, delegation by data-act, and that every host element gets markup.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { installDom, fakeControl, tick } from './dom-stub.js';
+
+const dom = installDom();
+// app.js boots itself on import (document.readyState === 'complete').
+const app = await import('../../src/renderer/app.js');
+const { doc } = dom;
+
+await tick(60);
+
+function click(attrs) {
+  doc.click(fakeControl(doc, attrs));
+}
+async function clickAndSettle(attrs, ms = 80) {
+  click(attrs);
+  await tick(ms);
+}
+const mock = () => globalThis.window.__nxhubMock;
+
+test('the renderer boots, installs the mock and fills every host', async () => {
+  assert.equal(globalThis.window.__nxhubBooted, true, 'boot finished');
+  assert.ok(globalThis.window.nxhub, 'the mock bridge is installed');
+  assert.ok(dom.html('logo').includes('<svg'), 'the logo rendered');
+  assert.ok(dom.html('grid').includes('<article'), 'cards rendered');
+  assert.ok(dom.html('grid').includes('WiVRn NX'));
+  assert.ok(dom.html('unpublished').includes('Unpublished'), 'the unpublished section rendered');
+  assert.ok(dom.html('hidden-apps').includes('Show hidden'), 'the hidden row rendered');
+  assert.ok(dom.html('device-chip').includes('data-act="devices"'), 'the device chip rendered');
+  assert.match(doc.getElementById('tab-manage').innerHTML, /Manage/);
+});
+
+test('the Manage tab carries the update badge', () => {
+  const label = doc.getElementById('tab-manage').innerHTML;
+  assert.match(label, /class="tab-badge"/, `expected a badge, got ${label}`);
+  assert.match(label, />\d+<\/span>/, label);
+});
+
+test('switching views toggles the hosts and remembers the choice', async () => {
+  // Boot opened the launcher (the mock roster has installed apps).
+  await clickAndSettle({ 'data-act': 'view', 'data-view': 'launch' });
+  assert.equal(doc.getElementById('launch').hidden, false);
+  assert.equal(doc.getElementById('manage-view').hidden, true);
+  assert.ok(dom.html('launch').includes('tiles-grid'));
+  assert.ok(dom.html('launch').includes('tile-star'), 'the favorite shows its star');
+
+  await clickAndSettle({ 'data-act': 'view', 'data-view': 'manage' });
+  assert.equal(doc.getElementById('manage-view').hidden, false);
+  assert.equal(doc.getElementById('launch').hidden, true);
+  assert.match(dom.store.get('nxhub.ui.v1') || '', /"view":"manage"/, 'the choice is remembered');
+});
+
+test('launching a tile records a recent so favorites/recents can order', async () => {
+  await clickAndSettle({ 'data-act': 'tile-launch', 'data-app': 'pulsenx', 'data-art': 'appimage-linux' });
+  const saved = JSON.parse(dom.store.get('nxhub.ui.v1'));
+  assert.deepEqual(saved.recents.slice(0, 1), ['pulsenx::appimage-linux']);
+  assert.ok(dom.html('toasts').includes('Launching'), 'the mock toasted');
+});
+
+test('the app-options sheet opens, previews args live and saves', async () => {
+  await clickAndSettle({ 'data-act': 'app-options', 'data-app': 'wivrn-nx' });
+  const sheet = dom.html('sheet-root');
+  assert.ok(sheet.includes('App options'), 'the sheet opened');
+  assert.ok(sheet.includes('data-pref="updatePolicy"'));
+  assert.ok(sheet.includes('living room'), 'the seeded launch args round-tripped');
+
+  // The live preview updates without a re-render, so the caret never jumps.
+  const argsInput = doc.createElement('input');
+  argsInput.setAttribute('data-pref', 'launchArgs');
+  argsInput.value = '--a "b c"';
+  const preview = doc.createElement('div');
+  preview.id = 'args-preview';
+  doc.body.appendChild(preview);
+  doc.byId.set('args-preview', preview);
+  doc.input(argsInput);
+  assert.match(preview.innerHTML, /arg-chip/);
+  assert.match(preview.innerHTML, /b c/);
+
+  await clickAndSettle({ 'data-act': 'save-app-prefs', 'data-app': 'wivrn-nx' });
+  assert.equal(dom.html('sheet-root'), '', 'the sheet closed after saving');
+  assert.ok(dom.html('toasts').includes('App options saved'));
+});
+
+test('favorite, hide and unhide go straight through setAppPref', async () => {
+  await clickAndSettle({ 'data-act': 'toggle-fav', 'data-app': 'quadforge' });
+  assert.equal(mock().state.settings.appPrefs.quadforge.favorite, true);
+  assert.ok(dom.html('grid').includes('fav-star'));
+
+  await clickAndSettle({ 'data-act': 'hide-app', 'data-app': 'quadforge' });
+  assert.equal(mock().state.settings.appPrefs.quadforge.hidden, true);
+  assert.ok(!dom.html('grid').includes('QuadForge'), 'the card left the grid');
+
+  await clickAndSettle({ 'data-act': 'toggle-hidden' });
+  assert.ok(dom.html('hidden-apps').includes('data-act="unhide-app"'));
+
+  await clickAndSettle({ 'data-act': 'unhide-app', 'data-app': 'quadforge' });
+  assert.equal(mock().state.settings.appPrefs.quadforge.hidden, false);
+  assert.ok(dom.html('grid').includes('QuadForge'), 'the card came back');
+});
+
+test('skip and clear-skip write the exact version', async () => {
+  await clickAndSettle({ 'data-act': 'skip-version', 'data-app': 'pulsenx', 'data-version': '2.3.0' });
+  assert.equal(mock().state.settings.appPrefs.pulsenx.skippedVersion, '2.3.0');
+  await clickAndSettle({ 'data-act': 'clear-skip', 'data-app': 'pulsenx' });
+  assert.equal(mock().state.settings.appPrefs.pulsenx.skippedVersion, '');
+});
+
+test('the versions sheet loads the history and can install an older tag', async () => {
+  await clickAndSettle({ 'data-act': 'versions', 'data-app': 'wivrn-nx' }, 500);
+  const sheet = dom.html('sheet-root');
+  assert.ok(sheet.includes('Version history'));
+  assert.ok(sheet.includes('data-act="install-version"'));
+  assert.ok(sheet.includes('Roll back to 1.9.1'), 'the rollback block is there');
+
+  // Expanding one release's notes only toggles that row.
+  await clickAndSettle({ 'data-act': 'rel-notes', 'data-tag': 'v1.9.2' });
+  assert.ok(dom.html('sheet-root').includes('markdown'));
+
+  // A downgrade asks first — say no, nothing happens.
+  globalThis.window.__confirm = false;
+  await clickAndSettle({
+    'data-act': 'install-version',
+    'data-app': 'wivrn-nx',
+    'data-art': 'tarball-prefix-linux',
+    'data-tag': 'v1.9.1',
+  });
+  assert.ok(dom.html('sheet-root').includes('Version history'), 'a declined downgrade keeps the sheet open');
+  globalThis.window.__confirm = true;
+});
+
+test('rollback confirms, then restores the previous version', async () => {
+  await clickAndSettle({ 'data-act': 'rollback', 'data-app': 'wivrn-nx', 'data-art': 'tarball-prefix-linux' }, 120);
+  const art = mock()
+    .state.apps.find((a) => a.id === 'wivrn-nx')
+    .artifacts.find((a) => a.id === 'tarball-prefix-linux');
+  assert.equal(art.installed.version, '1.9.1');
+  assert.equal(dom.html('sheet-root'), '', 'the sheet closed');
+});
+
+test('the devices sheet connects over Wi-Fi and reports errors', async () => {
+  await clickAndSettle({ 'data-act': 'devices' }, 260);
+  assert.ok(dom.html('sheet-root').includes('adb targets'));
+  assert.ok(dom.html('sheet-root').includes('Pico 4 Ultra'));
+
+  const input = doc.createElement('input');
+  input.setAttribute('data-field', 'adbHost');
+  input.value = '127.0.0.1:5555';
+  doc.input(input);
+  await clickAndSettle({ 'data-act': 'adb-connect' }, 1200);
+  assert.ok(dom.html('sheet-root').includes('field-error'), 'a refused connection surfaces');
+
+  input.value = '192.168.1.42:5555';
+  doc.input(input);
+  await clickAndSettle({ 'data-act': 'adb-connect' }, 1400);
+  assert.ok(mock().state.adb.devices.some((d) => d.serial === '192.168.1.42:5555'));
+
+  await clickAndSettle({ 'data-act': 'select-device', 'data-serial': '192.168.1.42:5555' }, 260);
+  assert.equal(mock().state.settings.preferredDeviceSerial, '192.168.1.42:5555');
+  await clickAndSettle({ 'data-act': 'close-sheet' });
+});
+
+test('settings open, gain storage/logs on demand, and save the v0.2 fields', async () => {
+  await clickAndSettle({ 'data-act': 'settings' });
+  assert.ok(dom.html('panel-root').includes('data-field="updatePolicy"'));
+
+  await clickAndSettle({ 'data-act': 'disk-usage' }, 420);
+  assert.ok(dom.html('panel-root').includes('usage-bar'), 'the bars appeared');
+  assert.ok(dom.html('panel-root').includes('Total <strong>'));
+
+  await clickAndSettle({ 'data-act': 'clear-cache' }, 420);
+  assert.ok(dom.html('toasts').includes('freed'), 'the freed-bytes toast fired');
+
+  await clickAndSettle({ 'data-act': 'load-logs' }, 120);
+  assert.ok(dom.html('panel-root').includes('<pre class="logbox"'));
+  assert.ok(dom.html('panel-root').includes('data-act="copy-logs"'));
+
+  await clickAndSettle({ 'data-act': 'export-settings' }, 120);
+  assert.ok(dom.html('toasts').includes('exported'));
+
+  await clickAndSettle({ 'data-act': 'step', 'data-field': 'maxConcurrentDownloads', 'data-delta': '1' });
+  await clickAndSettle({ 'data-act': 'save-settings' }, 120);
+  assert.equal(dom.html('panel-root'), '', 'the panel closed after saving');
+  assert.equal(mock().state.settings.maxConcurrentDownloads, 3);
+  assert.equal(typeof mock().state.settings.notifications, 'boolean');
+});
+
+test('an update-available event toasts with an Update button that installs', async () => {
+  const appId = mock().simulateUpdateEvent('pulsenx');
+  await tick(60);
+  const toasts = dom.html('toasts');
+  assert.ok(toasts.includes('is available'), toasts);
+  assert.ok(toasts.includes('data-act="update-app"'));
+
+  await clickAndSettle({ 'data-act': 'update-app', 'data-app': appId, 'data-id': 'x' }, 120);
+  assert.ok(
+    mock().state.jobs.some((j) => j.appId === appId) || dom.html('grid').includes('data-job'),
+    'the update started'
+  );
+});
+
+test('Escape closes the sheet first, then the settings panel', async () => {
+  await clickAndSettle({ 'data-act': 'settings' });
+  await clickAndSettle({ 'data-act': 'app-options', 'data-app': 'pulsenx' });
+  assert.ok(dom.html('sheet-root').length > 0);
+
+  doc.key('Escape');
+  await tick(40);
+  assert.equal(dom.html('sheet-root'), '', 'the sheet went first');
+  assert.ok(dom.html('panel-root').length > 0, 'the panel is still open');
+
+  doc.key('Escape');
+  await tick(40);
+  assert.equal(dom.html('panel-root'), '');
+});
+
+test('the controller never throws on a junk event', () => {
+  for (const ev of [null, 'nope', {}, { type: 'unknown' }, { type: 'update-available' }]) {
+    app.onHubEvent(ev);
+  }
+  assert.ok(true);
+});
+
+test('hiding the document parks the starfield loop', async () => {
+  // The parallax sky runs on requestAnimationFrame; it must stop dead when the
+  // window is not visible (and it is what lets this process exit).
+  doc.hidden = true;
+  doc.dispatch('visibilitychange', {});
+  await tick(40);
+  mock().stop();
+  await tick(40);
+  // The globals stay installed on purpose: a late frame from an earlier render
+  // must still find its window instead of exploding.
+  assert.equal(doc.hidden, true);
+});

@@ -15,6 +15,13 @@ import {
   githubUrl,
   releaseUrl,
   jobFor,
+  normalizeArtifact,
+  visibleApps,
+  hiddenApps,
+  appHidden,
+  appHasUpdate,
+  updateBadgeCount,
+  clampConcurrency,
 } from '../../src/renderer/lib/model.js';
 import { validateRepoRef } from '../../src/renderer/views/settings.js';
 
@@ -133,4 +140,102 @@ test('jobFor finds the job of an app/artifact', () => {
   assert.equal(jobFor(jobs, 'b', 'y').appId, 'b');
   assert.equal(jobFor(jobs, 'a', 'zzz'), null);
   assert.equal(jobFor(null, 'a', 'x'), null);
+});
+
+/* ------------------------------------------------------------- v0.2 model */
+
+test('normalizeSettings fills the v0.2 fields and clamps concurrency', () => {
+  const s = normalizeSettings({});
+  assert.equal(s.updatePolicy, 'notify');
+  assert.equal(s.includePrereleases, false);
+  assert.equal(s.notifications, true);
+  assert.equal(s.autostart, false);
+  assert.equal(s.startMinimized, false);
+  assert.equal(s.createDesktopEntries, true);
+  assert.equal(s.maxConcurrentDownloads, 2);
+  assert.equal(s.preferredDeviceSerial, '');
+  assert.deepEqual(s.appPrefs, {});
+
+  const odd = normalizeSettings({
+    updatePolicy: 'sideways',
+    notifications: 'no',
+    maxConcurrentDownloads: 99,
+    preferredDeviceSerial: 7,
+    appPrefs: { a: { favorite: 1 } },
+  });
+  assert.equal(odd.updatePolicy, 'notify', 'unknown policies fall back');
+  assert.equal(odd.notifications, true, 'non-booleans keep the default');
+  assert.equal(odd.maxConcurrentDownloads, 4);
+  assert.equal(odd.preferredDeviceSerial, '');
+  assert.equal(odd.appPrefs.a.favorite, true);
+  assert.equal(normalizeSettings({ maxConcurrentDownloads: 0 }).maxConcurrentDownloads, 1);
+  assert.equal(clampConcurrency('x'), 2);
+  assert.equal(clampConcurrency(3), 3);
+});
+
+test('normalizeArtifact carries the v0.2 flags, rollback only when installed', () => {
+  const a = normalizeArtifact(
+    { id: 'x', kind: 'appimage', rollbackAvailable: true, prevVersion: '1.0.0', readyToInstall: 1 },
+    '2.0.0'
+  );
+  assert.equal(a.rollbackAvailable, false, 'nothing installed → nothing to roll back to');
+  assert.equal(a.prevVersion, '1.0.0');
+  assert.equal(a.readyToInstall, true);
+
+  const b = normalizeArtifact(
+    { id: 'x', kind: 'appimage', installed: { version: '2.0.0' }, rollbackAvailable: true, prevVersion: '1.0.0' },
+    '2.0.0'
+  );
+  assert.equal(b.rollbackAvailable, true);
+  assert.equal(normalizeArtifact({ id: 'x' }).readyToInstall, false);
+});
+
+test('localHidden survives normalization', () => {
+  assert.equal(normalizeApp({ id: 'a', repo: 'o/a', localHidden: 1 }).localHidden, true);
+  assert.equal(normalizeApp({ id: 'a', repo: 'o/a' }).localHidden, false);
+});
+
+/* ----------------------------------------------------- visible / hidden / badge */
+
+const APPS_V2 = [
+  { id: 'a', repo: 'o/a', name: 'A', latest: { version: '2.0.0' }, artifacts: [{ id: 'x', kind: 'appimage', installed: { version: '1.0.0' } }] },
+  { id: 'b', repo: 'o/b', name: 'B', latest: { version: '2.0.0' }, artifacts: [{ id: 'x', kind: 'appimage', installed: { version: '2.0.0' } }] },
+  { id: 'c', repo: 'o/c', name: 'C', latest: { version: '3.0.0' }, artifacts: [{ id: 'x', kind: 'appimage', installed: { version: '1.0.0' } }] },
+  { id: 'd', repo: 'o/d', name: 'D', unpublished: true, artifacts: [] },
+];
+
+test('visible / hidden split honours prefs and localHidden', () => {
+  const state = normalizeState({ apps: APPS_V2, settings: { appPrefs: { c: { hidden: true } } } });
+  assert.deepEqual(visibleApps(state.apps, state.settings).map((a) => a.id), ['a', 'b', 'd']);
+  assert.deepEqual(hiddenApps(state.apps, state.settings).map((a) => a.id), ['c']);
+  assert.equal(appHidden(state.apps[0], state.settings), false);
+
+  const mirrored = normalizeState({ apps: [{ ...APPS_V2[0], localHidden: true }] });
+  assert.equal(appHidden(mirrored.apps[0], mirrored.settings), true);
+});
+
+test('the Manage badge counts visible apps waiting for an update', () => {
+  const plain = normalizeState({ apps: APPS_V2 });
+  assert.equal(updateBadgeCount(plain.apps, plain.settings), 2, 'a and c want updates');
+
+  const hidden = normalizeState({ apps: APPS_V2, settings: { appPrefs: { c: { hidden: true } } } });
+  assert.equal(updateBadgeCount(hidden.apps, hidden.settings), 1, 'hidden apps do not nag');
+
+  const skipped = normalizeState({ apps: APPS_V2, settings: { appPrefs: { a: { skippedVersion: '2.0.0' } } } });
+  assert.equal(updateBadgeCount(skipped.apps, skipped.settings), 1, 'the skipped version is ignored');
+
+  const otherSkip = normalizeState({ apps: APPS_V2, settings: { appPrefs: { a: { skippedVersion: '1.5.0' } } } });
+  assert.equal(updateBadgeCount(otherSkip.apps, otherSkip.settings), 2, 'skipping an old version changes nothing');
+
+  const staged = normalizeState({
+    apps: [{ id: 'e', repo: 'o/e', name: 'E', latest: { version: '1.0.0' }, artifacts: [{ id: 'x', kind: 'appimage', installed: { version: '1.0.0' }, readyToInstall: true }] }],
+  });
+  assert.equal(updateBadgeCount(staged.apps, staged.settings), 1, 'a downloaded update still counts');
+  assert.equal(updateBadgeCount(null, {}), 0);
+});
+
+test('appHasUpdate ignores unpublished repos', () => {
+  const state = normalizeState({ apps: APPS_V2 });
+  assert.equal(appHasUpdate(state.apps.find((a) => a.id === 'd'), state.settings), false);
+  assert.equal(appHasUpdate(null, {}), false);
 });

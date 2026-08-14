@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { launchTiles, tileMenu, monogram, tileHue, defaultView } from '../../src/renderer/lib/launcher.js';
+import { launchTiles, orderTiles, tileMenu, monogram, tileHue, defaultView } from '../../src/renderer/lib/launcher.js';
 import { renderTile, renderLaunchGrid, renderLaunchEmpty, iconSrc } from '../../src/renderer/views/tile.js';
 import { normalizeState, normalizeApp } from '../../src/renderer/lib/model.js';
 import { createMock } from '../../src/renderer/mock.js';
@@ -132,11 +132,24 @@ test('tileHue is deterministic and stays inside the brand range', () => {
 
 test('tile menu adapts to the artifact', () => {
   const desktop = { appId: 'a', artifactId: 'x', platform: 'linux', path: '/a' };
-  assert.deepEqual(tileMenu(desktop).map((m) => m.label), ['Launch', 'Show in folder', 'Manage']);
+  assert.deepEqual(tileMenu(desktop).map((m) => m.label), [
+    'Launch',
+    'Add to favorites',
+    'Show in folder',
+    'App options…',
+    'Hide from list',
+    'Manage',
+  ]);
 
-  const android = { appId: 'a', artifactId: 'x', platform: 'android', path: '', disabled: true };
+  const android = { appId: 'a', artifactId: 'x', platform: 'android', path: '', disabled: true, favorite: true };
   const menu = tileMenu(android);
-  assert.deepEqual(menu.map((m) => m.label), ['Launch', 'Manage']);
+  assert.deepEqual(menu.map((m) => m.label), [
+    'Launch',
+    'Remove from favorites',
+    'App options…',
+    'Hide from list',
+    'Manage',
+  ]);
   assert.equal(menu[0].disabled, true);
   assert.deepEqual(tileMenu(null), []);
 });
@@ -249,4 +262,86 @@ test('toggling the mock device disables/enables the apk tiles', async () => {
   dev.toggleAdb();
   state = normalizeState(await nxhub.getState());
   assert.ok(launchTiles(state.apps, { adb: state.adb }).filter((t) => t.platform === 'android').every((t) => !t.disabled));
+});
+
+/* ------------------------------------------------- v0.2: favorites & hidden */
+
+const installed = (id, name) =>
+  app(id, [{ id: 'appimage-linux', label: 'L', platform: 'linux', kind: 'appimage', installed: { version: '2.0.0', path: `/${id}` } }], { name });
+
+test('hidden apps never produce a tile — pref or localHidden', () => {
+  const apps = [installed('a', 'Alpha'), installed('b', 'Bravo'), installed('c', 'Charlie')];
+  apps[2].localHidden = true;
+  const tiles = launchTiles(apps, { adb: ADB_ON, prefs: { b: { hidden: true } } });
+  assert.deepEqual(tiles.map((t) => t.appId), ['a']);
+  // Without prefs nothing is hidden by accident.
+  assert.equal(launchTiles([installed('a', 'Alpha')], { adb: ADB_ON }).length, 1);
+});
+
+test('the favorite pref rides onto the tile', () => {
+  const tiles = launchTiles([installed('a', 'Alpha'), installed('b', 'Bravo')], {
+    adb: ADB_ON,
+    prefs: { b: { favorite: true } },
+  });
+  assert.deepEqual(tiles.map((t) => t.favorite), [false, true]);
+  assert.match(renderTile(tiles[1]), /tile-star/);
+  assert.ok(!renderTile(tiles[0]).includes('tile-star'));
+});
+
+test('orderTiles: favorites first, then recents, then alphabetical', () => {
+  const tiles = launchTiles(
+    [installed('delta', 'Delta'), installed('alpha', 'Alpha'), installed('bravo', 'Bravo'), installed('echo', 'Echo')],
+    { adb: ADB_ON, prefs: { echo: { favorite: true } } }
+  );
+  const ordered = orderTiles(tiles, { recents: ['bravo::appimage-linux', 'delta::appimage-linux'] });
+  assert.deepEqual(ordered.map((t) => t.appId), ['echo', 'bravo', 'delta', 'alpha']);
+});
+
+test('orderTiles sorts favorites among themselves alphabetically', () => {
+  const tiles = launchTiles([installed('z', 'Zulu'), installed('m', 'Mike'), installed('a', 'Alpha')], {
+    adb: ADB_ON,
+    prefs: { z: { favorite: true }, m: { favorite: true } },
+  });
+  // Zulu was launched last but a favorite is ordered by name, not recency.
+  const ordered = orderTiles(tiles, { recents: ['z::appimage-linux'] });
+  assert.deepEqual(ordered.map((t) => t.name), ['Mike', 'Zulu', 'Alpha']);
+});
+
+test('orderTiles falls back to app-level recency and tolerates junk', () => {
+  const tiles = launchTiles([installed('a', 'Alpha'), installed('b', 'Bravo')], { adb: ADB_ON });
+  // A recents entry recorded against another artifact still floats the app.
+  assert.deepEqual(orderTiles(tiles, { recents: ['b::something-else'] }).map((t) => t.appId), ['b', 'a']);
+  assert.deepEqual(orderTiles(tiles, { recents: ['', null] }).map((t) => t.appId), ['a', 'b']);
+  assert.deepEqual(orderTiles(null, {}), []);
+  assert.deepEqual(orderTiles(tiles, {}).map((t) => t.appId), ['a', 'b']);
+});
+
+test('a staged (downloaded) update lights the same amber dot', () => {
+  const staged = app('s', [
+    { id: 'appimage-linux', label: 'L', platform: 'linux', kind: 'appimage', installed: { version: '2.0.0', path: '/s' }, readyToInstall: true },
+  ]);
+  assert.equal(launchTiles([staged], { adb: ADB_ON })[0].updateAvailable, true);
+});
+
+test('the mock roster hides what the user hid and floats the favorite', async () => {
+  const { nxhub } = createMock();
+  const state = normalizeState(await nxhub.getState());
+  const tiles = orderTiles(launchTiles(state.apps, { adb: state.adb, prefs: state.settings.appPrefs }), {
+    recents: [],
+  });
+  assert.ok(tiles.length, 'the launcher is not empty');
+  assert.equal(tiles[0].appId, 'pulsenx', 'the favorited app leads');
+  assert.ok(tiles.every((t) => t.appId !== 'wivrn'), 'the hidden app is gone');
+});
+
+test('a build without setAppPref loses the pref-driven tile entries', () => {
+  const tile = { appId: 'a', artifactId: 'x', platform: 'linux', path: '/a', key: 'a::x' };
+  assert.deepEqual(tileMenu(tile, { setAppPref: false }).map((m) => m.act), [
+    'tile-launch',
+    'folder',
+    'manage-jump',
+  ]);
+  const out = renderTile(tile, { openMenu: 'a::x', caps: { setAppPref: false } });
+  assert.ok(!out.includes('data-act="toggle-fav"'));
+  assert.ok(out.includes('data-act="manage-jump"'));
 });

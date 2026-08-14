@@ -21,12 +21,15 @@ export function isLaunchable(artifact) {
 /**
  * @param {object} app        normalized app
  * @param {object} artifact   normalized artifact
- * @param {object} ctx        { platform, adb, job }
+ * @param {object} ctx        { platform, adb, job, caps }
+ *   caps: which v0.2 bridge methods exist — a missing method hides its entry.
+ *   An absent caps object means "everything available" (tests, mock mode).
  * @returns {{buttons:Array, menu:Array|null, hint:string, busy:boolean}}
  */
 export function artifactActions(app, artifact, ctx = {}) {
   const platform = ctx.platform || 'linux';
   const adb = ctx.adb || { connected: false, devices: [] };
+  const caps = ctx.caps || {};
   const busy = !!ctx.job;
   const installed = !!(artifact && artifact.installed);
   const menu = [];
@@ -42,13 +45,18 @@ export function artifactActions(app, artifact, ctx = {}) {
 
   if (!artifact) return result([]);
 
-  menu.push({ act: 'github', label: 'Open GitHub page' });
   if (installed) {
-    menu.unshift({ act: 'uninstall', label: 'Uninstall', danger: true });
+    menu.push({ act: 'uninstall', label: 'Uninstall', danger: true });
     if (artifact.installed.path && artifact.platform !== 'android') {
-      menu.splice(1, 0, { act: 'folder', label: 'Show in folder' });
+      menu.push({ act: 'folder', label: 'Show in folder' });
     }
   }
+  if (caps.getReleases !== false) menu.push({ act: 'versions', label: 'Version history…' });
+  if (installed && artifact.rollbackAvailable && artifact.prevVersion && caps.rollback !== false) {
+    menu.push({ act: 'rollback', label: `Roll back to ${artifact.prevVersion}` });
+  }
+  if (caps.setAppPref !== false) menu.push({ act: 'app-options', label: 'App options…' });
+  menu.push({ act: 'github', label: 'Open GitHub page' });
 
   // Windows artifacts are visible but not installable from a Linux host.
   if (artifact.platform === 'windows' && platform !== 'win32') {
@@ -82,15 +90,18 @@ export function artifactActions(app, artifact, ctx = {}) {
       : '';
 
   if (!installed) {
-    return result([
-      {
-        act: 'install',
-        label: 'Install',
-        variant: 'violet',
-        disabled: busy || deviceMissing,
-        title: blockedTitle,
-      },
-    ]);
+    return result(
+      [
+        {
+          act: 'install',
+          label: artifact.readyToInstall ? 'Install downloaded update' : 'Install',
+          variant: artifact.readyToInstall ? 'amber' : 'violet',
+          disabled: busy || deviceMissing,
+          title: blockedTitle,
+        },
+      ],
+      artifact.readyToInstall ? { ready: true } : {}
+    );
   }
 
   const launchBtn = (variant) => ({
@@ -100,6 +111,21 @@ export function artifactActions(app, artifact, ctx = {}) {
     disabled: busy || deviceMissing,
     title: blockedTitle,
   });
+
+  // The update is already on disk — applying it is the primary action.
+  if (artifact.readyToInstall) {
+    const buttons = [
+      {
+        act: 'install',
+        label: 'Install downloaded update',
+        variant: 'amber',
+        disabled: busy || deviceMissing,
+        title: blockedTitle || 'the update is downloaded and ready to apply',
+      },
+    ];
+    if (isLaunchable(artifact)) buttons.push(launchBtn('ghost'));
+    return result(buttons, { update: true, ready: true });
+  }
 
   if (artifact.updateAvailable) {
     const buttons = [

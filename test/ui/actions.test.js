@@ -19,8 +19,9 @@ test('not installed → a single violet Install', () => {
   assert.deepEqual(labels(r), ['Install']);
   assert.deepEqual(variants(r), ['violet']);
   assert.equal(r.buttons[0].disabled, false);
-  // No uninstall/show-in-folder before an install exists.
-  assert.deepEqual(r.menu.map((m) => m.act), ['github']);
+  // No uninstall/show-in-folder before an install exists; the v0.2 entries
+  // (version history, per-app options) are always offered.
+  assert.deepEqual(r.menu.map((m) => m.act), ['versions', 'app-options', 'github']);
 });
 
 test('installed + update → amber Update first, then a secondary Launch', () => {
@@ -28,7 +29,7 @@ test('installed + update → amber Update first, then a secondary Launch', () =>
   assert.deepEqual(labels(r), ['Update', 'Launch']);
   assert.deepEqual(variants(r), ['amber', 'ghost']);
   assert.equal(r.update, true);
-  assert.deepEqual(r.menu.map((m) => m.act), ['uninstall', 'folder', 'github']);
+  assert.deepEqual(r.menu.map((m) => m.act), ['uninstall', 'folder', 'versions', 'app-options', 'github']);
 });
 
 test('installed + current → outlined Launch plus the overflow menu', () => {
@@ -36,7 +37,13 @@ test('installed + current → outlined Launch plus the overflow menu', () => {
   assert.deepEqual(labels(r), ['Launch']);
   assert.deepEqual(variants(r), ['outline']);
   assert.equal(r.current, true);
-  assert.deepEqual(r.menu.map((m) => m.label), ['Uninstall', 'Show in folder', 'Open GitHub page']);
+  assert.deepEqual(r.menu.map((m) => m.label), [
+    'Uninstall',
+    'Show in folder',
+    'Version history…',
+    'App options…',
+    'Open GitHub page',
+  ]);
 });
 
 test('windows artifact on linux → disabled install with the hub-on-Windows tooltip', () => {
@@ -67,7 +74,7 @@ test('apk-adb without a device → hint + disabled action', () => {
   assert.equal(r.buttons[0].disabled, true);
   assert.equal(r.buttons[0].title, 'no headset connected');
   // Android installs have no local folder to show.
-  assert.deepEqual(r.menu.map((m) => m.act), ['uninstall', 'github']);
+  assert.deepEqual(r.menu.map((m) => m.act), ['uninstall', 'versions', 'app-options', 'github']);
 });
 
 test('a running job disables every button for that app', () => {
@@ -87,7 +94,7 @@ test('non-launchable kinds hide Launch entirely', () => {
   const addon = art({ id: 'blender-addon-linux', kind: 'blender-addon', installed: { version: '2.0.0', path: '/x' } });
   const r = artifactActions(APP, addon, { platform: 'linux' });
   assert.deepEqual(labels(r), []);
-  assert.deepEqual(r.menu.map((m) => m.act), ['uninstall', 'folder', 'github']);
+  assert.deepEqual(r.menu.map((m) => m.act), ['uninstall', 'folder', 'versions', 'app-options', 'github']);
 });
 
 test('an outdated non-launchable artifact still offers Update only', () => {

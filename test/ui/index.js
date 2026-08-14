@@ -11,3 +11,11 @@ import './actions.test.js';
 import './model.test.js';
 import './render.test.js';
 import './launcher.test.js';
+// v0.2
+import './prefs.test.js';
+import './releases.test.js';
+import './devices.test.js';
+import './storage.test.js';
+import './sheets.test.js';
+// Last on purpose: this one installs a stub DOM on globalThis and boots app.js.
+import './smoke.test.js';

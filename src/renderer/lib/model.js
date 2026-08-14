@@ -5,6 +5,7 @@
 // device or list) so the UI can never crash on a shape surprise.
 
 import { artifactHasUpdate } from './version.js';
+import { normalizeAppPrefs, normalizeAppPref, isHiddenApp, isSkipped, GLOBAL_POLICIES } from './prefs.js';
 
 export const DEFAULT_SETTINGS = {
   owners: ['nerdrx'],
@@ -13,7 +14,28 @@ export const DEFAULT_SETTINGS = {
   checkIntervalHours: 6,
   installRoot: '~/Applications',
   adbPath: 'adb',
+  // v0.2
+  appPrefs: {},
+  updatePolicy: 'notify',
+  includePrereleases: false,
+  notifications: true,
+  autostart: false,
+  startMinimized: false,
+  createDesktopEntries: true,
+  maxConcurrentDownloads: 2,
+  preferredDeviceSerial: '',
 };
+
+function bool(v, fallback) {
+  return typeof v === 'boolean' ? v : fallback;
+}
+
+/** 1–4 per SPEC; anything else falls back to the default. */
+export function clampConcurrency(n) {
+  const v = Math.round(Number(n));
+  if (!Number.isFinite(v)) return DEFAULT_SETTINGS.maxConcurrentDownloads;
+  return Math.max(1, Math.min(4, v));
+}
 
 function asArray(v) {
   if (Array.isArray(v)) return v;
@@ -29,6 +51,15 @@ export function normalizeSettings(settings) {
     owners: Array.isArray(s.owners) ? s.owners.filter(Boolean) : DEFAULT_SETTINGS.owners.slice(),
     extraRepos: Array.isArray(s.extraRepos) ? s.extraRepos.filter(Boolean) : [],
     token: typeof s.token === 'string' ? s.token : '',
+    appPrefs: normalizeAppPrefs(s.appPrefs),
+    updatePolicy: GLOBAL_POLICIES.includes(s.updatePolicy) ? s.updatePolicy : DEFAULT_SETTINGS.updatePolicy,
+    includePrereleases: bool(s.includePrereleases, DEFAULT_SETTINGS.includePrereleases),
+    notifications: bool(s.notifications, DEFAULT_SETTINGS.notifications),
+    autostart: bool(s.autostart, DEFAULT_SETTINGS.autostart),
+    startMinimized: bool(s.startMinimized, DEFAULT_SETTINGS.startMinimized),
+    createDesktopEntries: bool(s.createDesktopEntries, DEFAULT_SETTINGS.createDesktopEntries),
+    maxConcurrentDownloads: clampConcurrency(s.maxConcurrentDownloads),
+    preferredDeviceSerial: typeof s.preferredDeviceSerial === 'string' ? s.preferredDeviceSerial : '',
   };
 }
 
@@ -47,6 +78,11 @@ export function normalizeArtifact(artifact, latestVersion) {
     installed: a.installed && typeof a.installed === 'object' ? a.installed : null,
     updateAvailable: artifactHasUpdate(a, latestVersion),
     launchable: a.launchable !== false,
+    // v0.2 — engines keep one previous install for rollback and may stage an
+    // already-downloaded update that only needs applying.
+    rollbackAvailable: !!(a.rollbackAvailable && a.installed),
+    prevVersion: a.prevVersion ? String(a.prevVersion) : '',
+    readyToInstall: !!a.readyToInstall,
   };
 }
 
@@ -65,6 +101,9 @@ export function normalizeApp(app) {
     unpublished: !!a.unpublished || (!latest && artifacts.length === 0),
     latest,
     artifacts,
+    // v0.2 — main mirrors the per-app "hidden" pref here so a single flag can
+    // hide an app even before appPrefs reach the renderer.
+    localHidden: !!a.localHidden,
   };
 }
 
@@ -202,6 +241,39 @@ export function releaseUrl(app) {
   if (!app) return '';
   const base = githubUrl(app.repo);
   return app.latest && app.latest.tag ? `${base}/releases/tag/${encodeURIComponent(app.latest.tag)}` : `${base}/releases`;
+}
+
+/* ------------------------------------------------------------ v0.2 selectors */
+
+/** Hidden = per-app pref, or main's mirrored `localHidden` flag. */
+export function appHidden(app, settings) {
+  return isHiddenApp(app, (settings && settings.appPrefs) || {});
+}
+
+export function visibleApps(apps, settings) {
+  return asArray(apps).filter((a) => !appHidden(a, settings));
+}
+
+export function hiddenApps(apps, settings) {
+  return asArray(apps).filter((a) => appHidden(a, settings));
+}
+
+/**
+ * Does this app want attention? True when any artifact has an update (or a
+ * staged, ready-to-apply one) and the user has not skipped that exact version.
+ */
+export function appHasUpdate(app, settings) {
+  if (!app || app.unpublished) return false;
+  const arts = app.artifacts || [];
+  const wants = arts.some((a) => a && (a.updateAvailable || a.readyToInstall));
+  if (!wants) return false;
+  const pref = normalizeAppPref(((settings && settings.appPrefs) || {})[app.id]);
+  return !isSkipped(pref, app.latest && app.latest.version);
+}
+
+/** Badge number on the Manage tab: visible apps waiting for an update. */
+export function updateBadgeCount(apps, settings) {
+  return visibleApps(apps, settings).filter((a) => appHasUpdate(a, settings)).length;
 }
 
 /** "owner/repo" validation for the extraRepos input. */

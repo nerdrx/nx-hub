@@ -65,6 +65,74 @@ export const plug = `
   <path d="M9 3v5M15 3v5"/><path d="M6 8h12v3a6 6 0 0 1-6 6 6 6 0 0 1-6-6z"/><path d="M12 17v4"/>
 </svg>`;
 
+export const star = `
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">
+  <path d="m12 3.6 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.8l5.9-.9z"/>
+</svg>`;
+
+export const starFilled = `
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="currentColor">
+  <path d="m12 3.6 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.8l5.9-.9z"/>
+</svg>`;
+
+export const history = `
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+  <path d="M3.6 9.5A8.5 8.5 0 1 1 3 12"/><path d="M3 4.5V10h5.5"/><path d="M12 7.5V12l3 1.8"/>
+</svg>`;
+
+export const sliders = `
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+  <path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>
+</svg>`;
+
+export const eyeOff = `
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+  <path d="M3 3l18 18"/><path d="M10.6 6.3A9.7 9.7 0 0 1 12 6.2c5 0 9 5.8 9 5.8a17 17 0 0 1-3 3.5"/>
+  <path d="M6.2 8.2A17.6 17.6 0 0 0 3 12s4 5.8 9 5.8a9 9 0 0 0 3.4-.7"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>
+</svg>`;
+
+export const eye = `
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+  <path d="M3 12s4-5.8 9-5.8S21 12 21 12s-4 5.8-9 5.8S3 12 3 12z"/><circle cx="12" cy="12" r="2.6"/>
+</svg>`;
+
+export const disk = `
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.9">
+  <ellipse cx="12" cy="6.4" rx="7.5" ry="3"/><path d="M4.5 6.4v11.2c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V6.4"/>
+  <path d="M4.5 12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3"/>
+</svg>`;
+
+export const terminal = `
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+  <rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="m7.5 10 2.6 2.4-2.6 2.4M13 15h3.5"/>
+</svg>`;
+
+export const download = `
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+  <path d="M12 4v10"/><path d="m8 10.5 4 4 4-4"/><path d="M5 19h14"/>
+</svg>`;
+
+export const upload = `
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+  <path d="M12 15V5"/><path d="m8 8.5 4-4 4 4"/><path d="M5 19h14"/>
+</svg>`;
+
+export const battery = `
+<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8">
+  <rect x="2.5" y="8" width="16" height="8" rx="2.2"/><path d="M21 11v2" stroke-linecap="round"/>
+</svg>`;
+
+export const rollback = `
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+  <path d="M4 10h9a5 5 0 0 1 0 10H8"/><path d="m8 6-4 4 4 4"/>
+</svg>`;
+
+export const trash = `
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+  <path d="M4.5 7h15"/><path d="M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7"/>
+  <path d="M6.5 7 7.4 19a1.5 1.5 0 0 0 1.5 1.4h6.2a1.5 1.5 0 0 0 1.5-1.4L17.5 7"/>
+</svg>`;
+
 export const search = `
 <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
   <circle cx="11" cy="11" r="6"/><path d="m20 20-3.6-3.6"/>

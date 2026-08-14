@@ -12,7 +12,8 @@
   </head>
   <body>
     <header id="header">
-      <canvas id="stars" aria-hidden="true"></canvas>
+      <canvas id="stars" class="star-layer star-far" aria-hidden="true"></canvas>
+      <canvas id="stars-near" class="star-layer star-near" aria-hidden="true"></canvas>
       <div class="star-glow s1" aria-hidden="true"></div>
       <div class="star-glow s2" aria-hidden="true"></div>
       <div class="star-glow s3" aria-hidden="true"></div>
@@ -36,6 +37,7 @@
           />
           <kbd class="slash">/</kbd>
         </div>
+        <span id="device-chip" class="device-slot"></span>
         <button id="refresh" class="btn btn-icon head-btn" data-act="refresh" title="Refresh — check GitHub for new releases" aria-label="Refresh"></button>
         <button id="settings-btn" class="btn btn-icon head-btn" data-act="settings" title="Settings" aria-label="Settings"></button>
       </div>
@@ -47,6 +49,7 @@
       <div id="manage-view" role="tabpanel" aria-label="Manage">
         <section id="grid" class="grid" aria-label="Apps"></section>
         <section id="unpublished" class="unpub" aria-label="Unpublished repositories"></section>
+        <section id="hidden-apps" class="hidden-apps" aria-label="Hidden apps"></section>
       </div>
     </main>
 
@@ -55,7 +58,9 @@
     </footer>
 
     <div id="panel-root"></div>
+    <div id="sheet-root"></div>
     <div id="toasts" class="toasts" aria-live="polite"></div>
+    <input id="import-file" type="file" accept="application/json,.json" hidden />
     <div id="boot-warning" hidden></div>
 
     <script src="./boot-check.js"></script>

@@ -1,8 +1,20 @@
 // NX Hub renderer — controller. No framework, no bundler: the view layer is a
 // set of pure string renderers (views/*) and this file is the one place that
 // touches the DOM and window.nxhub.
+//
+// Every v0.2 bridge method is optional: `caps` is probed once at boot and a
+// missing method quietly removes its UI instead of breaking the page.
 
-import { normalizeState, filterApps, splitPublished, githubUrl } from './lib/model.js';
+import {
+  normalizeState,
+  filterApps,
+  splitPublished,
+  githubUrl,
+  visibleApps,
+  hiddenApps,
+  updateBadgeCount,
+  clampConcurrency,
+} from './lib/model.js';
 import { renderSettingsPanel, validateRepoRef } from './views/settings.js';
 import {
   renderAppCard,
@@ -10,16 +22,48 @@ import {
   renderSkeletonCard,
   renderTokenHint,
   renderRateLimitBanner,
+  renderHiddenSection,
   renderEmpty,
   artifactKey,
 } from './views/card.js';
 import { detectPlatform } from './lib/actions.js';
-import { launchTiles, defaultView } from './lib/launcher.js';
+import { launchTiles, orderTiles, defaultView } from './lib/launcher.js';
 import { renderLaunchGrid, renderSkeletonTiles } from './views/tile.js';
+import { renderAppOptions, renderArgsPreview } from './views/appoptions.js';
+import { renderVersionsSheet } from './views/versions.js';
+import { renderDeviceChip, renderDevicesSheet } from './views/devices.js';
+import {
+  normalizeAppPref,
+  splitArgs,
+  joinArgs,
+  envRows,
+  envFromRows,
+  validateEnvKey,
+} from './lib/prefs.js';
+import { normalizeReleases, isDowngrade, downgradeConfirmText, rollbackConfirmText, rollbackTargets } from './lib/releases.js';
+import { parseHostPort } from './lib/devices.js';
+import { freedLabel, normalizeImportResult } from './lib/storage.js';
 import { esc } from './lib/html.js';
 import * as icons from './views/icons.js';
 
 const LS_KEY = 'nxhub.ui.v1';
+const RECENTS_MAX = 12;
+
+/** Optional v0.2 bridge methods — probed at boot, never assumed. */
+const V02_METHODS = [
+  'getReleases',
+  'installVersion',
+  'rollback',
+  'setAppPref',
+  'adbConnect',
+  'adbSelectDevice',
+  'getDeviceInfo',
+  'getDiskUsage',
+  'clearDownloadCache',
+  'getLogs',
+  'exportSettings',
+  'importSettings',
+];
 
 const ui = {
   loaded: false,
@@ -39,6 +83,26 @@ const ui = {
   rateLimit: null,
   platform: detectPlatform(),
   busy: false,
+  // v0.2
+  caps: {},
+  sheet: null, // { kind: 'options' | 'versions' | 'devices', appId }
+  prefDraft: null,
+  prefError: '',
+  releases: new Map(), // appId → { loading, error, releases }
+  expandedRelNotes: new Set(),
+  deviceInfo: null,
+  deviceInfoError: '',
+  adbHost: '',
+  adbError: '',
+  adbOk: '',
+  adbBusy: false,
+  diskUsage: null,
+  diskLoading: false,
+  freed: '',
+  logs: {},
+  importResult: null,
+  recents: [],
+  showHidden: false,
 };
 
 let state = normalizeState(null);
@@ -52,7 +116,9 @@ function loadUiPrefs() {
     const saved = JSON.parse(window.localStorage.getItem(LS_KEY) || '{}');
     if (Array.isArray(saved.dismissedNotes)) ui.dismissedNotes = new Set(saved.dismissedNotes);
     if (Array.isArray(saved.dismissedHints)) ui.dismissedHints = new Set(saved.dismissedHints);
+    if (Array.isArray(saved.recents)) ui.recents = saved.recents.filter((x) => typeof x === 'string').slice(0, RECENTS_MAX);
     if (typeof saved.unpubOpen === 'boolean') ui.unpubOpen = saved.unpubOpen;
+    if (typeof saved.showHidden === 'boolean') ui.showHidden = saved.showHidden;
     if (saved.view === 'launch' || saved.view === 'manage') {
       ui.view = saved.view;
       ui.viewRemembered = true;
@@ -70,6 +136,8 @@ function saveUiPrefs() {
         dismissedNotes: [...ui.dismissedNotes],
         dismissedHints: [...ui.dismissedHints],
         unpubOpen: ui.unpubOpen,
+        showHidden: ui.showHidden,
+        recents: ui.recents,
         view: ui.view,
       })
     );
@@ -78,10 +146,25 @@ function saveUiPrefs() {
   }
 }
 
+/** Remember a launch so the launcher can float it to the front. */
+function noteLaunch(appId, artifactId) {
+  if (!appId) return;
+  const key = `${appId}::${artifactId || ''}`;
+  ui.recents = [key, ...ui.recents.filter((k) => k !== key)].slice(0, RECENTS_MAX);
+  saveUiPrefs();
+}
+
 /* --------------------------------------------------------------- api access */
 
 function api() {
   return typeof window !== 'undefined' && window.nxhub ? window.nxhub : null;
+}
+
+function detectCaps() {
+  const nx = api();
+  const caps = {};
+  for (const m of V02_METHODS) caps[m] = !!(nx && typeof nx[m] === 'function');
+  return caps;
 }
 
 async function call(method, ...args) {
@@ -95,6 +178,17 @@ async function call(method, ...args) {
   } catch (err) {
     toast('error', `${method} failed: ${(err && err.message) || err}`);
     return null;
+  }
+}
+
+/** Like call(), but a missing method is simply "feature not present". */
+async function maybeCall(method, ...args) {
+  const nx = api();
+  if (!nx || typeof nx[method] !== 'function') return null;
+  try {
+    return await nx[method](...args);
+  } catch (err) {
+    throw err instanceof Error ? err : new Error(String(err));
   }
 }
 
@@ -132,7 +226,7 @@ function jobForApp(jobs, appId) {
 function toast(level, message, opts = {}) {
   const id = `t${++toastSeq}`;
   const sticky = opts.sticky !== undefined ? opts.sticky : level === 'error';
-  ui.toasts.push({ id, level, message: String(message || ''), sticky });
+  ui.toasts.push({ id, level, message: String(message || ''), sticky, action: opts.action || null });
   if (ui.toasts.length > 6) ui.toasts.splice(0, ui.toasts.length - 6);
   if (!sticky) {
     window.setTimeout(() => {
@@ -152,8 +246,15 @@ function renderToasts() {
   if (!host) return;
   host.innerHTML = ui.toasts
     .map(
-      (t) => `<div class="toast toast-${esc(t.level)}" role="status">
+      (t, i) => `<div class="toast toast-${esc(t.level)}" role="status" style="--i:${i}">
         <span>${esc(t.message)}</span>
+        ${
+          t.action
+            ? `<button class="btn btn-violet btn-sm toast-act" data-act="${esc(t.action.act)}" data-app="${esc(
+                t.action.appId || ''
+              )}" data-art="${esc(t.action.artifactId || '')}" data-id="${esc(t.id)}">${esc(t.action.label)}</button>`
+            : ''
+        }
         <button class="btn btn-icon" data-act="close-toast" data-id="${esc(t.id)}" title="Dismiss">${icons.close}</button>
       </div>`
     )
@@ -173,12 +274,18 @@ function schedule() {
   else window.setTimeout(run, 16);
 }
 
-/** Tiles for the launcher view, honouring the shared filter input. */
+function prefsMap() {
+  return (state.settings && state.settings.appPrefs) || {};
+}
+
+/** Tiles for the launcher view, honouring the filter, prefs and recents. */
 function currentTiles() {
-  return launchTiles(filterApps(state.apps, ui.filter), {
+  const tiles = launchTiles(filterApps(state.apps, ui.filter), {
     adb: state.adb,
     platform: state.platform || ui.platform,
+    prefs: prefsMap(),
   });
+  return orderTiles(tiles, { recents: ui.recents });
 }
 
 function renderTabs() {
@@ -189,11 +296,73 @@ function renderTabs() {
     tab.classList.toggle('active', active);
     tab.setAttribute('aria-selected', active ? 'true' : 'false');
   }
+  const manage = document.getElementById('tab-manage');
+  if (manage) {
+    const n = ui.loaded ? updateBadgeCount(state.apps, state.settings) : 0;
+    manage.innerHTML = `Manage${
+      n ? `<span class="tab-badge" title="${n} app${n === 1 ? '' : 's'} with an update">${n}</span>` : ''
+    }`;
+  }
+}
+
+function renderDeviceSlot() {
+  const host = document.getElementById('device-chip');
+  if (!host) return;
+  const devices = (state.adb && state.adb.devices) || [];
+  const show = devices.length || ui.caps.adbConnect || ui.caps.getDeviceInfo;
+  host.innerHTML = show ? renderDeviceChip(state.adb, ui.deviceInfo, { busy: ui.adbBusy }) : '';
+}
+
+function renderSheet() {
+  const host = document.getElementById('sheet-root');
+  if (!host) return;
+  const sheet = ui.sheet;
+  if (!sheet) {
+    host.innerHTML = '';
+    return;
+  }
+  if (sheet.kind === 'devices') {
+    host.innerHTML = renderDevicesSheet(state, {
+      info: ui.deviceInfo,
+      infoError: ui.deviceInfoError,
+      connecting: ui.adbBusy,
+      error: ui.adbError,
+      connected: ui.adbOk,
+      host: ui.adbHost,
+      caps: ui.caps,
+    });
+    return;
+  }
+
+  const app = (state.apps || []).find((a) => a.id === sheet.appId);
+  if (!app) {
+    host.innerHTML = '';
+    return;
+  }
+  if (sheet.kind === 'options') {
+    host.innerHTML = renderAppOptions(app, ui.prefDraft, {
+      settings: state.settings,
+      envError: ui.prefError,
+      launchable: (app.artifacts || []).some((a) => a.launchable !== false),
+    });
+    return;
+  }
+  if (sheet.kind === 'versions') {
+    const data = ui.releases.get(app.id) || { loading: true };
+    host.innerHTML = renderVersionsSheet(app, data, {
+      expanded: ui.expandedRelNotes,
+      platform: state.platform || ui.platform,
+      busy: !!jobForApp(jobsForRender(), app.id),
+      now: Date.now(),
+      caps: ui.caps.rollback === false ? false : ui.caps,
+    });
+  }
 }
 
 function render() {
   const grid = document.getElementById('grid');
   const unpubHost = document.getElementById('unpublished');
+  const hiddenHost = document.getElementById('hidden-apps');
   const banner = document.getElementById('banner');
   const panelHost = document.getElementById('panel-root');
   const launchHost = document.getElementById('launch');
@@ -201,6 +370,8 @@ function render() {
   if (!grid) return;
 
   renderTabs();
+  renderDeviceSlot();
+  renderSheet();
   const launchView = ui.view === 'launch';
   if (launchHost) launchHost.hidden = !launchView;
   if (manageHost) manageHost.hidden = launchView;
@@ -208,7 +379,10 @@ function render() {
   const jobs = jobsForRender();
   const ctx = {
     settings: state.settings,
+    prefs: prefsMap(),
     adb: state.adb,
+    deviceInfo: ui.deviceInfo,
+    caps: ui.caps,
     platform: state.platform || ui.platform,
     expandedNotes: ui.expandedNotes,
     dismissedNotes: ui.dismissedNotes,
@@ -225,6 +399,13 @@ function render() {
           hubVersion: state.hubVersion,
           tokenSource: state.tokenSource,
           repoError: ui.repoError,
+          caps: ui.caps,
+          apps: state.apps,
+          diskUsage: ui.diskUsage,
+          diskLoading: ui.diskLoading,
+          freed: ui.freed,
+          logs: ui.logs,
+          importResult: ui.importResult,
         })
       : '';
   }
@@ -232,6 +413,7 @@ function render() {
   if (!ui.loaded) {
     grid.innerHTML = new Array(4).fill(0).map(renderSkeletonCard).join('');
     if (unpubHost) unpubHost.innerHTML = '';
+    if (hiddenHost) hiddenHost.innerHTML = '';
     if (launchHost) launchHost.innerHTML = launchView ? renderSkeletonTiles() : '';
     return;
   }
@@ -240,10 +422,12 @@ function render() {
     launchHost.innerHTML = renderLaunchGrid(currentTiles(), {
       openMenu: ui.openMenu,
       filter: ui.filter,
+      caps: ui.caps,
     });
   }
 
-  const { published, unpublished } = splitPublished(state.apps);
+  const listed = visibleApps(state.apps, state.settings);
+  const { published, unpublished } = splitPublished(listed);
   const shown = filterApps(published, ui.filter);
   const cards = shown.map((app) => renderAppCard(app, { ...ctx, job: jobForApp(jobs, app.id) }));
 
@@ -262,6 +446,11 @@ function render() {
          ${ui.unpubOpen ? `<div class="grid grid-unpub">${list.map(renderUnpublishedCard).join('')}</div>` : ''}`
       : '';
   }
+
+  if (hiddenHost) {
+    const hidden = filterApps(hiddenApps(state.apps, state.settings), ui.filter);
+    hiddenHost.innerHTML = renderHiddenSection(hidden, { open: ui.showHidden });
+  }
 }
 
 /* ------------------------------------------------------------ settings glue */
@@ -269,9 +458,14 @@ function render() {
 function openSettings() {
   ui.draft = { ...state.settings, owners: [...state.settings.owners], extraRepos: [...state.settings.extraRepos] };
   ui.repoError = '';
+  ui.importResult = null;
+  ui.freed = '';
   ui.settingsOpen = true;
   schedule();
 }
+
+const SKIP_FIELDS = new Set(['ownerInput', 'repoInput', 'adbHost']);
+const NUMBER_FIELDS = new Set(['checkIntervalHours', 'maxConcurrentDownloads']);
 
 function readPanelInputs() {
   if (!ui.draft) return;
@@ -279,10 +473,13 @@ function readPanelInputs() {
   if (!root) return;
   for (const el of root.querySelectorAll('[data-field]')) {
     const field = el.getAttribute('data-field');
-    if (field === 'ownerInput' || field === 'repoInput') continue;
-    if (field === 'checkIntervalHours') {
+    if (SKIP_FIELDS.has(field)) continue;
+    if (el.type === 'checkbox') {
+      ui.draft[field] = !!el.checked;
+    } else if (NUMBER_FIELDS.has(field)) {
       const n = Number(el.value);
-      ui.draft.checkIntervalHours = Number.isFinite(n) && n >= 0 ? n : 6;
+      if (field === 'maxConcurrentDownloads') ui.draft[field] = clampConcurrency(n);
+      else ui.draft[field] = Number.isFinite(n) && n >= 0 ? n : 6;
     } else {
       ui.draft[field] = el.value;
     }
@@ -297,19 +494,251 @@ function panelInput(field) {
 async function saveSettings() {
   if (!ui.draft) return;
   readPanelInputs();
+  const d = ui.draft;
   const patch = {
-    owners: ui.draft.owners,
-    extraRepos: ui.draft.extraRepos,
-    token: ui.draft.token || '',
-    installRoot: ui.draft.installRoot || '',
-    adbPath: ui.draft.adbPath || '',
-    checkIntervalHours: Number(ui.draft.checkIntervalHours) || 0,
+    owners: d.owners,
+    extraRepos: d.extraRepos,
+    token: d.token || '',
+    installRoot: d.installRoot || '',
+    adbPath: d.adbPath || '',
+    checkIntervalHours: Number(d.checkIntervalHours) || 0,
+    updatePolicy: d.updatePolicy || 'notify',
+    includePrereleases: !!d.includePrereleases,
+    notifications: d.notifications !== false,
+    autostart: !!d.autostart,
+    startMinimized: !!d.startMinimized,
+    createDesktopEntries: d.createDesktopEntries !== false,
+    maxConcurrentDownloads: clampConcurrency(d.maxConcurrentDownloads),
   };
   const ok = await call('setSettings', patch);
   if (ok !== null) {
     toast('info', 'Settings saved');
     ui.settingsOpen = false;
     await pullState();
+  }
+  schedule();
+}
+
+/* -------------------------------------------------------------- app options */
+
+function openOptions(appId) {
+  const app = (state.apps || []).find((a) => a.id === appId);
+  if (!app) return;
+  const pref = normalizeAppPref(prefsMap()[appId]);
+  ui.prefDraft = {
+    ...pref,
+    launchArgsText: joinArgs(pref.launchArgs),
+    envRows: envRows(pref.launchEnv),
+  };
+  ui.prefError = '';
+  ui.sheet = { kind: 'options', appId };
+  ui.openMenu = '';
+  schedule();
+}
+
+function readPrefDraft() {
+  const root = document.getElementById('sheet-root');
+  if (!root || !ui.prefDraft) return;
+  for (const el of root.querySelectorAll('[data-pref]')) {
+    const field = el.getAttribute('data-pref');
+    if (el.type === 'checkbox') ui.prefDraft[field] = !!el.checked;
+    else if (field === 'launchArgs') ui.prefDraft.launchArgsText = el.value;
+    else ui.prefDraft[field] = el.value;
+  }
+  const rows = [];
+  const at = (i) => (rows[i] = rows[i] || { key: '', value: '' });
+  for (const el of root.querySelectorAll('[data-env-key]')) at(Number(el.getAttribute('data-env-key'))).key = el.value;
+  for (const el of root.querySelectorAll('[data-env-val]')) at(Number(el.getAttribute('data-env-val'))).value = el.value;
+  ui.prefDraft.envRows = rows.filter(Boolean);
+}
+
+async function saveAppPrefs(appId) {
+  readPrefDraft();
+  const d = ui.prefDraft;
+  if (!d) return;
+  for (const row of d.envRows || []) {
+    if (!row.key && !row.value) continue;
+    const err = validateEnvKey(row.key);
+    if (err) {
+      ui.prefError = `“${row.key || '(empty)'}”: ${err}`;
+      schedule();
+      return;
+    }
+  }
+  const parsed = splitArgs(d.launchArgsText || '');
+  if (parsed.error) {
+    ui.prefError = parsed.error;
+    schedule();
+    return;
+  }
+  ui.prefError = '';
+  const patch = {
+    updatePolicy: d.updatePolicy,
+    includePrereleases: !!d.includePrereleases,
+    skippedVersion: d.skippedVersion || '',
+    favorite: !!d.favorite,
+    hidden: !!d.hidden,
+    launchArgs: parsed.args,
+    launchEnv: envFromRows(d.envRows),
+  };
+  const ok = await call('setAppPref', appId, patch);
+  if (ok !== null) {
+    ui.sheet = null;
+    ui.prefDraft = null;
+    toast('info', 'App options saved');
+    await pullState();
+  }
+  schedule();
+}
+
+/** One-field pref writes (favorite star, hide, skip) — no sheet needed. */
+async function patchPref(appId, patch, message) {
+  const current = normalizeAppPref(prefsMap()[appId]);
+  const ok = await call('setAppPref', appId, { ...current, ...patch });
+  if (ok === null) return;
+  if (ui.prefDraft && ui.sheet && ui.sheet.appId === appId) Object.assign(ui.prefDraft, patch);
+  if (message) toast('info', message);
+  await pullState();
+}
+
+/* ------------------------------------------------------------ version sheet */
+
+async function openVersions(appId) {
+  const app = (state.apps || []).find((a) => a.id === appId);
+  if (!app) return;
+  ui.sheet = { kind: 'versions', appId };
+  ui.openMenu = '';
+  ui.expandedRelNotes = new Set();
+  if (!ui.caps.getReleases) {
+    ui.releases.set(appId, { loading: false, error: 'This build cannot read the release history.', releases: [] });
+    schedule();
+    return;
+  }
+  ui.releases.set(appId, { loading: true, releases: [] });
+  schedule();
+  try {
+    const list = await maybeCall('getReleases', appId);
+    ui.releases.set(appId, { loading: false, error: '', releases: normalizeReleases(list) });
+  } catch (err) {
+    ui.releases.set(appId, {
+      loading: false,
+      error: `Could not read releases: ${(err && err.message) || err}`,
+      releases: [],
+    });
+  }
+  schedule();
+}
+
+/* ---------------------------------------------------------------- devices */
+
+async function refreshDeviceInfo() {
+  if (!ui.caps.getDeviceInfo) return;
+  try {
+    const info = await maybeCall('getDeviceInfo');
+    ui.deviceInfo = info || null;
+    ui.deviceInfoError = info ? '' : 'No device details available.';
+  } catch (err) {
+    ui.deviceInfo = null;
+    ui.deviceInfoError = `Could not read the device: ${(err && err.message) || err}`;
+  }
+  schedule();
+}
+
+async function connectDevice() {
+  const root = document.getElementById('sheet-root');
+  const input = root ? root.querySelector('[data-field="adbHost"]') : null;
+  const value = input ? input.value : ui.adbHost;
+  ui.adbHost = value;
+  const parsed = parseHostPort(value);
+  ui.adbOk = '';
+  if (!parsed.ok) {
+    ui.adbError = parsed.error;
+    schedule();
+    return;
+  }
+  ui.adbError = '';
+  ui.adbBusy = true;
+  schedule();
+  try {
+    const res = await maybeCall('adbConnect', parsed.hostPort);
+    if (res && res.ok === false) {
+      ui.adbError = String(res.error || res.message || `Could not connect to ${parsed.hostPort}.`);
+    } else {
+      ui.adbOk = `Connected to ${parsed.hostPort}.`;
+      ui.adbHost = '';
+    }
+  } catch (err) {
+    ui.adbError = `Could not connect: ${(err && err.message) || err}`;
+  }
+  ui.adbBusy = false;
+  await pullState();
+  await refreshDeviceInfo();
+  schedule();
+}
+
+/* --------------------------------------------------------- storage & logs */
+
+async function loadDiskUsage() {
+  if (!ui.caps.getDiskUsage) return;
+  ui.diskLoading = true;
+  schedule();
+  try {
+    ui.diskUsage = await maybeCall('getDiskUsage');
+  } catch (err) {
+    ui.diskUsage = null;
+    toast('error', `Could not measure disk usage: ${(err && err.message) || err}`);
+  }
+  ui.diskLoading = false;
+  schedule();
+}
+
+async function loadLogs() {
+  if (!ui.caps.getLogs) return;
+  ui.logs = { loading: true };
+  schedule();
+  try {
+    const out = await maybeCall('getLogs', 200);
+    const text = Array.isArray(out) ? out.join('\n') : String(out || '');
+    ui.logs = { loading: false, text: text || '(the log is empty)' };
+  } catch (err) {
+    ui.logs = { loading: false, error: `Could not read the log: ${(err && err.message) || err}` };
+  }
+  schedule();
+}
+
+async function exportSettingsFile() {
+  try {
+    const data = await maybeCall('exportSettings');
+    if (data === null || data === undefined) {
+      toast('warn', 'Nothing to export');
+      return;
+    }
+    const text = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+    const blob = new window.Blob([text], { type: 'application/json' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'nx-hub-settings.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.setTimeout(() => window.URL.revokeObjectURL(url), 4000);
+    toast('info', 'Settings exported as nx-hub-settings.json');
+  } catch (err) {
+    toast('error', `Export failed: ${(err && err.message) || err}`);
+  }
+}
+
+async function importSettingsText(text) {
+  try {
+    const res = await maybeCall('importSettings', text);
+    ui.importResult = normalizeImportResult(res);
+  } catch (err) {
+    ui.importResult = normalizeImportResult({ error: (err && err.message) || String(err) });
+  }
+  await pullState();
+  if (ui.draft) {
+    ui.draft = { ...state.settings, owners: [...state.settings.owners], extraRepos: [...state.settings.extraRepos] };
   }
   schedule();
 }
@@ -322,7 +751,7 @@ function findArtifact(appId, artifactId) {
   return { app, artifact: (app.artifacts || []).find((a) => a.id === artifactId) || null };
 }
 
-async function copyText(text) {
+async function copyText(text, okMessage = 'Command copied to clipboard') {
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       await navigator.clipboard.writeText(text);
@@ -336,10 +765,35 @@ async function copyText(text) {
       document.execCommand('copy');
       ta.remove();
     }
-    toast('info', 'Command copied to clipboard');
+    toast('info', okMessage);
   } catch {
     toast('warn', 'Could not access the clipboard — copy it by hand');
   }
+}
+
+function prefersReducedMotion() {
+  try {
+    return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  } catch {
+    return false;
+  }
+}
+
+/** 180ms crossfade + slide on the view that just became visible. */
+function animateView(view) {
+  if (prefersReducedMotion()) return;
+  const host = document.getElementById(view === 'launch' ? 'launch' : 'manage-view');
+  if (!host || !host.classList) return;
+  host.classList.remove('view-in');
+  void host.offsetWidth; // restart the animation even when interrupted mid-flight
+  host.classList.add('view-in');
+  window.setTimeout(() => {
+    try {
+      host.classList.remove('view-in');
+    } catch {
+      /* element replaced */
+    }
+  }, 260);
 }
 
 function setView(view) {
@@ -350,6 +804,7 @@ function setView(view) {
   ui.openMenu = '';
   saveUiPrefs();
   schedule();
+  animateView(view);
 }
 
 /** Add a transient class to an element (pressed/launching, jump highlight). */
@@ -370,7 +825,7 @@ function scrollToCard(appId) {
     const card = document.querySelector(`[data-app-card="${CSS_ESCAPE(appId)}"]`);
     if (!card) return;
     if (typeof card.scrollIntoView === 'function') {
-      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      card.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' });
     }
     flashTile(card, 'flash', 1400);
   };
@@ -414,6 +869,16 @@ async function onAction(act, el, ev) {
       await call('refresh', true);
       await pullState();
       break;
+    case 'step': {
+      readPanelInputs();
+      const field = el.getAttribute('data-field');
+      const delta = Number(el.getAttribute('data-delta')) || 0;
+      if (field === 'maxConcurrentDownloads' && ui.draft) {
+        ui.draft[field] = clampConcurrency((Number(ui.draft[field]) || 2) + delta);
+      }
+      schedule();
+      break;
+    }
     case 'add-owner': {
       const input = panelInput('ownerInput');
       const value = input ? input.value.trim() : '';
@@ -455,8 +920,14 @@ async function onAction(act, el, ev) {
       saveUiPrefs();
       schedule();
       break;
+    case 'toggle-hidden':
+      ui.showHidden = !ui.showHidden;
+      saveUiPrefs();
+      schedule();
+      break;
     case 'menu':
-      ui.openMenu = ui.openMenu === artifactKey(appId, artId) ? '' : artifactKey(appId, artId);
+      ui.openMenu =
+        ui.openMenu === artifactKey(appId, artId) ? '' : artifactKey(appId, artId);
       schedule();
       break;
     case 'install': {
@@ -485,6 +956,7 @@ async function onAction(act, el, ev) {
     }
     case 'launch':
       ui.openMenu = '';
+      noteLaunch(appId, artId);
       await call('launch', appId, artId);
       break;
     case 'view':
@@ -496,6 +968,7 @@ async function onAction(act, el, ev) {
       break;
     case 'tile-launch': {
       ui.openMenu = '';
+      noteLaunch(appId, artId);
       flashTile(el.closest ? el.closest('.tile') : null, 'launching', 700);
       await call('launch', appId, artId);
       break;
@@ -570,9 +1043,182 @@ async function onAction(act, el, ev) {
       schedule();
       break;
     }
+
+    /* ------------------------------------------------------------- v0.2 */
+
+    case 'app-options':
+      openOptions(appId);
+      break;
+    case 'close-sheet':
+      ui.sheet = null;
+      ui.prefDraft = null;
+      ui.prefError = '';
+      schedule();
+      break;
+    case 'save-app-prefs':
+      await saveAppPrefs(appId);
+      break;
+    case 'env-add':
+      readPrefDraft();
+      if (ui.prefDraft) ui.prefDraft.envRows = [...(ui.prefDraft.envRows || []), { key: '', value: '' }];
+      schedule();
+      break;
+    case 'env-remove': {
+      readPrefDraft();
+      const idx = Number(el.getAttribute('data-index'));
+      if (ui.prefDraft && Number.isFinite(idx)) {
+        ui.prefDraft.envRows = (ui.prefDraft.envRows || []).filter((_, i) => i !== idx);
+      }
+      schedule();
+      break;
+    }
+    case 'toggle-fav': {
+      ui.openMenu = '';
+      const pref = normalizeAppPref(prefsMap()[appId]);
+      const app = (state.apps || []).find((a) => a.id === appId);
+      await patchPref(
+        appId,
+        { favorite: !pref.favorite },
+        pref.favorite ? `${app ? app.name : appId} removed from favorites` : `${app ? app.name : appId} added to favorites`
+      );
+      break;
+    }
+    case 'hide-app': {
+      ui.openMenu = '';
+      const app = (state.apps || []).find((a) => a.id === appId);
+      await patchPref(appId, { hidden: true }, `${app ? app.name : appId} hidden — reveal it under “Show hidden”`);
+      break;
+    }
+    case 'unhide-app': {
+      const app = (state.apps || []).find((a) => a.id === appId);
+      await patchPref(appId, { hidden: false }, `${app ? app.name : appId} is visible again`);
+      break;
+    }
+    case 'skip-version': {
+      const version = el.getAttribute('data-version') || '';
+      if (!version) break;
+      await patchPref(appId, { skippedVersion: version }, `Skipping ${version}`);
+      break;
+    }
+    case 'clear-skip':
+      await patchPref(appId, { skippedVersion: '' }, 'No longer skipping that version');
+      break;
+    case 'versions':
+      await openVersions(appId);
+      break;
+    case 'rel-notes': {
+      const tag = el.getAttribute('data-tag') || '';
+      if (ui.expandedRelNotes.has(tag)) ui.expandedRelNotes.delete(tag);
+      else ui.expandedRelNotes.add(tag);
+      schedule();
+      break;
+    }
+    case 'install-version': {
+      const tag = el.getAttribute('data-tag') || '';
+      const { app, artifact } = findArtifact(appId, artId);
+      if (!app || !artifact || !tag) break;
+      const data = ui.releases.get(appId);
+      const release = ((data && data.releases) || []).find((r) => r.tag === tag);
+      const version = (release && release.version) || tag;
+      const installed = artifact.installed && artifact.installed.version;
+      if (isDowngrade(version, installed) && !window.confirm(downgradeConfirmText(app, artifact, version))) break;
+      ui.sheet = null;
+      schedule();
+      toast('info', `Installing ${app.name} ${version}…`);
+      await call('installVersion', appId, artId, tag);
+      break;
+    }
+    case 'rollback': {
+      ui.openMenu = '';
+      const { app } = findArtifact(appId, artId);
+      if (!app) break;
+      const target = rollbackTargets(app).find((t) => t.artifactId === artId);
+      if (!target) {
+        toast('warn', 'No previous install kept for this artifact');
+        break;
+      }
+      if (!window.confirm(rollbackConfirmText(app, target))) break;
+      ui.sheet = null;
+      schedule();
+      await call('rollback', appId, artId);
+      await pullState();
+      break;
+    }
+    case 'devices':
+      ui.sheet = { kind: 'devices' };
+      ui.openMenu = '';
+      ui.adbError = '';
+      ui.adbOk = '';
+      schedule();
+      await refreshDeviceInfo();
+      break;
+    case 'select-device': {
+      const serial = el.getAttribute('data-serial') || '';
+      const ok = await call('adbSelectDevice', serial);
+      if (ok !== null) {
+        await pullState();
+        await refreshDeviceInfo();
+      }
+      break;
+    }
+    case 'adb-connect':
+      await connectDevice();
+      break;
+    case 'device-info':
+      await refreshDeviceInfo();
+      break;
+    case 'disk-usage':
+      await loadDiskUsage();
+      break;
+    case 'clear-cache': {
+      const res = await call('clearDownloadCache');
+      if (res !== null) {
+        ui.freed = freedLabel(res);
+        toast('info', ui.freed);
+        await loadDiskUsage();
+      }
+      break;
+    }
+    case 'load-logs':
+      await loadLogs();
+      break;
+    case 'copy-logs':
+      await copyText((ui.logs && ui.logs.text) || '', 'Log copied to clipboard');
+      break;
+    case 'export-settings':
+      await exportSettingsFile();
+      break;
+    case 'import-settings': {
+      const input = document.getElementById('import-file');
+      if (input && typeof input.click === 'function') input.click();
+      break;
+    }
+    case 'update-app': {
+      ui.toasts = ui.toasts.filter((t) => t.id !== el.getAttribute('data-id'));
+      renderToasts();
+      const app = (state.apps || []).find((a) => a.id === appId);
+      if (!app) break;
+      const targets = (app.artifacts || []).filter((a) => a.updateAvailable || a.readyToInstall);
+      if (targets.length === 1) {
+        await onAction('install', makeSynthetic({ 'data-app': appId, 'data-art': targets[0].id }), null);
+      } else {
+        setView('manage');
+        scrollToCard(appId);
+      }
+      break;
+    }
     default:
       break;
   }
+}
+
+/** Tiny stand-in element so one action can delegate to another. */
+function makeSynthetic(attrs) {
+  return {
+    getAttribute: (k) => (Object.prototype.hasOwnProperty.call(attrs, k) ? attrs[k] : null),
+    hasAttribute: (k) => Object.prototype.hasOwnProperty.call(attrs, k),
+    closest: () => null,
+  };
 }
 
 /* ------------------------------------------------------------------- events */
@@ -613,6 +1259,16 @@ function onHubEvent(ev) {
     case 'toast':
       toast(ev.level || 'info', ev.message || '');
       break;
+    case 'update-available': {
+      const app = (state.apps || []).find((a) => a.id === ev.appId);
+      const name = (app && app.name) || ev.appId || 'An app';
+      toast('info', `${name} ${ev.version || ''}`.trim() + ' is available', {
+        timeout: 9000,
+        action: { act: 'update-app', label: 'Update', appId: ev.appId },
+      });
+      pullState();
+      break;
+    }
     default:
       break;
   }
@@ -672,9 +1328,46 @@ function wireDom() {
 
   document.addEventListener('input', (ev) => {
     const el = ev.target;
-    if (el && el.id === 'filter') {
+    if (!el) return;
+    if (el.id === 'filter') {
       ui.filter = el.value;
       schedule();
+      return;
+    }
+    // Live shell-split preview without re-rendering (keeps the caret put).
+    if (el.getAttribute && el.getAttribute('data-pref') === 'launchArgs') {
+      if (ui.prefDraft) ui.prefDraft.launchArgsText = el.value;
+      const host = document.getElementById('args-preview');
+      if (host) host.innerHTML = renderArgsPreview(el.value);
+      return;
+    }
+    if (el.getAttribute && el.getAttribute('data-field') === 'adbHost') {
+      ui.adbHost = el.value;
+    }
+  });
+
+  document.addEventListener('change', (ev) => {
+    const el = ev.target;
+    if (!el) return;
+    if (el.id === 'import-file') {
+      const file = el.files && el.files[0];
+      if (!file) return;
+      const done = (text) => {
+        importSettingsText(text);
+        try {
+          el.value = '';
+        } catch {
+          /* ignore */
+        }
+      };
+      if (typeof file.text === 'function') {
+        file.text().then(done, (err) => toast('error', `Could not read the file: ${err && err.message}`));
+      } else if (typeof window.FileReader === 'function') {
+        const reader = new window.FileReader();
+        reader.onload = () => done(String(reader.result || ''));
+        reader.onerror = () => toast('error', 'Could not read the file');
+        reader.readAsText(file);
+      }
     }
   });
 
@@ -693,7 +1386,12 @@ function wireDom() {
       return;
     }
     if (ev.key === 'Escape') {
-      if (ui.settingsOpen) {
+      if (ui.sheet) {
+        ui.sheet = null;
+        ui.prefDraft = null;
+        ui.prefError = '';
+        schedule();
+      } else if (ui.settingsOpen) {
         ui.settingsOpen = false;
         schedule();
       } else if (ui.openMenu) {
@@ -714,40 +1412,106 @@ function wireDom() {
       const field = el.getAttribute('data-field');
       if (field === 'ownerInput') onAction('add-owner', el, ev);
       if (field === 'repoInput') onAction('add-repo', el, ev);
+      if (field === 'adbHost') onAction('adb-connect', el, ev);
     }
   });
 }
 
 /* --------------------------------------------------------------- starfield */
 
-function drawStarfield() {
-  const canvas = document.getElementById('stars');
-  if (!canvas || typeof canvas.getContext !== 'function') return;
+// Two canvases drifting at different speeds. Both are drawn once and animated
+// with transform only — no per-frame canvas work, nothing that can reflow.
+const sky = { raf: 0, last: 0, far: null, near: null, width: 0, offFar: 0, offNear: 0, running: false };
+
+function paintLayer(canvas, opts) {
+  if (!canvas || typeof canvas.getContext !== 'function') return 0;
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = canvas.clientWidth || 900;
+  const w = canvas.clientWidth || (canvas.parentElement && canvas.parentElement.clientWidth) || 900;
   const h = canvas.clientHeight || 90;
-  canvas.width = Math.round(w * dpr);
+  const tile = Math.max(200, Math.round(w / 2)); // the canvas is 200% wide: two identical tiles
+  canvas.width = Math.round(tile * 2 * dpr);
   canvas.height = Math.round(h * dpr);
   const ctx = canvas.getContext('2d');
-  if (!ctx) return;
+  if (!ctx) return tile;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
+  ctx.clearRect(0, 0, tile * 2, h);
+
   // Deterministic PRNG so the sky is stable across re-renders/screenshots.
-  let seed = 1337;
+  let seed = opts.seed;
   const rnd = () => {
     seed = (seed * 1664525 + 1013904223) % 4294967296;
     return seed / 4294967296;
   };
-  const count = Math.round(w / 7);
+  const count = Math.max(6, Math.round((tile / 7) * opts.density));
   for (let i = 0; i < count; i++) {
-    const x = rnd() * w;
+    const x = rnd() * tile;
     const y = rnd() * h;
-    const r = rnd() * 0.9 + 0.25;
-    const a = 0.12 + rnd() * 0.5;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fillStyle = rnd() > 0.88 ? `rgba(0,229,255,${a})` : `rgba(239,234,255,${a})`;
-    ctx.fill();
+    const r = (rnd() * 0.9 + 0.25) * opts.scale;
+    const a = (0.12 + rnd() * 0.5) * opts.alpha;
+    const cyan = rnd() > 0.88;
+    for (const dx of [0, tile]) {
+      ctx.beginPath();
+      ctx.arc(x + dx, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = cyan ? `rgba(0,229,255,${a})` : `rgba(239,234,255,${a})`;
+      ctx.fill();
+    }
+  }
+  return tile;
+}
+
+function paintSky() {
+  sky.far = document.getElementById('stars');
+  sky.near = document.getElementById('stars-near');
+  const tile = paintLayer(sky.far, { seed: 1337, density: 1, scale: 1, alpha: 1 });
+  paintLayer(sky.near, { seed: 90210, density: 0.45, scale: 1.5, alpha: 1.15 });
+  sky.width = tile || sky.width;
+}
+
+function skyFrame(ts) {
+  sky.raf = 0;
+  if (!sky.running) return;
+  const dt = sky.last ? Math.min(64, ts - sky.last) : 16;
+  sky.last = ts;
+  const w = sky.width || 450;
+  sky.offFar = (sky.offFar + dt * 0.0045) % w;
+  sky.offNear = (sky.offNear + dt * 0.014) % w;
+  if (sky.far && sky.far.style) sky.far.style.transform = `translate3d(${-sky.offFar.toFixed(2)}px,0,0)`;
+  if (sky.near && sky.near.style) sky.near.style.transform = `translate3d(${-sky.offNear.toFixed(2)}px,0,0)`;
+  requestSkyFrame();
+}
+
+function requestSkyFrame() {
+  if (sky.raf || !sky.running) return;
+  if (typeof window.requestAnimationFrame !== 'function') return;
+  sky.raf = window.requestAnimationFrame(skyFrame);
+}
+
+function setSkyRunning(on) {
+  const want = on && !prefersReducedMotion() && !document.hidden;
+  if (want === sky.running) return;
+  sky.running = want;
+  sky.last = 0;
+  if (want) requestSkyFrame();
+  else if (sky.raf && typeof window.cancelAnimationFrame === 'function') {
+    window.cancelAnimationFrame(sky.raf);
+    sky.raf = 0;
+  }
+}
+
+function startStarfield() {
+  paintSky();
+  setSkyRunning(true);
+  window.addEventListener('resize', () => {
+    paintSky();
+  });
+  document.addEventListener('visibilitychange', () => setSkyRunning(true));
+  try {
+    const mq = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)');
+    if (mq && typeof mq.addEventListener === 'function') {
+      mq.addEventListener('change', () => setSkyRunning(true));
+    }
+  } catch {
+    /* matchMedia unavailable — the static sky is fine */
   }
 }
 
@@ -764,8 +1528,7 @@ async function boot() {
   const searchIcon = document.getElementById('filter-icon');
   if (searchIcon) searchIcon.innerHTML = icons.search;
 
-  drawStarfield();
-  window.addEventListener('resize', drawStarfield);
+  startStarfield();
   wireDom();
   render();
 
@@ -778,6 +1541,8 @@ async function boot() {
       toast('error', `No nxhub bridge and no mock available: ${(err && err.message) || err}`);
     }
   }
+
+  ui.caps = detectCaps();
 
   const nx = api();
   if (nx && typeof nx.onEvent === 'function') {
@@ -793,6 +1558,7 @@ async function boot() {
     ui.view = defaultView(currentTiles());
     schedule();
   }
+  if (ui.caps.getDeviceInfo && state.adb && state.adb.connected) refreshDeviceInfo();
   window.__nxhubBooted = true;
 }
 
@@ -803,4 +1569,4 @@ if (typeof document !== 'undefined') {
 
 // Exposed for the e2e hooks / dev toolbar.
 export const __ui = ui;
-export { toast, pullState, onHubEvent };
+export { toast, pullState, onHubEvent, boot };

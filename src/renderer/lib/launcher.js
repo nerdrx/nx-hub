@@ -2,6 +2,7 @@
 // they are clickable. Pure functions: no DOM, fully unit-testable.
 
 import { isLaunchable, platformLabel } from './actions.js';
+import { isHiddenApp } from './prefs.js';
 
 /**
  * Two-letter monogram for the generated tiles.
@@ -38,17 +39,21 @@ export function tileHue(seed) {
  * - one tile per app when it has a single launchable artifact (no sublabel);
  *   one tile per artifact otherwise, each with a platform sublabel
  * - apk-adb tiles are disabled while no adb device is connected
+ * - hidden apps (per-app pref or main's localHidden) never get a tile
  *
  * @param {Array} apps normalized apps
- * @param {{adb?:object, platform?:string}} ctx
+ * @param {{adb?:object, platform?:string, prefs?:object}} ctx
  */
 export function launchTiles(apps, ctx = {}) {
   const adb = ctx.adb || { connected: false, devices: [], versions: {} };
+  const prefs = ctx.prefs || {};
   const list = Array.isArray(apps) ? apps : [];
   const tiles = [];
 
   for (const app of list) {
     if (!app || app.unpublished) continue;
+    if (isHiddenApp(app, prefs)) continue;
+    const pref = prefs[app.id] || null;
     const runnable = (app.artifacts || []).filter((a) => a && a.installed && isLaunchable(a));
     if (!runnable.length) continue;
     const many = runnable.length > 1;
@@ -71,7 +76,8 @@ export function launchTiles(apps, ctx = {}) {
         version: installed.version || '',
         monogram: monogram(app.name),
         hue: tileHue(app.id),
-        updateAvailable: !!art.updateAvailable,
+        favorite: !!(pref && pref.favorite),
+        updateAvailable: !!(art.updateAvailable || art.readyToInstall),
         disabled,
         disabledReason: disabled ? 'no device' : '',
         title: disabled
@@ -83,11 +89,61 @@ export function launchTiles(apps, ctx = {}) {
   return tiles;
 }
 
-/** Menu entries for one tile (right-click / hover ⋮). */
-export function tileMenu(tile) {
+/**
+ * Order for the launcher grid: favorites first, then whatever was launched
+ * recently, then everything else — each group alphabetical (English collation,
+ * never the host locale).
+ *
+ * @param {Array} tiles
+ * @param {{recents?:Array<string>}} opts recents = tile keys, newest first
+ */
+export function orderTiles(tiles, opts = {}) {
+  const list = (Array.isArray(tiles) ? tiles : []).filter(Boolean);
+  const recents = Array.isArray(opts.recents) ? opts.recents : [];
+
+  const byKey = new Map();
+  const byApp = new Map();
+  recents.forEach((entry, i) => {
+    const key = String(entry || '');
+    if (!key) return;
+    if (!byKey.has(key)) byKey.set(key, i);
+    const appId = key.split('::')[0];
+    if (appId && !byApp.has(appId)) byApp.set(appId, i);
+  });
+
+  const rankOf = (t) => {
+    if (byKey.has(t.key)) return byKey.get(t.key);
+    if (byApp.has(t.appId)) return byApp.get(t.appId);
+    return -1;
+  };
+  const alpha = (a, b) =>
+    String(a.name || '').localeCompare(String(b.name || ''), 'en') ||
+    String(a.artifactLabel || '').localeCompare(String(b.artifactLabel || ''), 'en') ||
+    String(a.key || '').localeCompare(String(b.key || ''), 'en');
+
+  const favorites = list.filter((t) => t.favorite).sort(alpha);
+  const rest = list.filter((t) => !t.favorite);
+  const recent = rest.filter((t) => rankOf(t) >= 0).sort((a, b) => rankOf(a) - rankOf(b) || alpha(a, b));
+  const others = rest.filter((t) => rankOf(t) < 0).sort(alpha);
+
+  return [...favorites, ...recent, ...others];
+}
+
+/**
+ * Menu entries for one tile (right-click / hover ⋮).
+ * `caps.setAppPref === false` (a build without per-app prefs) drops the entries
+ * that would need it; an absent caps object means everything is available.
+ */
+export function tileMenu(tile, caps = {}) {
   if (!tile) return [];
+  const prefs = caps.setAppPref !== false;
   const items = [{ act: 'tile-launch', label: 'Launch', disabled: !!tile.disabled }];
+  if (prefs) items.push({ act: 'toggle-fav', label: tile.favorite ? 'Remove from favorites' : 'Add to favorites' });
   if (tile.path && tile.platform !== 'android') items.push({ act: 'folder', label: 'Show in folder' });
+  if (prefs) {
+    items.push({ act: 'app-options', label: 'App options…' });
+    items.push({ act: 'hide-app', label: 'Hide from list' });
+  }
   items.push({ act: 'manage-jump', label: 'Manage' });
   return items;
 }

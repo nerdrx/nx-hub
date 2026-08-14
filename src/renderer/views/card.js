@@ -12,9 +12,16 @@ import {
 } from '../lib/version.js';
 import { artifactActions, platformLabel } from '../lib/actions.js';
 import { showOwnerBadge, ownerOf, githubUrl, releaseUrl } from '../lib/model.js';
+import { normalizeAppPref, isSkipped } from '../lib/prefs.js';
+import { renderDeviceLine } from './devices.js';
 import * as icons from './icons.js';
 
 const HUB_ID = 'nx-hub';
+
+/** Menu key for the card-level ⋮ (artifact menus use `${appId}::${artifactId}`). */
+export function appMenuKey(appId) {
+  return `${appId}::__app__`;
+}
 
 function has(coll, key) {
   if (!coll) return false;
@@ -71,6 +78,33 @@ function menuMarkup(menu, appId, artifactId, open) {
     </div>`;
 }
 
+/** Entries of the card-level ⋮ menu. Pure so the test can read the labels. */
+export function appMenuItems(app, pref, caps = {}) {
+  const items = [];
+  if (caps.getReleases !== false) items.push({ act: 'versions', label: 'Version history…' });
+  if (caps.setAppPref !== false) {
+    items.push({ act: 'app-options', label: 'App options…' });
+    items.push({ act: 'toggle-fav', label: pref && pref.favorite ? 'Remove from favorites' : 'Add to favorites' });
+    items.push({ act: 'hide-app', label: 'Hide from list' });
+  }
+  items.push({ act: 'github', label: 'Open GitHub page' });
+  return items;
+}
+
+function appMenuMarkup(app, pref, caps, open) {
+  const items = appMenuItems(app, pref, caps)
+    .map(
+      (m) =>
+        `<button class="menu-item" data-act="${esc(m.act)}" data-app="${esc(app.id)}">${esc(m.label)}</button>`
+    )
+    .join('');
+  return `
+    <div class="menu-wrap card-menu">
+      <button class="btn btn-icon menu-btn" data-act="menu" data-app="${esc(app.id)}" data-art="__app__" aria-haspopup="menu" aria-expanded="${open ? 'true' : 'false'}" title="App actions">${icons.dots}</button>
+      ${open ? `<div class="menu" role="menu">${items}</div>` : ''}
+    </div>`;
+}
+
 export function renderJobBar(job, opts = {}) {
   if (!job) return '';
   const pct = Number(job.pct);
@@ -112,6 +146,7 @@ export function renderArtifactRow(app, artifact, ctx = {}) {
   const state = artifactActions(app, artifact, {
     platform: ctx.platform,
     adb: ctx.adb,
+    caps: ctx.caps,
     job,
   });
   const open = ctx.openMenu === artifactKey(app.id, artifact.id);
@@ -138,6 +173,16 @@ export function renderArtifactRow(app, artifact, ctx = {}) {
             ? `<div class="art-hint ${ctx.adb && ctx.adb.connected ? 'ok' : 'warn'}">${icons.plug}<span>${esc(state.hint)}</span></div>`
             : ''
         }
+        ${
+          artifact.kind === 'apk-adb' && ctx.adb && ctx.adb.connected && ctx.deviceInfo
+            ? renderDeviceLine(ctx.deviceInfo, { title: 'the APK is installed onto this device' })
+            : ''
+        }
+        ${
+          artifact.readyToInstall
+            ? '<div class="art-ready">Update downloaded — ready to install</div>'
+            : ''
+        }
       </div>
       <div class="art-actions">
         ${state.buttons.map((b) => button(b, app.id, artifact.id)).join('')}
@@ -154,6 +199,10 @@ export function renderAppCard(app, ctx = {}) {
   const isHub = app.id === HUB_ID;
   const owner = ownerOf(app.repo);
   const job = ctx.job || null;
+  const caps = ctx.caps || {};
+  const pref = normalizeAppPref((ctx.prefs || {})[app.id]);
+  const latestVersion = (app.latest && app.latest.version) || '';
+  const skipped = isSkipped(pref, latestVersion);
 
   const pinNotes = (app.artifacts || [])
     .filter(
@@ -168,13 +217,22 @@ export function renderAppCard(app, ctx = {}) {
   const orphanJob = job && !(app.artifacts || []).some((a) => a.id === job.artifactId);
 
   return `
-  <article class="card ${isHub ? 'card-self' : ''}" data-app-card="${esc(app.id)}">
+  <article class="card ${isHub ? 'card-self' : ''}${pref.favorite ? ' card-fav' : ''}" data-app-card="${esc(app.id)}">
     <div class="card-head">
       <div class="card-title">
+        ${pref.favorite ? `<span class="fav-star" title="favorite">${icons.starFilled}</span>` : ''}
         <h2>${esc(app.name)}</h2>
         ${isHub ? badge('badge-self', 'this app') : ''}
         ${showOwnerBadge(app, settings) ? badge('badge-owner', owner, `from ${app.repo}`) : ''}
         ${app.private ? `<span class="lock" title="private repository">${icons.lock}</span>` : ''}
+        <span class="card-tools">
+          ${
+            caps.getReleases === false
+              ? ''
+              : `<button class="btn btn-ghost btn-sm btn-versions" data-act="versions" data-app="${esc(app.id)}" title="Every release of this repository">${icons.history}<span>Versions</span></button>`
+          }
+          ${appMenuMarkup(app, pref, caps, ctx.openMenu === appMenuKey(app.id))}
+        </span>
       </div>
       ${app.tagline ? `<p class="tagline">${esc(app.tagline)}</p>` : ''}
       <div class="meta">
@@ -185,6 +243,13 @@ export function renderAppCard(app, ctx = {}) {
                <span title="${esc(formatDate(app.latest.publishedAt))}">${esc(relativeTime(app.latest.publishedAt, ctx.now))}</span>
                ${app.latest.prerelease ? '<span class="tag-pre">pre-release</span>' : ''}`
             : '<span class="muted">no release</span>'
+        }
+        ${
+          skipped
+            ? `<span class="skip-chip" title="this version is ignored">skipped
+                 <button class="chip-x" data-act="clear-skip" data-app="${esc(app.id)}" title="Stop skipping">${icons.close}</button>
+               </span>`
+            : ''
         }
         <a class="repo-link" href="#" data-act="open" data-url="${esc(githubUrl(app.repo))}" title="${esc(app.repo)}">${icons.external}<span>${esc(app.repo)}</span></a>
       </div>
@@ -266,6 +331,33 @@ export function renderRateLimitBanner(rateLimit, now = Date.now()) {
       <button class="btn btn-ghost btn-sm" data-act="refresh">Retry now</button>
     </span>
   </div>`;
+}
+
+/**
+ * The "Show hidden (n)" row at the bottom of Manage. Hidden apps are greyed and
+ * only offer an unhide action — everything else about them stays out of sight.
+ */
+export function renderHiddenSection(apps, ctx = {}) {
+  const list = Array.isArray(apps) ? apps : [];
+  if (!list.length) return '';
+  const open = !!ctx.open;
+  return `
+    <button class="section-toggle${open ? ' open' : ''}" data-act="toggle-hidden" aria-expanded="${open ? 'true' : 'false'}">
+      ${icons.chevron}<span>Show hidden</span><span class="count">${list.length}</span>
+    </button>
+    ${
+      open
+        ? `<div class="hidden-list">${list
+            .map(
+              (app) => `<div class="hidden-row" data-app-card="${esc(app.id)}">
+                <span class="hidden-name">${esc(app.name)}</span>
+                <span class="hidden-repo">${esc(app.repo)}</span>
+                <button class="btn btn-ghost btn-sm" data-act="unhide-app" data-app="${esc(app.id)}">${icons.eye}<span>Unhide</span></button>
+              </div>`
+            )
+            .join('')}</div>`
+        : ''
+    }`;
 }
 
 export function renderEmpty(query) {
