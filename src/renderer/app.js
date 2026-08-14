@@ -9,6 +9,7 @@ import {
   normalizeState,
   filterApps,
   splitPublished,
+  notInstallableReason,
   githubUrl,
   visibleApps,
   hiddenApps,
@@ -441,9 +442,9 @@ function render() {
     const list = filterApps(unpublished, ui.filter);
     unpubHost.innerHTML = list.length
       ? `<button class="section-toggle ${ui.unpubOpen ? 'open' : ''}" data-act="toggle-unpub" aria-expanded="${ui.unpubOpen ? 'true' : 'false'}">
-           ${icons.chevron}<span>Unpublished — no releases yet</span><span class="count">${list.length}</span>
+           ${icons.chevron}<span>Nothing to install — unreleased &amp; misc</span><span class="count">${list.length}</span>
          </button>
-         ${ui.unpubOpen ? `<div class="grid grid-unpub">${list.map(renderUnpublishedCard).join('')}</div>` : ''}`
+         ${ui.unpubOpen ? `<div class="grid grid-unpub">${list.map((a) => renderUnpublishedCard(a, notInstallableReason(a))).join('')}</div>` : ''}`
       : '';
   }
 

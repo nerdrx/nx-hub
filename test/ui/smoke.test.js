@@ -31,7 +31,7 @@ test('the renderer boots, installs the mock and fills every host', async () => {
   assert.ok(dom.html('logo').includes('<svg'), 'the logo rendered');
   assert.ok(dom.html('grid').includes('<article'), 'cards rendered');
   assert.ok(dom.html('grid').includes('WiVRn NX'));
-  assert.ok(dom.html('unpublished').includes('Unpublished'), 'the unpublished section rendered');
+  assert.ok(dom.html('unpublished').includes('Nothing to install'), 'the bottom section rendered');
   assert.ok(dom.html('hidden-apps').includes('Show hidden'), 'the hidden row rendered');
   assert.ok(dom.html('device-chip').includes('data-act="devices"'), 'the device chip rendered');
   assert.match(doc.getElementById('tab-manage').innerHTML, /Manage/);

@@ -66,10 +66,9 @@ async function install({ app, artifact, filePath, ctx }) {
     ctx.emitProgress("install", 88, "Creating desktop entry");
     const abs = path.join(installDir, binary);
     await fsp.chmod(abs, 0o755).catch(() => {});
-    icon =
-      (await findIcon(installDir, nameHints(app, artifact))) || ctx.fallbackIcon || null;
+    icon = await findIcon(installDir, nameHints(app, artifact));
     const entry = await writeDesktopEntry({
-      app, artifact, exec: execArg(abs), icon, ctx,
+      app, artifact, exec: execArg(abs), icon: icon || ctx.fallbackIcon || null, ctx,
       categories: artifact.categories,
     });
     if (entry) desktopEntries.push(entry);

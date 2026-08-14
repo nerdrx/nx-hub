@@ -104,6 +104,12 @@ export function normalizeApp(app) {
     // v0.2 — main mirrors the per-app "hidden" pref here so a single flag can
     // hide an app even before appPrefs reach the renderer.
     localHidden: !!a.localHidden,
+    // Bottom-section flags: overlay-hidden repos stay listed but out of the
+    // main grid; installableHere=false means a release exists but nothing in
+    // it installs from this machine. Absent field defaults to installable so
+    // an older main process doesn't empty the grid.
+    overlayHidden: !!a.overlayHidden,
+    installableHere: a.installableHere !== false,
   };
 }
 
@@ -227,10 +233,22 @@ export function filterApps(apps, query) {
 
 export function splitPublished(apps) {
   const list = asArray(apps);
+  const inMainGrid = (a) => !a.unpublished && !a.overlayHidden && a.installableHere !== false;
   return {
-    published: list.filter((a) => !a.unpublished),
-    unpublished: list.filter((a) => a.unpublished),
+    published: list.filter(inMainGrid),
+    // Everything else — unreleased repos, releases with nothing installable on
+    // this machine, overlay-hidden noise — lands in the bottom section.
+    unpublished: list.filter((a) => !inMainGrid(a)),
   };
+}
+
+/** Why an app sits in the bottom section, as a human label. */
+export function notInstallableReason(app) {
+  if (!app) return '';
+  if (app.unpublished) return 'no releases yet';
+  if (app.overlayHidden) return 'hidden by the overlay registry';
+  const v = app.latest && app.latest.version ? ` — latest is ${app.latest.version}` : '';
+  return `nothing installable on this machine${v}`;
 }
 
 export function githubUrl(repo) {

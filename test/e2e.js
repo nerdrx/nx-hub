@@ -186,17 +186,32 @@ async function main() {
     if (process.env.NX_HUB_E2E_VERBOSE === "1") console.log(`app exited: ${code}`);
   });
 
-  const cleanup = () => {
-    try {
-      process.kill(-child.pid, "SIGTERM");
-    } catch (_) {
+  // The compositor must never outlive the test: SIGTERM the whole group, then
+  // SIGKILL whatever is still standing (gamescope can ignore a plain TERM).
+  const signalAll = (sig) => {
+    for (const target of [() => process.kill(-child.pid, sig), () => child.kill(sig)]) {
       try {
-        child.kill("SIGTERM");
-      } catch (__) {
-        /* gone */
+        target();
+      } catch (_) {
+        /* already gone */
       }
     }
   };
+  const cleanup = async () => {
+    signalAll("SIGTERM");
+    for (let i = 0; i < 20 && !exited; i += 1) await sleep(150);
+    if (!exited) {
+      signalAll("SIGKILL");
+      await sleep(300);
+    }
+  };
+  process.on("exit", () => signalAll("SIGKILL"));
+  for (const sig of ["SIGINT", "SIGTERM"]) {
+    process.on(sig, () => {
+      signalAll("SIGKILL");
+      process.exit(1);
+    });
+  }
 
   try {
     // ---- boot ----------------------------------------------------------
@@ -238,19 +253,37 @@ async function main() {
     check(lonely && lonely.unpublished === true, "repo without releases is unpublished");
     check(typeof state.hubVersion === "string", "hubVersion reported", state.hubVersion);
 
+    // shapes the renderer normalizes against
+    check(state.tokenSource === "" || state.tokenSource === "gh" || state.tokenSource === "settings", "tokenSource published", JSON.stringify(state.tokenSource));
+    check(state.adb && typeof state.adb.versions === "object" && Array.isArray(state.adb.devices), "adb {available, devices, versions}", JSON.stringify(state.adb));
+    check(Array.isArray(state.jobs), "jobs is an array");
+    check(state.rateLimit === null, "rateLimit null while healthy", JSON.stringify(state.rateLimit));
+    check(
+      limbo.artifacts.every((a) => typeof a.launchable === "boolean"),
+      "every artifact has a launchable flag"
+    );
+    check(
+      limbo.artifacts.find((a) => a.platform === "windows").launchable === false,
+      "windows artifact is not launchable on linux"
+    );
+
     // ---- renderer ------------------------------------------------------
     console.log("\nrenderer:");
     const dom = await hook("/dom", { raw: false });
     const html = typeof dom.body === "string" ? dom.body : JSON.stringify(dom.body);
     check(html.length > 200, "DOM served", `${html.length} bytes`);
+    // the renderer is ESM over file:// with a strict CSP — prove the module graph
+    // actually executed, not just that a body was served
     const painted = await waitFor(
       async () => {
         const d = await hook("/dom");
-        return typeof d.body === "string" && /LIMBO PROTOCOL/i.test(d.body) ? d.body : null;
+        return typeof d.body === "string" && /class="card[ "]/.test(d.body) ? d.body : null;
       },
       { label: "app cards rendered", timeout: 30000 }
     ).catch(() => null);
-    check(Boolean(painted), "renderer painted the discovered apps");
+    check(Boolean(painted), "renderer painted real .card elements (ESM loaded under file://)");
+    check(Boolean(painted) && /LIMBO PROTOCOL/i.test(painted), "card content comes from discovery");
+    check(Boolean(painted) && !/card-skel/.test(painted), "skeleton replaced by real cards");
 
     const shot = await hook("/screenshot", { raw: true });
     const shotPath = path.join(SCRATCH, "nx-hub-e2e.png");
@@ -316,9 +349,9 @@ async function main() {
     console.log(`\nERROR: ${err.message}`);
     console.log(logLines.join("").slice(-3000));
   } finally {
-    cleanup();
+    await cleanup();
     await mock.close();
-    await sleep(500);
+    await sleep(300);
     try {
       fs.rmSync(root, { recursive: true, force: true });
     } catch (_) {

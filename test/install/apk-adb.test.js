@@ -10,6 +10,7 @@ const path = require("node:path");
 const engine = require("../../src/main/install/engine");
 const adbMod = require("../../src/main/install/adb");
 const H = require("./helpers");
+const apkAdb = require("../../src/main/install/apk-adb");
 
 const app = { id: "wivrn-nx", name: "WiVRn NX", tagline: "Streaming", repo: "nerdrx/wivrn-nx" };
 const artifact = {
@@ -361,4 +362,36 @@ test("adb: overridePackageIds reads the bundled registry overlay", async () => {
   const ids = await adbMod.overridePackageIds();
   assert.ok(ids.includes("org.meumeu.wivrn.nx"), ids.join(","));
   assert.ok(ids.includes("com.pulsenx.bridge"), ids.join(","));
+});
+
+test("extractApkIcon falls back to classic ic_launcher paths without aapt", async (t) => {
+  const fs = require("fs");
+  const os = require("os");
+  const { execFileSync } = require("child_process");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nxhub-apkicon-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  // craft a mini "apk": a zip with a classic launcher icon path
+  const stage = path.join(tmp, "stage");
+  fs.mkdirSync(path.join(stage, "res", "mipmap-xxxhdpi"), { recursive: true });
+  fs.mkdirSync(path.join(stage, "res", "mipmap-mdpi"), { recursive: true });
+  const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+  fs.writeFileSync(path.join(stage, "res", "mipmap-xxxhdpi", "ic_launcher.png"), png);
+  fs.writeFileSync(path.join(stage, "res", "mipmap-mdpi", "ic_launcher.png"), Buffer.from("00", "hex"));
+  const apk = path.join(tmp, "fake.apk");
+  H.zipNoModes(stage, apk); // .apk extension confuses bsdtar's -a; python zips by name
+
+
+  const dataDir = path.join(tmp, "data");
+  const ctx = { dataDir, settings: {}, log: () => {} };
+  const saved = process.env.ANDROID_HOME;
+  delete process.env.ANDROID_HOME;
+  try {
+    const icon = await apkAdb.extractApkIcon(ctx, apk, "com.example.app");
+    assert.ok(icon, "icon extracted");
+    assert.strictEqual(path.basename(icon), "com.example.app.png");
+    assert.deepStrictEqual(fs.readFileSync(icon), png, "highest-density variant chosen, bytes intact");
+  } finally {
+    if (saved != null) process.env.ANDROID_HOME = saved;
+  }
 });

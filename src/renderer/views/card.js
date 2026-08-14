@@ -275,7 +275,12 @@ export function renderAppCard(app, ctx = {}) {
   </article>`;
 }
 
-export function renderUnpublishedCard(app) {
+export function renderUnpublishedCard(app, reason) {
+  const label = reason || 'no releases yet';
+  const releasesBtn =
+    app.latest && app.latest.tag
+      ? `<button class="btn btn-ghost" data-act="open" data-url="${esc(releaseUrl(app))}">View release</button>`
+      : '';
   return `
   <article class="card card-unpub" data-app-card="${esc(app.id)}">
     <div class="card-head">
@@ -284,10 +289,11 @@ export function renderUnpublishedCard(app) {
         ${app.private ? `<span class="lock" title="private repository">${icons.lock}</span>` : ''}
       </div>
       ${app.tagline ? `<p class="tagline">${esc(app.tagline)}</p>` : ''}
-      <div class="meta"><span class="muted">no releases yet</span></div>
+      <div class="meta"><span class="muted">${esc(label)}</span></div>
     </div>
     <div class="art-actions">
       <button class="btn btn-ghost" data-act="open" data-url="${esc(githubUrl(app.repo))}">Open GitHub</button>
+      ${releasesBtn}
     </div>
   </article>`;
 }

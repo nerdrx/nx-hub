@@ -102,10 +102,10 @@ async function install({ app, artifact, filePath, ctx }) {
   ctx.emitProgress("install", 88, "Creating desktop entry");
   // Icon: extracted .DirIcon / usr/share/icons when findable, else whatever
   // fallback the core hands us via ctx (assets/icon.png).
-  const icon =
-    (await findIcon(installDir, nameHints(app, artifact))) ||
-    ctx.fallbackIcon ||
-    null;
+  // realIcon → the app's OWN icon (shown on launcher tiles); the NX fallback
+  // is only ever for the desktop entry, never reported as the app's icon.
+  const realIcon = await findIcon(installDir, nameHints(app, artifact));
+  const icon = realIcon || ctx.fallbackIcon || null;
   const appRun = appRunPath(installDir);
   const exec = sandboxed
     ? `env ELECTRON_DISABLE_SANDBOX=1 ${execArg(appRun)}`
@@ -122,11 +122,11 @@ async function install({ app, artifact, filePath, ctx }) {
     dirs: [],
     desktopEntries,
     binary: APPRUN,
-    extra: { appImageFile: keptName, sandboxed, icon },
+    extra: { appImageFile: keptName, sandboxed, icon: realIcon },
   });
 
   ctx.emitProgress("cleanup", 100, "Installed");
-  return { version: artifact.version, path: installDir, launchable: true, iconPath: icon };
+  return { version: artifact.version, path: installDir, launchable: true, iconPath: realIcon };
 }
 
 async function uninstall({ app, artifact, installedPath, ctx }) {

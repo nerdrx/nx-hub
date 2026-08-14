@@ -90,7 +90,7 @@ test("overlay supplies name, tagline and order; repo values are the fallback", (
   assert.strictEqual(plain.order, 100);
 });
 
-test("hidden repos are filtered out entirely (case-insensitive)", () => {
+test("hidden repos stay listed but carry the overlayHidden flag (case-insensitive)", () => {
   const apps = discovery.buildApps({
     repos: [repoFor("petri"), repoFor("CDRP-for-Claude"), repoFor("quadforge")],
     releases: {},
@@ -99,10 +99,29 @@ test("hidden repos are filtered out entirely (case-insensitive)", () => {
     adb: {},
     primaryOwner: "nerdrx",
   });
-  assert.deepStrictEqual(
-    apps.map((a) => a.id),
-    ["quadforge"]
-  );
+  const flags = Object.fromEntries(apps.map((a) => [a.id, a.overlayHidden]));
+  assert.strictEqual(apps.length, 3, "nothing is dropped anymore — bottom section lists it");
+  assert.strictEqual(flags["petri"], true);
+  assert.strictEqual(flags["cdrp-for-claude"], true);
+  assert.strictEqual(flags["quadforge"], false);
+});
+
+test("installableHere: false when a release only ships foreign-platform assets", () => {
+  const apps = discovery.buildApps({
+    repos: [repoFor("winonly"), repoFor("quadforge")],
+    releases: {
+      "nerdrx/winonly": helpers.release("v1", [{ name: "tool-windows-x86_64.zip", id: 9, size: 5, url: "u" }]),
+      "nerdrx/quadforge": helpers.release("v1", [{ name: "quadforge-1.zip", id: 10, size: 5, url: "u" }]),
+    },
+    overlay: { hidden: [], apps: {} },
+    installedState: { installed: {} },
+    adb: {},
+    primaryOwner: "nerdrx",
+  });
+  const byId = Object.fromEntries(apps.map((a) => [a.id, a]));
+  assert.strictEqual(byId["winonly"].installableHere, process.platform === "win32");
+  assert.strictEqual(byId["quadforge"].installableHere, true, "generic zip installs anywhere");
+  assert.strictEqual(byId["winonly"].unpublished, false, "it HAS a release — just not for here");
 });
 
 test("apps sort by overlay order, then name; unpublished sink to the end", () => {

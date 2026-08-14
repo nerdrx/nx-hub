@@ -376,6 +376,13 @@ function buildApp({ repo, release, overlay, installedState, adb, primaryOwner, s
   app.launchEnv = prefs.launchEnv && typeof prefs.launchEnv === "object" ? prefs.launchEnv : {};
 
   mergeInstalled(app, installedState, adb, s);
+
+  // Can anything in the latest release actually be installed from THIS machine?
+  // (android counts: the hub sideloads APKs over adb from any desktop.)
+  const hostPlatform = process.platform === "win32" ? "windows" : "linux";
+  app.installableHere =
+    !app.unpublished &&
+    app.artifacts.some((a) => a.platform === hostPlatform || a.platform === "android");
   return app;
 }
 
@@ -520,9 +527,12 @@ function buildApps({ repos, releases, overlay, installedState, adb, primaryOwner
   const out = [];
   for (const repo of repos) {
     if (!repo || !repo.name) continue;
-    if (isHidden(ovl, repo.name)) continue;
     const release = releases ? releases[String(repo.full_name || repo.name).toLowerCase()] || null : null;
-    out.push(buildApp({ repo, release, overlay: ovl, installedState, adb, primaryOwner, settings: s }));
+    const app = buildApp({ repo, release, overlay: ovl, installedState, adb, primaryOwner, settings: s });
+    // Overlay-hidden repos are still listed (bottom section), just flagged —
+    // the user asked to SEE everything that exists, installable or not.
+    app.overlayHidden = isHidden(ovl, repo.name);
+    out.push(app);
   }
   return sortApps(out);
 }

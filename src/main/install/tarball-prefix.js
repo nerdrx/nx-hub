@@ -128,6 +128,15 @@ async function install({ app, artifact, filePath, ctx }) {
 
   ctx.emitProgress("cleanup", 94, "Writing manifest");
   const uniqDirs = [...new Set(createdDirs)];
+
+  // Icon: the tarball usually installs its own into <prefix>/share/icons —
+  // prefer the biggest raster, fall back to a scalable svg, then core's icon.
+  const iconCandidates = written.filter((f) => /share\/(icons|pixmaps)\/.*\.(png|svg)$/i.test(f));
+  const iconPath =
+    iconCandidates.filter((f) => f.endsWith(".png")).sort((a, b) => sizeRank(b) - sizeRank(a))[0] ||
+    iconCandidates.find((f) => f.endsWith(".svg")) ||
+    null;
+
   await stagedInstall(installDir, async (stage) => {
     await writeManifest(stage, {
       version: artifact.version,
@@ -141,6 +150,7 @@ async function install({ app, artifact, filePath, ctx }) {
         stripPrefix: strip,
         launchCmd: artifact.launchCmd || null,
         postInstallNote: artifact.postInstallNote || null,
+        icon: iconPath,
       },
     });
   });
@@ -152,7 +162,13 @@ async function install({ app, artifact, filePath, ctx }) {
   }
 
   ctx.emitProgress("cleanup", 100, "Installed");
-  return { version: artifact.version, path: installDir, launchable };
+  return { version: artifact.version, path: installDir, launchable, iconPath };
+}
+
+/** hicolor size rank from a path like .../hicolor/128x128/apps/foo.png (0 when unsized). */
+function sizeRank(p) {
+  const m = /\/(\d+)x\1\//.exec(p);
+  return m ? Number(m[1]) : 0;
 }
 
 /** "~/.local/bin/wivrn-dashboard --flag" → {cmd, args} with ~ expanded. */
