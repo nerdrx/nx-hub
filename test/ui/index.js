@@ -10,3 +10,4 @@ import './markdown.test.js';
 import './actions.test.js';
 import './model.test.js';
 import './render.test.js';
+import './launcher.test.js';

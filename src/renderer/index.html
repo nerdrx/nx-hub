@@ -19,6 +19,10 @@
       <div class="head-inner">
         <span id="logo" class="logo-slot"></span>
         <h1>NX Hub</h1>
+        <nav id="tabs" class="tabs" role="tablist" aria-label="Views">
+          <button id="tab-launch" class="tab" data-act="view" data-view="launch" role="tab" aria-selected="false" aria-controls="launch">Launch</button>
+          <button id="tab-manage" class="tab" data-act="view" data-view="manage" role="tab" aria-selected="false" aria-controls="manage-view">Manage</button>
+        </nav>
         <div class="filter-wrap">
           <span id="filter-icon" class="filter-icon"></span>
           <input
@@ -39,8 +43,11 @@
 
     <main id="main">
       <div id="banner" class="banner-host"></div>
-      <section id="grid" class="grid" aria-label="Apps"></section>
-      <section id="unpublished" class="unpub" aria-label="Unpublished repositories"></section>
+      <section id="launch" class="launch" role="tabpanel" aria-label="Launcher" hidden></section>
+      <div id="manage-view" role="tabpanel" aria-label="Manage">
+        <section id="grid" class="grid" aria-label="Apps"></section>
+        <section id="unpublished" class="unpub" aria-label="Unpublished repositories"></section>
+      </div>
     </main>
 
     <footer id="footer">

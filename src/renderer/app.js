@@ -14,6 +14,8 @@ import {
   artifactKey,
 } from './views/card.js';
 import { detectPlatform } from './lib/actions.js';
+import { launchTiles, defaultView } from './lib/launcher.js';
+import { renderLaunchGrid, renderSkeletonTiles } from './views/tile.js';
 import { esc } from './lib/html.js';
 import * as icons from './views/icons.js';
 
@@ -21,6 +23,8 @@ const LS_KEY = 'nxhub.ui.v1';
 
 const ui = {
   loaded: false,
+  view: 'manage', // 'launch' | 'manage'
+  viewRemembered: false,
   filter: '',
   expandedNotes: new Set(),
   dismissedNotes: new Set(),
@@ -49,6 +53,10 @@ function loadUiPrefs() {
     if (Array.isArray(saved.dismissedNotes)) ui.dismissedNotes = new Set(saved.dismissedNotes);
     if (Array.isArray(saved.dismissedHints)) ui.dismissedHints = new Set(saved.dismissedHints);
     if (typeof saved.unpubOpen === 'boolean') ui.unpubOpen = saved.unpubOpen;
+    if (saved.view === 'launch' || saved.view === 'manage') {
+      ui.view = saved.view;
+      ui.viewRemembered = true;
+    }
   } catch {
     /* first run / storage disabled — defaults are fine */
   }
@@ -62,6 +70,7 @@ function saveUiPrefs() {
         dismissedNotes: [...ui.dismissedNotes],
         dismissedHints: [...ui.dismissedHints],
         unpubOpen: ui.unpubOpen,
+        view: ui.view,
       })
     );
   } catch {
@@ -164,12 +173,37 @@ function schedule() {
   else window.setTimeout(run, 16);
 }
 
+/** Tiles for the launcher view, honouring the shared filter input. */
+function currentTiles() {
+  return launchTiles(filterApps(state.apps, ui.filter), {
+    adb: state.adb,
+    platform: state.platform || ui.platform,
+  });
+}
+
+function renderTabs() {
+  const nav = document.getElementById('tabs');
+  if (!nav) return;
+  for (const tab of nav.querySelectorAll('[data-view]')) {
+    const active = tab.getAttribute('data-view') === ui.view;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+  }
+}
+
 function render() {
   const grid = document.getElementById('grid');
   const unpubHost = document.getElementById('unpublished');
   const banner = document.getElementById('banner');
   const panelHost = document.getElementById('panel-root');
+  const launchHost = document.getElementById('launch');
+  const manageHost = document.getElementById('manage-view');
   if (!grid) return;
+
+  renderTabs();
+  const launchView = ui.view === 'launch';
+  if (launchHost) launchHost.hidden = !launchView;
+  if (manageHost) manageHost.hidden = launchView;
 
   const jobs = jobsForRender();
   const ctx = {
@@ -198,7 +232,15 @@ function render() {
   if (!ui.loaded) {
     grid.innerHTML = new Array(4).fill(0).map(renderSkeletonCard).join('');
     if (unpubHost) unpubHost.innerHTML = '';
+    if (launchHost) launchHost.innerHTML = launchView ? renderSkeletonTiles() : '';
     return;
+  }
+
+  if (launchHost && launchView) {
+    launchHost.innerHTML = renderLaunchGrid(currentTiles(), {
+      openMenu: ui.openMenu,
+      filter: ui.filter,
+    });
   }
 
   const { published, unpublished } = splitPublished(state.apps);
@@ -298,6 +340,46 @@ async function copyText(text) {
   } catch {
     toast('warn', 'Could not access the clipboard — copy it by hand');
   }
+}
+
+function setView(view) {
+  if (view !== 'launch' && view !== 'manage') return;
+  if (ui.view === view) return;
+  ui.view = view;
+  ui.viewRemembered = true;
+  ui.openMenu = '';
+  saveUiPrefs();
+  schedule();
+}
+
+/** Add a transient class to an element (pressed/launching, jump highlight). */
+function flashTile(el, cls, ms) {
+  if (!el || !el.classList) return;
+  el.classList.add(cls);
+  window.setTimeout(() => {
+    try {
+      el.classList.remove(cls);
+    } catch {
+      /* element already replaced by a re-render */
+    }
+  }, ms);
+}
+
+function scrollToCard(appId) {
+  const run = () => {
+    const card = document.querySelector(`[data-app-card="${CSS_ESCAPE(appId)}"]`);
+    if (!card) return;
+    if (typeof card.scrollIntoView === 'function') {
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    flashTile(card, 'flash', 1400);
+  };
+  window.setTimeout(run, 60);
+}
+
+/** Minimal attribute-value escaper for the querySelector above. */
+function CSS_ESCAPE(value) {
+  return String(value || '').replace(/["\\]/g, '\\$&');
 }
 
 const DRAFT_ACTIONS = new Set(['add-owner', 'remove-owner', 'add-repo', 'remove-repo']);
@@ -404,6 +486,24 @@ async function onAction(act, el, ev) {
     case 'launch':
       ui.openMenu = '';
       await call('launch', appId, artId);
+      break;
+    case 'view':
+      setView(el.getAttribute('data-view'));
+      break;
+    case 'tile-menu':
+      ui.openMenu = ui.openMenu === el.getAttribute('data-tile') ? '' : el.getAttribute('data-tile');
+      schedule();
+      break;
+    case 'tile-launch': {
+      ui.openMenu = '';
+      flashTile(el.closest ? el.closest('.tile') : null, 'launching', 700);
+      await call('launch', appId, artId);
+      break;
+    }
+    case 'manage-jump':
+      ui.openMenu = '';
+      setView('manage');
+      scrollToCard(appId);
       break;
     case 'uninstall': {
       ui.openMenu = '';
@@ -545,6 +645,31 @@ function wireDom() {
     onAction(act, el, ev);
   });
 
+  // Right-click a launcher tile → its menu.
+  document.addEventListener('contextmenu', (ev) => {
+    const target = ev.target instanceof Element ? ev.target.closest('[data-tile]') : null;
+    if (!target) return;
+    ev.preventDefault();
+    ui.openMenu = target.getAttribute('data-tile') || '';
+    schedule();
+  });
+
+  // Icon files can disappear between installs — fall back to the monogram.
+  document.addEventListener(
+    'error',
+    (ev) => {
+      const img = ev.target;
+      if (!img || img.tagName !== 'IMG' || !img.classList || !img.classList.contains('tile-icon')) return;
+      const span = document.createElement('span');
+      span.className = 'tile-mono';
+      span.textContent = img.getAttribute('data-fallback') || '?';
+      if (img.parentNode && typeof img.parentNode.replaceChild === 'function') {
+        img.parentNode.replaceChild(span, img);
+      }
+    },
+    true
+  );
+
   document.addEventListener('input', (ev) => {
     const el = ev.target;
     if (el && el.id === 'filter') {
@@ -663,6 +788,11 @@ async function boot() {
     }
   }
   await pullState();
+  // First run: open the launcher when there is anything to launch.
+  if (!ui.viewRemembered) {
+    ui.view = defaultView(currentTiles());
+    schedule();
+  }
   window.__nxhubBooted = true;
 }
 

@@ -143,7 +143,14 @@ function baseApps() {
           kind: 'appimage',
           assetName: 'PulseNX-2.3.0-x86_64.AppImage',
           size: 84_600_000,
-          installed: { version: '2.3.0', path: '/home/nerdrx/Applications/nx/pulsenx/appimage-linux', installedAt: iso(11) },
+          // iconPath is optional (core records it when it can extract one) —
+          // this fake path exercises the <img> path and its monogram fallback.
+          installed: {
+            version: '2.3.0',
+            path: '/home/nerdrx/Applications/nx/pulsenx/appimage-linux',
+            iconPath: '/home/nerdrx/Applications/nx/pulsenx/appimage-linux/pulsenx.png',
+            installedAt: iso(11),
+          },
         }),
         artifact({
           id: 'windows-portable-windows',
@@ -426,6 +433,7 @@ export function createMock() {
             path: `/home/nerdrx/Applications/nx/${app.id}/${art.id}`,
             installedAt: new Date().toISOString(),
           };
+          // Core may or may not extract an icon; the launcher tolerates both.
           if (art.kind === 'apk-adb' && art.packageId) state.adb.versions[art.packageId] = version;
           recompute(state.apps);
           emit({ type: 'job-done', jobId, appId, artifactId });
