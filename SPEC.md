@@ -6,10 +6,13 @@ contract between modules — change it only in the main loop, never from an agen
 
 ## What it does
 
-- **Auto-discovers** the user's GitHub account (`owner` setting, default `nerdrx`):
-  lists all repos (authenticated → private repos included), fetches the latest
-  release of each, classifies the assets into installable artifacts. New repos and
-  new releases appear automatically — no registry edit needed.
+- **Auto-discovers** from configurable sources: `settings.owners` (GitHub
+  accounts whose repos are all scanned; default `["nerdrx"]`, authenticated →
+  private repos included) plus `settings.extraRepos` (hand-pinned `owner/repo`
+  entries — any repo from anyone). For each: fetch latest release, classify the
+  assets into installable artifacts. New repos and new releases appear
+  automatically — no registry edit needed. Both lists are editable in the
+  Settings UI ("Sources"); cards from a non-primary owner show an owner badge.
 - A curated **overlay** (`registry/overrides.json`, also fetched live from the
   nx-hub repo main branch so it can be updated without shipping a new hub) refines
   display names, taglines, ordering, install strategies, and hides noise repos.
@@ -135,7 +138,8 @@ install(appId, artifactId)
 uninstall(appId, artifactId)
 launch(appId, artifactId)
 cancelJob(jobId)
-setSettings(patch)    // { owner, token, checkIntervalHours, installRoot, adbPath }
+setSettings(patch)    // { owners: [..], extraRepos: ["owner/repo", ..], token,
+                      //   checkIntervalHours, installRoot, adbPath }
 openExternal(url); showInFolder(path)
 onEvent(cb)           // → unsubscribe. Events:
 //  { type: "state-changed" }                       (re-pull via getState)
