@@ -26,6 +26,11 @@ const DEFAULT_LABELS = {
   "generic-zip": "Download (zip)",
 };
 
+// Kinds whose install is a self-contained directory we can keep a `.prev` copy
+// of (SPEC v0.2 rollback). tarball-prefix writes into a shared prefix and
+// apk-adb lives on the device — neither can be rolled back locally.
+const ROLLBACK_KINDS = new Set(["appimage", "archive-dir", "windows-portable", "windows-zip"]);
+
 let deps = { github: null, emit: () => {} };
 let cached = {
   apps: [],
@@ -34,6 +39,8 @@ let cached = {
   lastRefresh: null,
   errors: [],
   rateLimit: null, // { resetAt } while GitHub is throttling us
+  releases: {}, // appId → full release list (v0.2 getReleases/installVersion)
+  overlay: { hidden: [], apps: {} }, // last overlay, so artifacts can be rebuilt per release
 };
 let inflight = null;
 
@@ -81,6 +88,59 @@ function globMatch(glob, name) {
   } catch (_) {
     return false;
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* release selection (v0.2)                                            */
+/* ------------------------------------------------------------------ */
+
+function releaseTime(release) {
+  const raw = (release && (release.published_at || release.created_at)) || "";
+  const t = Date.parse(raw);
+  return Number.isFinite(t) ? t : 0;
+}
+
+/** Newest first. Ties break on the numeric release id so sorting is stable. */
+function byRecency(a, b) {
+  return releaseTime(b) - releaseTime(a) || Number(b.id || 0) - Number(a.id || 0);
+}
+
+/**
+ * Pick the release an app should present as "latest".
+ *
+ * - drafts are never eligible
+ * - prereleases only when `includePrereleases` (global setting, overridden per
+ *   app via appPrefs[appId].includePrereleases)
+ * - a repo that has ONLY prereleases still shows its newest one, otherwise the
+ *   app would look unpublished; `latest.prerelease` tells the UI.
+ *
+ * Accepts a single release object too, so the older callers keep working.
+ */
+function selectRelease(entry, { includePrereleases = false } = {}) {
+  if (!entry) return null;
+  const list = (Array.isArray(entry) ? entry : [entry]).filter((r) => r && !r.draft);
+  if (!list.length) return null;
+  const sorted = [...list].sort(byRecency);
+  if (includePrereleases) return sorted[0];
+  const stable = sorted.filter((r) => !r.prerelease);
+  return stable.length ? stable[0] : sorted[0];
+}
+
+/** Release list → the UI-facing shape (SPEC: getReleases). */
+function releaseSummary(release) {
+  if (!release) return null;
+  return {
+    tag: release.tag_name || null,
+    version: parseVersion(release.tag_name),
+    publishedAt: release.published_at || release.created_at || null,
+    notes: release.body || "",
+    prerelease: Boolean(release.prerelease),
+    assets: (Array.isArray(release.assets) ? release.assets : []).map((a) => ({
+      name: a.name,
+      size: Number(a.size || 0),
+      id: a.id != null ? a.id : null,
+    })),
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -267,13 +327,20 @@ function buildArtifacts(release, ovl) {
  * @param {object} o.adb       { available, devices, apkVersions }
  * @param {string} o.primaryOwner
  */
-function buildApp({ repo, release, overlay, installedState, adb, primaryOwner }) {
+function buildApp({ repo, release, overlay, installedState, adb, primaryOwner, settings }) {
   const repoName = repo.name;
   const owner = (repo.owner && repo.owner.login) || String(repo.full_name || "").split("/")[0] || primaryOwner;
   const ovl = overlayFor(overlay, repoName);
   const id = String(repoName).toLowerCase();
 
-  const artifacts = release ? buildArtifacts(release, ovl) : [];
+  const s = settings || config.load();
+  const prefs = config.getAppPref(s, id);
+  const chosen = selectRelease(release, {
+    includePrereleases: config.effectiveIncludePrereleases(s, id),
+  });
+
+  const artifacts = chosen ? buildArtifacts(chosen, ovl) : [];
+  release = chosen;
 
   const latest = release
     ? {
@@ -299,8 +366,39 @@ function buildApp({ repo, release, overlay, installedState, adb, primaryOwner })
   };
   if (primaryOwner && String(owner).toLowerCase() !== String(primaryOwner).toLowerCase()) app.foreignOwner = true;
 
-  mergeInstalled(app, installedState, adb);
+  // ---- v0.2 per-app preferences (the app is still discovered when hidden) ----
+  app.localHidden = prefs.hidden === true;
+  app.favorite = prefs.favorite === true;
+  app.updatePolicy = config.effectiveUpdatePolicy(s, id);
+  app.includePrereleases = config.effectiveIncludePrereleases(s, id);
+  app.skippedVersion = prefs.skippedVersion || null;
+  app.launchArgs = Array.isArray(prefs.launchArgs) ? prefs.launchArgs : [];
+  app.launchEnv = prefs.launchEnv && typeof prefs.launchEnv === "object" ? prefs.launchEnv : {};
+
+  mergeInstalled(app, installedState, adb, s);
   return app;
+}
+
+/**
+ * Version kept as `<installDir>.prev` by the staged swap, or null.
+ * Sync on purpose: mergeInstalled() is a hot, synchronous path.
+ */
+function prevInstallInfo(installPath) {
+  if (!installPath) return null;
+  const prevDir = `${installPath}.prev`;
+  try {
+    if (!fs.statSync(prevDir).isDirectory()) return null;
+  } catch (_) {
+    return null;
+  }
+  let version = null;
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(prevDir, ".nx-manifest.json"), "utf8"));
+    version = manifest && manifest.version != null ? String(manifest.version) : null;
+  } catch (_) {
+    /* a .prev without a readable manifest is still restorable */
+  }
+  return { path: prevDir, version };
 }
 
 /**
@@ -325,9 +423,12 @@ function kindLaunchable(artifact) {
 }
 
 /** Merge state.json + live adb versions into an app's artifacts. */
-function mergeInstalled(app, installedState, adb) {
-  const st = installedState && installedState.installed ? installedState.installed : {};
+function mergeInstalled(app, installedState, adb, settings) {
+  const state = installedState && typeof installedState === "object" ? installedState : {};
+  const st = state.installed ? state.installed : {};
+  const downloadsFor = (state.downloads && state.downloads[app.id]) || {};
   const forApp = st[app.id] || {};
+  const skippedVersion = app.skippedVersion || null;
   const adbInfo = adb || { available: false, devices: [], apkVersions: {} };
   const liveVersions = adbInfo.versions || adbInfo.apkVersions || {};
   const deviceOnline = Boolean(adbInfo.available && (adbInfo.devices || []).some((d) => d && d.state === "device"));
@@ -350,34 +451,78 @@ function mergeInstalled(app, installedState, adb) {
     }
 
     artifact.installed = installed;
-    artifact.updateAvailable = Boolean(
+    const newer = Boolean(
       installed && app.latest && installed.version && String(installed.version) !== String(app.latest.version)
     );
+    // SPEC v0.2: skippedVersion suppresses the update for EXACTLY that version
+    const skipped = Boolean(newer && skippedVersion && app.latest && String(skippedVersion) === String(app.latest.version));
+    artifact.updateAvailable = newer && !skipped;
+    artifact.updateSkipped = skipped;
     artifact.launchable = kindLaunchable(artifact) && (!rec || rec.launchable !== false);
+
+    // ---- v0.2: rollback + pre-downloaded asset ----
+    const prev = ROLLBACK_KINDS.has(artifact.kind) && installed ? prevInstallInfo(installed.path) : null;
+    artifact.rollbackAvailable = Boolean(prev);
+    artifact.prevVersion = (prev && prev.version) || null;
+
+    const download = downloadsFor[artifact.id] || null;
+    const ready = Boolean(
+      download &&
+        download.path &&
+        app.latest &&
+        download.version &&
+        String(download.version) === String(app.latest.version) &&
+        fileExists(download.path)
+    );
+    artifact.readyToInstall = ready;
+    artifact.readyPath = ready ? download.path : null;
   }
   return app;
+}
+
+function fileExists(p) {
+  try {
+    return Boolean(p) && fs.existsSync(p);
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Case-insensitive ordinal comparison — deliberately NOT localeCompare: the
+ * host may run any locale (de_DE here) and the app order must not depend on it.
+ */
+function compareNames(a, b) {
+  const x = String(a).toLowerCase();
+  const y = String(b).toLowerCase();
+  if (x !== y) return x < y ? -1 : 1;
+  const rawA = String(a);
+  const rawB = String(b);
+  if (rawA === rawB) return 0;
+  return rawA < rawB ? -1 : 1;
 }
 
 function sortApps(apps) {
   return apps.sort((a, b) => {
     if (a.unpublished !== b.unpublished) return a.unpublished ? 1 : -1;
     if (a.order !== b.order) return a.order - b.order;
-    return String(a.name).localeCompare(String(b.name));
+    return compareNames(a.name, b.name);
   });
 }
 
 /**
  * Pure assembly step — used directly by unit tests.
  */
-function buildApps({ repos, releases, overlay, installedState, adb, primaryOwner }) {
+function buildApps({ repos, releases, overlay, installedState, adb, primaryOwner, settings }) {
   const ovl = normalizeOverlay(overlay); // idempotent
+  const s = settings || config.load(); // read once, not per app
 
   const out = [];
   for (const repo of repos) {
     if (!repo || !repo.name) continue;
     if (isHidden(ovl, repo.name)) continue;
     const release = releases ? releases[String(repo.full_name || repo.name).toLowerCase()] || null : null;
-    out.push(buildApp({ repo, release, overlay: ovl, installedState, adb, primaryOwner }));
+    out.push(buildApp({ repo, release, overlay: ovl, installedState, adb, primaryOwner, settings: s }));
   }
   return sortApps(out);
 }
@@ -422,6 +567,7 @@ async function getAdbStatus(settings) {
           devices: Array.isArray(st.devices) ? st.devices : [],
           versions,
           apkVersions: versions,
+          selected: st.selected || null, // v0.2: the device the hub acts on
         };
       }
     }
@@ -480,11 +626,23 @@ async function refresh({ force = false, signal } = {}) {
 
       const visible = repos.filter((r) => !isHidden(overlay, r.name));
       const releases = {};
+      const releasesByApp = {};
       await mapLimit(visible, 6, async (repo) => {
         const [owner, name] = String(repo.full_name || `${repo.owner && repo.owner.login}/${repo.name}`).split("/");
+        const key = String(repo.full_name).toLowerCase();
         try {
-          const rel = await gh().latestRelease(owner, name, { force, signal });
-          if (rel) releases[String(repo.full_name).toLowerCase()] = rel;
+          // v0.2: the whole release list, so prereleases and older versions are
+          // selectable. Servers/mocks without the list endpoint fall back to
+          // /releases/latest so discovery never goes blind.
+          let list = await gh().listReleases(owner, name, { force, signal });
+          if (!Array.isArray(list) || list.length === 0) {
+            const single = await gh().latestRelease(owner, name, { force, signal });
+            list = single ? [single] : [];
+          }
+          if (list.length) {
+            releases[key] = list;
+            releasesByApp[String(repo.name).toLowerCase()] = list;
+          }
         } catch (e) {
           errors.push({ source: repo.full_name, message: e.message, rateLimited: Boolean(e.rateLimited), resetAt: e.resetAt || null });
           config.log(`discovery: release ${repo.full_name} failed — ${e.message}`);
@@ -499,8 +657,13 @@ async function refresh({ force = false, signal } = {}) {
         installedState: stateStore.load(),
         adb,
         primaryOwner: (settings.owners || [])[0] || null,
+        settings,
       });
 
+      cached.releases = releasesByApp;
+      cached.overlay = overlay;
+      cached.repos = visible;
+      cached.releasesByRepo = releases;
       cached.apps = apps;
       cached.adb = adb;
       cached.errors = errors;
@@ -518,6 +681,14 @@ async function refresh({ force = false, signal } = {}) {
       cached.refreshing = false;
       inflight = null;
       deps.emit({ type: "state-changed" });
+      // SPEC v0.2: update policies run after EVERY refresh (scheduled or
+      // manual). Not awaited — a "download"/"install" policy must not hold the
+      // refresh open; `policyPromise` lets callers/tests wait for it.
+      if (typeof deps.afterRefresh === "function") {
+        cached.policyPromise = Promise.resolve()
+          .then(() => deps.afterRefresh(cached.apps))
+          .catch((e) => config.log(`post-refresh update policies failed: ${e.message}`));
+      }
     }
     return cached.apps;
   })();
@@ -528,8 +699,113 @@ async function refresh({ force = false, signal } = {}) {
 /** Re-merge installed state into the cached apps (no network) — after install/uninstall. */
 function remerge() {
   const st = stateStore.load();
-  for (const app of cached.apps) mergeInstalled(app, st, cached.adb);
+  const settings = config.load();
+  for (const app of cached.apps) {
+    // per-app prefs can change without a refresh (setAppPref) — re-read them
+    const prefs = config.getAppPref(settings, app.id);
+    app.localHidden = prefs.hidden === true;
+    app.favorite = prefs.favorite === true;
+    app.updatePolicy = config.effectiveUpdatePolicy(settings, app.id);
+    app.includePrereleases = config.effectiveIncludePrereleases(settings, app.id);
+    app.skippedVersion = prefs.skippedVersion || null;
+    app.launchArgs = Array.isArray(prefs.launchArgs) ? prefs.launchArgs : [];
+    app.launchEnv = prefs.launchEnv && typeof prefs.launchEnv === "object" ? prefs.launchEnv : {};
+    mergeInstalled(app, st, cached.adb, settings);
+  }
   return cached.apps;
+}
+
+/**
+ * Rebuild the app models from the cached repos/releases with the CURRENT
+ * settings — no network. Needed when a pref that changes release selection
+ * (includePrereleases) or visibility flips.
+ */
+function rebuild() {
+  if (!Array.isArray(cached.repos) || cached.repos.length === 0) return remerge();
+  const settings = config.load();
+  cached.apps = buildApps({
+    repos: cached.repos,
+    releases: cached.releasesByRepo || {},
+    overlay: cached.overlay,
+    installedState: stateStore.load(),
+    adb: cached.adb,
+    primaryOwner: (settings.owners || [])[0] || null,
+    settings,
+  });
+  return cached.apps;
+}
+
+/* ------------------------------------------------------------------ */
+/* v0.2: release list + per-release artifacts                          */
+/* ------------------------------------------------------------------ */
+
+/** Fetch (and cache) the full release list for one app — used by getReleases. */
+async function fetchReleases(appId, { force = false, signal } = {}) {
+  const app = findApp(appId);
+  if (!app) return [];
+  const [owner, name] = String(app.repo || "").split("/");
+  if (!owner || !name) return [];
+  const list = await gh().listReleases(owner, name, { force, signal });
+  if (Array.isArray(list) && list.length) cached.releases[app.id] = list;
+  return getReleases(app.id);
+}
+
+/** Raw release objects for an app (cached from the last refresh). */
+function releasesFor(appId) {
+  const list = cached.releases ? cached.releases[String(appId).toLowerCase()] : null;
+  return Array.isArray(list) ? list : [];
+}
+
+/** SPEC: getReleases(appId) → [{tag, version, notes, publishedAt, prerelease, assets}] */
+function getReleases(appId) {
+  return releasesFor(appId).slice().sort(byRecency).map(releaseSummary);
+}
+
+/** Raw release with this tag (exact, then version-insensitive). */
+function findRelease(appId, tag) {
+  const wanted = String(tag || "");
+  const list = releasesFor(appId);
+  return (
+    list.find((r) => String(r.tag_name) === wanted) ||
+    list.find((r) => parseVersion(r.tag_name) === parseVersion(wanted)) ||
+    null
+  );
+}
+
+/**
+ * Artifacts of ONE specific release, built with the same overlay rules as the
+ * live model — so ids line up and `installVersion` can match by artifact id.
+ */
+function artifactsForRelease(appId, release) {
+  const ovl = overlayFor(cached.overlay, appId);
+  return buildArtifacts(release, ovl);
+}
+
+/**
+ * Find the artifact in `release` that corresponds to `artifactId` (SPEC v0.2
+ * installVersion): same id first, then same kind+platform, then the same
+ * overlay assetPattern / asset name shape.
+ */
+function matchArtifactInRelease(appId, artifactId, release, reference) {
+  const rows = artifactsForRelease(appId, release);
+  if (!rows.length) return null;
+  const byId = rows.find((a) => a.id === artifactId);
+  if (byId) return byId;
+  if (reference) {
+    const byKind = rows.find((a) => a.kind === reference.kind && a.platform === reference.platform);
+    if (byKind) return byKind;
+    const stem = String(reference.assetName || "")
+      .toLowerCase()
+      .replace(/[0-9]+(\.[0-9]+)*/g, "");
+    const byName = rows.find(
+      (a) =>
+        String(a.assetName || "")
+          .toLowerCase()
+          .replace(/[0-9]+(\.[0-9]+)*/g, "") === stem
+    );
+    if (byName) return byName;
+  }
+  return null;
 }
 
 /** Refresh only the adb-derived data (cheap, no GitHub calls). */
@@ -564,6 +840,17 @@ module.exports = {
   refresh,
   refreshAdb,
   remerge,
+  rebuild,
+  getReleases,
+  fetchReleases,
+  releasesFor,
+  findRelease,
+  artifactsForRelease,
+  matchArtifactInRelease,
+  selectRelease,
+  releaseSummary,
+  prevInstallInfo,
+  ROLLBACK_KINDS,
   getCached,
   findApp,
   findArtifact,

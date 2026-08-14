@@ -7,7 +7,11 @@ function normalize(raw) {
   const s = raw && typeof raw === "object" ? raw : {};
   // never alias a shared default — callers mutate the returned object
   const installed = s.installed && typeof s.installed === "object" ? s.installed : {};
-  return { version: 1, installed };
+  // v0.2: last update-notification per app (once per app+version) and assets
+  // pre-downloaded by the "download" update policy.
+  const notified = s.notified && typeof s.notified === "object" ? s.notified : {};
+  const downloads = s.downloads && typeof s.downloads === "object" ? s.downloads : {};
+  return { version: 1, installed, notified, downloads };
 }
 
 function load() {
@@ -72,4 +76,86 @@ function listInstalls(state) {
   return out;
 }
 
-module.exports = { load, save, getInstall, getApp, recordInstall, removeInstall, listInstalls };
+/* ------------------------------------------------------------------ */
+/* v0.2: update-notification bookkeeping                               */
+/* ------------------------------------------------------------------ */
+
+/** Did we already notify about this exact (app, version)? */
+function wasNotified(appId, version, state) {
+  const s = state || load();
+  const rec = s.notified[appId];
+  return Boolean(rec && version != null && String(rec.version) === String(version));
+}
+
+function markNotified(appId, version) {
+  const s = load();
+  s.notified[appId] = { version: version == null ? null : String(version), at: new Date().toISOString() };
+  save(s);
+  return s.notified[appId];
+}
+
+function clearNotified(appId) {
+  const s = load();
+  if (appId) delete s.notified[appId];
+  else s.notified = {};
+  save(s);
+  return s.notified;
+}
+
+/* ------------------------------------------------------------------ */
+/* v0.2: pre-downloaded assets (updatePolicy "download")               */
+/* ------------------------------------------------------------------ */
+
+function recordDownload(appId, artifactId, record) {
+  const s = load();
+  if (!s.downloads[appId]) s.downloads[appId] = {};
+  s.downloads[appId][artifactId] = {
+    version: record && record.version != null ? String(record.version) : null,
+    path: (record && record.path) || null,
+    assetName: (record && record.assetName) || null,
+    at: (record && record.at) || new Date().toISOString(),
+  };
+  save(s);
+  return s.downloads[appId][artifactId];
+}
+
+function getDownload(appId, artifactId, state) {
+  const s = state || load();
+  const forApp = s.downloads[appId];
+  if (!forApp) return null;
+  return forApp[artifactId] || null;
+}
+
+function removeDownload(appId, artifactId) {
+  const s = load();
+  if (s.downloads[appId]) {
+    delete s.downloads[appId][artifactId];
+    if (Object.keys(s.downloads[appId]).length === 0) delete s.downloads[appId];
+  }
+  save(s);
+  return s;
+}
+
+function clearDownloads() {
+  const s = load();
+  s.downloads = {};
+  save(s);
+  return s;
+}
+
+module.exports = {
+  load,
+  save,
+  getInstall,
+  getApp,
+  recordInstall,
+  removeInstall,
+  listInstalls,
+  wasNotified,
+  markNotified,
+  clearNotified,
+  recordDownload,
+  getDownload,
+  removeDownload,
+  clearDownloads,
+};

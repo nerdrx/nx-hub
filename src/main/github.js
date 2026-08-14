@@ -42,7 +42,8 @@ class HttpError extends Error {
 function friendlyRateLimit(res) {
   const reset = Number(res.headers.get("x-ratelimit-reset") || 0);
   const resetAt = reset ? reset * 1000 : Date.now() + 60 * 60 * 1000;
-  const when = reset ? new Date(resetAt).toLocaleTimeString() : null;
+  // locale-independent on purpose (host machines may run de_DE): ISO → "HH:MM UTC"
+  const when = reset ? `${new Date(resetAt).toISOString().slice(11, 16)} UTC` : null;
   const msg = when
     ? `GitHub rate limit reached — try again after ${when}, or sign in (gh auth login) for a much higher limit.`
     : "GitHub rate limit reached — try again later, or sign in (gh auth login) for a much higher limit.";
@@ -201,6 +202,37 @@ function createClient(opts = {}) {
     }
   }
 
+  /**
+   * Every release of owner/repo, newest first as GitHub returns them.
+   * Paginated (100/page) and ETag-cached through getJson; drafts are dropped
+   * (they are invisible to anonymous clients anyway) and a repo without any
+   * release resolves to [] instead of throwing.
+   *
+   * Accepts listReleases("owner/repo") as well as listReleases(owner, repo).
+   */
+  async function listReleases(owner, repo, opts = {}) {
+    let o = owner;
+    let r = repo;
+    if (r && typeof r === "object") {
+      opts = r;
+      r = undefined;
+    }
+    if (!r && typeof o === "string" && o.includes("/")) {
+      [o, r] = o.split("/");
+    }
+    if (!o || !r) throw new Error(`listReleases needs owner/repo (got ${owner}/${repo})`);
+    const { force = false, signal } = opts;
+    const makeUrl = (page) =>
+      `${base}/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/releases?per_page=100&page=${page}`;
+    try {
+      const all = await paginate(makeUrl, { force, signal });
+      return all.filter((rel) => rel && !rel.draft);
+    } catch (e) {
+      if (e.status === 404) return [];
+      throw e;
+    }
+  }
+
   function assetApiUrl(asset) {
     if (asset && asset.url) return asset.url;
     if (asset && asset.repoFullName && asset.id) return `${base}/repos/${asset.repoFullName}/releases/assets/${asset.id}`;
@@ -322,6 +354,7 @@ function createClient(opts = {}) {
     listOwnerRepos,
     getRepo,
     latestRelease,
+    listReleases,
     downloadAsset,
     fetchAssetText,
     fetchRaw,

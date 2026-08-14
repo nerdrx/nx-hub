@@ -67,6 +67,165 @@ function firstOnline(devices) {
   return (devices || []).find((d) => d.state === "device") || null;
 }
 
+/** settings.preferredDeviceSerial, or null (SPEC v0.2 adbSelectDevice). */
+function preferredSerial(ctx) {
+  const s = ctx?.settings?.preferredDeviceSerial;
+  return s && String(s).trim() ? String(s).trim() : null;
+}
+
+/**
+ * The device we should act on: the preferred serial when it is online,
+ * otherwise the first usable device.
+ */
+function selectDevice(devices, ctx) {
+  const online = (devices || []).filter((d) => d && d.state === "device");
+  const want = preferredSerial(ctx);
+  if (want) {
+    const match = online.find((d) => d.serial === want);
+    if (match) return match;
+    if (online.length) ctx?.log?.(`preferred device ${want} is not connected — using ${online[0].serial}`);
+  }
+  return online[0] || null;
+}
+
+/** "192.168.1.50" → "192.168.1.50:5555"; trims junk, rejects nonsense. */
+function normalizeHostPort(hostPort) {
+  const raw = String(hostPort || "").trim().replace(/^adb\s+connect\s+/i, "");
+  if (!raw) return null;
+  if (!/^[A-Za-z0-9._\-[\]:]+$/.test(raw)) return null;
+  if (/:\d+$/.test(raw)) return raw;
+  return `${raw}:5555`;
+}
+
+/**
+ * `adb connect <host:port>` (SPEC v0.2). Resolves with
+ * {connected, target, alreadyConnected, message}; throws a friendly Error when
+ * the device cannot be reached.
+ */
+async function adbConnect(ctx, hostPort) {
+  const target = normalizeHostPort(hostPort);
+  if (!target) {
+    throw new Error('Enter the device address as "ip" or "ip:port" — for example 192.168.1.50:5555');
+  }
+  const res = await adb(ctx, ["connect", target], { timeout: 20000 });
+  if (res.missing) {
+    throw new Error("adb not found — install android-tools (or set the adb path in Settings) to connect over Wi-Fi");
+  }
+  const out = `${res.stdout || ""}\n${res.stderr || ""}`.trim();
+  const line = out.split("\n").map((l) => l.trim()).filter(Boolean).pop() || "";
+
+  if (/already connected to/i.test(out)) {
+    return { connected: true, alreadyConnected: true, target, message: `Already connected to ${target}` };
+  }
+  if (/^connected to /im.test(out)) {
+    return { connected: true, alreadyConnected: false, target, message: `Connected to ${target}` };
+  }
+  if (/connection refused/i.test(out)) {
+    throw new Error(
+      `${target} refused the connection — turn on wireless debugging on the device (or run "adb tcpip 5555" over USB once)`
+    );
+  }
+  if (/no route to host|network is unreachable|unable to connect|failed to connect|timed? ?out/i.test(out)) {
+    throw new Error(`Could not reach ${target} — check that the device is on the same network and the address is right`);
+  }
+  throw new Error(`adb connect ${target} failed${line ? `: ${line}` : ""}`);
+}
+
+/* ------------------------------------------------------------------ */
+/* device info (battery + storage)                                     */
+/* ------------------------------------------------------------------ */
+
+/** `dumpsys battery` → percentage, or null. */
+function parseBatteryLevel(stdout) {
+  const m = String(stdout || "").match(/^\s*level:\s*(\d+)\s*$/m);
+  if (!m) return null;
+  const pct = Number(m[1]);
+  if (!Number.isFinite(pct) || pct < 0 || pct > 100) return null;
+  return pct;
+}
+
+/** A df size token → bytes. A bare number means 1K blocks (df's default). */
+function parseSizeToken(token) {
+  const m = String(token || "").match(/^(\d+(?:[.,]\d+)?)([KMGTP])?i?B?$/i);
+  if (!m) return null;
+  const n = Number(m[1].replace(",", "."));
+  if (!Number.isFinite(n)) return null;
+  const unit = (m[2] || "").toUpperCase();
+  const mult =
+    { K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4, P: 1024 ** 5 }[unit] ||
+    1024; // no suffix → 1K blocks
+  return Math.round(n * mult);
+}
+
+/**
+ * `df /data` → free bytes, or null.
+ *   Filesystem     1K-blocks    Used Available Use% Mounted on
+ *   /dev/block/dm-5 110000000 50000000 60000000  46% /data
+ * Long device names wrap onto their own line — then the numbers start the line.
+ */
+function parseDfAvailable(stdout) {
+  for (const raw of String(stdout || "").split("\n")) {
+    const line = raw.trim();
+    if (!line || /^filesystem/i.test(line)) continue;
+    const parts = line.split(/\s+/);
+    if (parts.length < 4) continue;
+    const wrapped = /^\d/.test(parts[0]); // continuation line: size used avail …
+    const token = wrapped ? parts[2] : parts[3];
+    const bytes = parseSizeToken(token);
+    if (bytes != null) return bytes;
+  }
+  return null;
+}
+
+async function batteryPct(ctx, serial) {
+  const res = await adb(ctx, ["-s", serial, "shell", "dumpsys", "battery"], { timeout: 15000 });
+  if (res.missing || res.code !== 0) return null;
+  return parseBatteryLevel(res.stdout);
+}
+
+async function storageFreeBytes(ctx, serial) {
+  for (const mount of ["/data", "/sdcard"]) {
+    const res = await adb(ctx, ["-s", serial, "shell", "df", mount], { timeout: 15000 });
+    if (res.missing) return null;
+    if (res.code !== 0) continue;
+    const bytes = parseDfAvailable(res.stdout);
+    if (bytes != null) return bytes;
+  }
+  return null;
+}
+
+/**
+ * SPEC v0.2: {serial, model, batteryPct, storageFreeBytes} for the selected
+ * device. Fields are null when unavailable — this never throws.
+ */
+async function getDeviceInfo(ctx, serialOverride) {
+  const empty = { serial: null, model: null, batteryPct: null, storageFreeBytes: null, available: false, state: null };
+  try {
+    const { available, devices } = await listDevices(ctx);
+    if (!available) return empty;
+    const device = serialOverride
+      ? (devices || []).find((d) => d.serial === serialOverride && d.state === "device") || null
+      : selectDevice(devices, ctx);
+    if (!device) return Object.assign({}, empty, { available: true });
+
+    const [battery, storage] = await Promise.all([
+      batteryPct(ctx, device.serial).catch(() => null),
+      storageFreeBytes(ctx, device.serial).catch(() => null),
+    ]);
+    return {
+      serial: device.serial,
+      model: device.model || null,
+      batteryPct: battery,
+      storageFreeBytes: storage,
+      available: true,
+      state: device.state,
+    };
+  } catch (err) {
+    ctx?.log?.(`device info failed: ${err.message}`);
+    return empty;
+  }
+}
+
 /** `dumpsys package <pkg>` → versionName, or null when not installed. */
 function parseVersionName(stdout) {
   const m = String(stdout || "").match(/versionName=([^\s]+)/);
@@ -115,7 +274,8 @@ async function getAdbStatus(ctx) {
   try {
     const { available, devices } = await listDevices(ctx);
     const apkVersions = {};
-    const online = firstOnline(devices);
+    // v0.2: package versions come from the SELECTED device (settings.preferredDeviceSerial)
+    const online = selectDevice(devices, ctx);
     if (available && online) {
       const ids = await overridePackageIds();
       for (const pkg of ids) {
@@ -127,10 +287,10 @@ async function getAdbStatus(ctx) {
         }
       }
     }
-    return { available, devices, apkVersions };
+    return { available, devices, apkVersions, selected: online ? online.serial : null };
   } catch (err) {
     ctx?.log?.(`adb status failed: ${err.message}`);
-    return { available: false, devices: [], apkVersions: {} };
+    return { available: false, devices: [], apkVersions: {}, selected: null };
   }
 }
 
@@ -145,7 +305,8 @@ async function requireDevice(ctx) {
       "adb not found — install android-tools (or set the adb path in Settings) to install APKs"
     );
   }
-  const online = firstOnline(devices);
+  // v0.2: honour settings.preferredDeviceSerial when that device is present
+  const online = selectDevice(devices, ctx);
   if (!online) {
     const unauth = devices.find((d) => d.state === "unauthorized");
     if (unauth) {
@@ -211,6 +372,14 @@ module.exports = {
   parseDevices,
   listDevices,
   firstOnline,
+  selectDevice,
+  preferredSerial,
+  normalizeHostPort,
+  adbConnect,
+  parseBatteryLevel,
+  parseSizeToken,
+  parseDfAvailable,
+  getDeviceInfo,
   parseVersionName,
   getPackageVersion,
   overridePackageIds,

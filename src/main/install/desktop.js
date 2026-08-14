@@ -86,6 +86,12 @@ async function findIcon(root, names = []) {
 async function writeDesktopEntry({ app, artifact, exec, icon, ctx, terminal = false, categories, comment }) {
   if (process.platform === "win32") return null;
   if (!exec) return null;
+  // SPEC v0.2: settings.createDesktopEntries === false → don't create menu
+  // entries at all (uninstall still removes ones created earlier).
+  if (ctx?.settings?.createDesktopEntries === false) {
+    ctx?.log?.("desktop entry skipped (createDesktopEntries is off)");
+    return null;
+  }
   const dir = applicationsDir();
   await mkdirp(dir);
   const file = path.join(dir, desktopFileName(app, artifact));

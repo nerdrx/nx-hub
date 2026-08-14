@@ -3,7 +3,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { app, BrowserWindow, Tray, Menu, shell, nativeImage } = require("electron");
+const { app, BrowserWindow, Tray, Menu, shell, nativeImage, Notification } = require("electron");
 
 const config = require("./config");
 const github = require("./github");
@@ -22,6 +22,28 @@ let tray = null;
 let refreshTimer = null;
 let quitting = false;
 
+/* ------------------------------------------------------------------ */
+/* v0.2: autostart + start-minimized                                   */
+/* ------------------------------------------------------------------ */
+
+/** The binary an autostart entry has to launch (AppImage-aware). */
+function selfExecPath() {
+  return process.env.APPIMAGE || app.getPath("exe");
+}
+
+/** --minimized on the command line, or settings.startMinimized. */
+function startsMinimized(settings) {
+  if (process.argv.includes("--minimized")) return true;
+  return Boolean((settings || config.load()).startMinimized);
+}
+
+function syncAutostart(settings) {
+  const s = settings || config.load();
+  const result = config.applyAutostart(s, selfExecPath());
+  config.log(`autostart ${s.autostart ? `enabled → ${result.path}` : "disabled"}`);
+  return result;
+}
+
 function getWindow() {
   return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
 }
@@ -36,7 +58,7 @@ const PLACEHOLDER = `data:text/html;charset=utf-8,${encodeURIComponent(
    <div id="nxhub-placeholder">NX Hub — renderer not built yet</div></body></html>`
 )}`;
 
-function createWindow() {
+function createWindow({ minimized = false } = {}) {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -62,7 +84,9 @@ function createWindow() {
     mainWindow.loadURL(PLACEHOLDER);
   }
 
-  mainWindow.once("ready-to-show", () => mainWindow.show());
+  // v0.2: --minimized / settings.startMinimized → stay hidden, tray only
+  if (minimized) config.log("starting minimized to the tray");
+  else mainWindow.once("ready-to-show", () => mainWindow.show());
 
   // Close → hide to tray. Real quit goes through before-quit.
   mainWindow.on("close", (e) => {
@@ -188,7 +212,11 @@ function wire() {
   };
 
   github.init({ getToken: () => config.resolveToken(), cacheDir: config.cacheDir() });
-  discovery.init({ emit });
+  discovery.init({
+    emit,
+    // SPEC v0.2: per-app update policies run after every refresh
+    afterRefresh: (apps) => jobs.applyUpdatePolicies({ apps }),
+  });
   jobs.init({
     emit,
     relaunch: () => {
@@ -203,7 +231,11 @@ function wire() {
     BrowserWindow,
     shell,
     app,
-    onSettingsChanged: (settings) => scheduleRefresh(settings),
+    Notification, // v0.2: OS notifications for update-available
+    onSettingsChanged: (settings) => {
+      scheduleRefresh(settings);
+      syncAutostart(settings); // v0.2: XDG autostart follows the setting
+    },
   });
 }
 
@@ -231,10 +263,12 @@ function main() {
   app.on("window-all-closed", () => {});
 
   app.whenReady().then(() => {
-    createWindow();
+    const settings = config.load();
+    createWindow({ minimized: startsMinimized(settings) });
     createTray();
     e2e.start({ getWindow });
-    scheduleRefresh(config.load());
+    scheduleRefresh(settings);
+    syncAutostart(settings);
     discovery
       .refresh({ force: false })
       .then(() => updateTray())

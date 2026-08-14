@@ -17,3 +17,7 @@ require("./archive-dir.test.js");
 require("./tarball-prefix.test.js");
 require("./apk-adb.test.js");
 require("./kinds.test.js");
+// ---- v0.2 ----
+require("./rollback.test.js");
+require("./launch-prefs.test.js");
+require("./adb-v02.test.js");

@@ -77,6 +77,23 @@ async function handle(req, res, url) {
     return send(res, 200, { jobId });
   }
 
+  // v0.2: install a specific tag / roll back to the kept previous version
+  if (p === "/installVersion" || p === "/rollback") {
+    const appId = url.searchParams.get("appId");
+    const artifactId = url.searchParams.get("artifactId");
+    if (!appId || !artifactId) return send(res, 400, { error: "appId and artifactId required" });
+    if (p === "/rollback") return send(res, 200, { jobId: jobs.rollback(appId, artifactId) });
+    const tag = url.searchParams.get("tag");
+    if (!tag) return send(res, 400, { error: "tag required" });
+    return send(res, 200, { jobId: jobs.installVersion(appId, artifactId, tag) });
+  }
+
+  if (p === "/releases") {
+    const appId = url.searchParams.get("appId");
+    if (!appId) return send(res, 400, { error: "appId required" });
+    return send(res, 200, await ipc.getReleases(appId));
+  }
+
   if (p === "/job") {
     const id = url.searchParams.get("id");
     const job = jobs.list().find((j) => j.id === id);

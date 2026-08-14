@@ -124,7 +124,8 @@ test("getAdbStatus: missing adb binary reports unavailable instead of throwing",
     settings: { adbPath: path.join(box.bin, "definitely-not-adb") },
   });
   const status = await engine.getAdbStatus(ctx);
-  assert.deepStrictEqual(status, { available: false, devices: [], apkVersions: {} });
+  // v0.2 adds `selected` (the device the hub would act on)
+  assert.deepStrictEqual(status, { available: false, devices: [], apkVersions: {}, selected: null });
 });
 
 test("getAdbStatus: adb present but no device → available, empty versions", async (t) => {

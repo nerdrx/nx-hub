@@ -8,12 +8,15 @@ const config = require("./config");
 const discovery = require("./discovery");
 const jobs = require("./jobs");
 const stateStore = require("./state");
+const housekeeping = require("./housekeeping");
 
 let deps = {
   ipcMain: null,
   BrowserWindow: null,
   shell: null,
   app: null,
+  // v0.2: electron's Notification class (injected — pure modules stay electron-free)
+  Notification: null,
   onSettingsChanged: () => {},
 };
 
@@ -23,9 +26,33 @@ function init(d = {}) {
   return module.exports;
 }
 
+/**
+ * SPEC v0.2: an `update-available` event also raises an OS notification when
+ * settings.notifications is on. Guarded for platforms/builds without support;
+ * the once-per-(app,version) bookkeeping lives in jobs/state, so this simply
+ * mirrors whatever events actually get emitted.
+ */
+function notifyUpdate(evt) {
+  try {
+    const Notification = deps.Notification;
+    if (!Notification || typeof Notification !== "function") return;
+    if (typeof Notification.isSupported === "function" && !Notification.isSupported()) return;
+    if (!config.load().notifications) return;
+    const name = evt.appName || evt.appId;
+    new Notification({
+      title: `${name} ${evt.version} is available`,
+      body: "Open NX Hub to install the update.",
+      silent: false,
+    }).show();
+  } catch (e) {
+    config.log(`notification failed: ${e.message}`);
+  }
+}
+
 /** Fan-out to every renderer. Also used by discovery/jobs via init({emit}). */
 function emit(evt) {
   if (!evt || !evt.type) return;
+  if (evt.type === "update-available") notifyUpdate(evt);
   const BW = deps.BrowserWindow;
   if (!BW) return;
   for (const win of BW.getAllWindows()) {
@@ -76,6 +103,8 @@ async function buildState() {
       available: Boolean(adb.available),
       devices: adb.devices || [],
       versions: adb.versions || adb.apkVersions || {},
+      // v0.2: the device the hub acts on (settings.preferredDeviceSerial when online)
+      selected: adb.selected || settings.preferredDeviceSerial || null,
     },
     hubVersion: hubVersion(),
     refreshing: cached.refreshing,
@@ -88,6 +117,40 @@ async function buildState() {
 function safeExternal(url) {
   const u = String(url || "");
   return /^(https?:|mailto:)/i.test(u) ? u : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* v0.2 helpers                                                        */
+/* ------------------------------------------------------------------ */
+
+/** ctx for the engine's adb entry points (same shape jobs builds). */
+function engineCtx() {
+  const settings = config.load();
+  return {
+    dataDir: config.dataDir(),
+    installRoot: config.installRoot(settings),
+    settings,
+    log: (m) => config.log(`[adb] ${m}`),
+    emitProgress: () => {},
+  };
+}
+
+function engineOrThrow() {
+  const engine = jobs.getEngine();
+  if (!engine) throw new Error("Install engine unavailable");
+  return engine;
+}
+
+/** SPEC v0.2 getReleases(appId): cached list, fetched live when we have none. */
+async function getReleases(appId) {
+  const cachedList = discovery.getReleases(appId);
+  if (cachedList.length) return cachedList;
+  try {
+    return await discovery.fetchReleases(appId);
+  } catch (e) {
+    config.log(`getReleases(${appId}) failed: ${e.message}`);
+    return [];
+  }
 }
 
 function register() {
@@ -144,6 +207,84 @@ function register() {
     return buildState();
   });
 
+  /* ---------------- v0.2 surface ---------------- */
+
+  handle("nxhub:getReleases", (appId) => getReleases(appId));
+
+  handle("nxhub:installVersion", (appId, artifactId, tag) => jobs.installVersion(appId, artifactId, tag));
+
+  handle("nxhub:rollback", (appId, artifactId) => jobs.rollback(appId, artifactId));
+
+  handle("nxhub:setAppPref", async (appId, patch) => {
+    config.setAppPref(appId, patch || {});
+    // hidden / includePrereleases change what the model looks like — rebuild
+    try {
+      discovery.rebuild();
+    } catch (e) {
+      config.log(`setAppPref rebuild failed: ${e.message}`);
+    }
+    emit({ type: "state-changed" });
+    return buildState();
+  });
+
+  handle("nxhub:adbConnect", async (hostPort) => {
+    const result = await engineOrThrow().adbConnect(engineCtx(), hostPort);
+    await discovery.refreshAdb().catch(() => {});
+    emit({ type: "toast", level: "info", message: result.message || `Connected to ${result.target}` });
+    emit({ type: "state-changed" });
+    return result;
+  });
+
+  handle("nxhub:adbSelectDevice", async (serial) => {
+    config.save({ preferredDeviceSerial: serial ? String(serial) : null });
+    const adb = await discovery.refreshAdb().catch(() => null);
+    emit({ type: "state-changed" });
+    return { selected: config.load().preferredDeviceSerial, adb: adb || null };
+  });
+
+  handle("nxhub:getDeviceInfo", async () => {
+    try {
+      return await engineOrThrow().getDeviceInfo(engineCtx());
+    } catch (e) {
+      config.log(`getDeviceInfo: ${e.message}`);
+      return { serial: null, model: null, batteryPct: null, storageFreeBytes: null, available: false };
+    }
+  });
+
+  handle("nxhub:getDiskUsage", (force) => housekeeping.getDiskUsage({ force: Boolean(force) }));
+
+  handle("nxhub:clearDownloadCache", async () => {
+    const result = await housekeeping.clearDownloadCache();
+    try {
+      discovery.remerge();
+    } catch (_) {
+      /* cache may be empty */
+    }
+    emit({ type: "state-changed" });
+    return result;
+  });
+
+  handle("nxhub:getLogs", (tailLines) => housekeeping.getLogs(tailLines));
+
+  handle("nxhub:exportSettings", () => config.exportSettings());
+
+  handle("nxhub:importSettings", async (json) => {
+    const result = config.importSettings(json);
+    try {
+      discovery.rebuild();
+    } catch (_) {
+      /* no cache yet */
+    }
+    emit({ type: "state-changed" });
+    try {
+      deps.onSettingsChanged(result.settings, { sourcesChanged: true });
+    } catch (e) {
+      config.log(`onSettingsChanged failed: ${e.message}`);
+    }
+    discovery.refresh({ force: true }).catch(() => {});
+    return result;
+  });
+
   handle("nxhub:openExternal", async (url) => {
     const safe = safeExternal(url);
     if (!safe) throw new Error("Refusing to open a non-web URL");
@@ -174,4 +315,4 @@ function launchables() {
   return out;
 }
 
-module.exports = { init, emit, buildState, launchables, hubVersion };
+module.exports = { init, emit, buildState, launchables, hubVersion, getReleases, engineCtx };

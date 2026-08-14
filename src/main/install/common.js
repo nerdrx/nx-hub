@@ -32,8 +32,10 @@ async function standardUninstall({ installDir, ctx, keepInstallDir = false }) {
 
   // Deepest first so parents can become empty. We only rmdir — never rm -rf —
   // so a prefix like ~/.local can never be blown away.
+  // ordinal compare, never localeCompare: the host locale must not influence
+  // the order in which we try to rmdir (de_DE and en_US behave differently)
   const dirs = [...new Set(manifest.dirs || [])].sort(
-    (a, b) => b.split(path.sep).length - a.split(path.sep).length || b.localeCompare(a)
+    (a, b) => b.split(path.sep).length - a.split(path.sep).length || (a === b ? 0 : a < b ? 1 : -1)
   );
   for (const d of dirs) {
     try {
@@ -51,6 +53,8 @@ async function standardUninstall({ installDir, ctx, keepInstallDir = false }) {
 
   ctxSafe.emitProgress?.("cleanup", 80, "Removing install directory");
   if (!keepInstallDir && (await exists(installDir))) await rmrf(installDir);
+  // v0.2: the kept previous version goes with it — uninstall must converge
+  if (!keepInstallDir) await rmrf(`${installDir}.prev`).catch(() => {});
 
   ctxSafe.emitProgress?.("cleanup", 100, "Uninstalled");
   ctxSafe.log?.(

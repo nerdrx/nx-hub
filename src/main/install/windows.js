@@ -13,6 +13,7 @@ const path = require("node:path");
 const {
   installDirFor, exists, mkdirp, extractArchive, walkFiles, pickBinary,
   spawnDetached, stagedInstall, writeManifest, readManifest, throwIfAborted, run,
+  launchExtras, rollbackDir,
 } = require("./util");
 const { standardUninstall, nameHints } = require("./common");
 
@@ -95,7 +96,7 @@ async function install({ app, artifact, filePath, ctx }) {
         pickExe(files, nameHints(app, artifact)) ||
         (await pickBinary(stage, { hint: artifact.binHint, names: nameHints(app, artifact), ctx }));
     }
-  });
+  }, { keepPrev: true }); // SPEC v0.2: keep the replaced install for rollback
 
   const files = [];
   if (binary) {
@@ -152,11 +153,22 @@ async function launch({ app, artifact, installedPath, ctx }) {
   if (!rel) throw new Error("No executable recorded for this install");
   const abs = path.join(installDir, rel);
   if (!(await exists(abs))) throw new Error(`Executable missing at ${abs} — reinstall the app`);
-  ctx.log(`launching ${abs}`);
-  const child = spawnDetached(abs, [], { cwd: path.dirname(abs) });
-  return { pid: child.pid, command: abs };
+  const { args, env } = launchExtras(ctx); // v0.2: appPrefs launchArgs / launchEnv
+  ctx.log(`launching ${abs}${args.length ? ` ${args.join(" ")}` : ""}`);
+  const child = spawnDetached(abs, args, { cwd: path.dirname(abs), env });
+  return { pid: child.pid, command: abs, args };
+}
+
+/** SPEC v0.2: restore <installDir>.prev (works on Linux too, for tests/cleanup). */
+async function rollback({ app, artifact, installedPath, ctx }) {
+  const installDir = installedPath || installDirFor(app, artifact, ctx);
+  ctx.emitProgress("install", 30, "Restoring the previous version");
+  await rollbackDir(installDir);
+  const manifest = await readManifest(installDir);
+  ctx.emitProgress("cleanup", 100, "Previous version restored");
+  return { version: manifest?.version ?? null, path: installDir, launchable: Boolean(manifest?.binary) };
 }
 
 module.exports = {
-  install, uninstall, launch, REFUSAL, isWindows, startMenuDir, shortcutPath, pickExe,
+  install, uninstall, launch, rollback, REFUSAL, isWindows, startMenuDir, shortcutPath, pickExe,
 };

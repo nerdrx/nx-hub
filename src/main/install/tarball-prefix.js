@@ -16,7 +16,7 @@ const path = require("node:path");
 const {
   installDirFor, expandUser, exists, isDir, mkdirp, extractArchive, walkFiles,
   copyEntry, spawnDetached, withWorkDir, writeManifest, readManifest,
-  throwIfAborted, stagedInstall,
+  throwIfAborted, stagedInstall, launchExtras,
 } = require("./util");
 const { standardUninstall } = require("./common");
 
@@ -178,9 +178,11 @@ async function launch({ app, artifact, installedPath, ctx }) {
   if (!(await exists(spec.cmd))) {
     throw new Error(`Launch command not found: ${spec.cmd}`);
   }
-  ctx.log(`launching ${spec.cmd} ${spec.args.join(" ")}`.trim());
-  const child = spawnDetached(spec.cmd, spec.args, { cwd: path.dirname(spec.cmd) });
-  return { pid: child.pid, command: spec.cmd };
+  // v0.2: appPrefs.launchArgs are appended to the overlay's own args
+  const { args, env } = launchExtras(ctx, { args: spec.args });
+  ctx.log(`launching ${spec.cmd} ${args.join(" ")}`.trim());
+  const child = spawnDetached(spec.cmd, args, { cwd: path.dirname(spec.cmd), env });
+  return { pid: child.pid, command: spec.cmd, args };
 }
 
 module.exports = { install, uninstall, launch, findStripRoot, resolveLaunch, normStrip };

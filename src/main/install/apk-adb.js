@@ -62,7 +62,7 @@ async function uninstall({ app, artifact, installedPath, ctx }) {
 
   ctx.emitProgress("cleanup", 10, "Looking for the device");
   const { available, devices } = await adb.listDevices(ctx);
-  const online = adb.firstOnline(devices);
+  const online = adb.selectDevice(devices, ctx); // v0.2: preferred serial wins
   if (available && online && packageId) {
     ctx.emitProgress("cleanup", 40, `Removing ${packageId} from ${online.model || online.serial}`);
     const ok = await adb.uninstallPackage(ctx, online.serial, packageId);

@@ -41,6 +41,20 @@ function statePath() {
   return path.join(dataDir(), "state.json");
 }
 
+/** SPEC v0.2: the three update policies, in escalating order. */
+const UPDATE_POLICIES = ["notify", "download", "install"];
+
+/** Per-app preference keys we accept — anything else is dropped on merge. */
+const APP_PREF_KEYS = [
+  "updatePolicy",
+  "includePrereleases",
+  "skippedVersion",
+  "favorite",
+  "launchArgs",
+  "launchEnv",
+  "hidden",
+];
+
 function defaults() {
   return {
     owners: ["nerdrx"],
@@ -49,6 +63,16 @@ function defaults() {
     installRoot: path.join(os.homedir(), "Applications"),
     adbPath: "adb",
     token: null,
+    // ---- v0.2 ----
+    appPrefs: {},
+    updatePolicy: "notify",
+    includePrereleases: false,
+    notifications: true,
+    autostart: false,
+    startMinimized: false,
+    createDesktopEntries: true,
+    maxConcurrentDownloads: 2,
+    preferredDeviceSerial: null,
   };
 }
 
@@ -76,6 +100,100 @@ function writeJsonAtomic(file, value) {
   fs.renameSync(tmp, file);
 }
 
+function bool(v, fallback) {
+  if (typeof v === "boolean") return v;
+  if (v === "true") return true;
+  if (v === "false") return false;
+  return fallback;
+}
+
+function trimmedString(v) {
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+/**
+ * Clean ONE app's prefs. Unknown keys are dropped, values are type-checked,
+ * arrays are taken as-is (never merged element-wise).
+ * @returns {object} may be empty
+ */
+function sanitizeAppPref(raw) {
+  const out = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+
+  if (UPDATE_POLICIES.includes(raw.updatePolicy)) out.updatePolicy = raw.updatePolicy;
+  if (typeof raw.includePrereleases === "boolean") out.includePrereleases = raw.includePrereleases;
+  if (typeof raw.favorite === "boolean") out.favorite = raw.favorite;
+  if (typeof raw.hidden === "boolean") out.hidden = raw.hidden;
+
+  if (typeof raw.skippedVersion === "string" && raw.skippedVersion.trim()) {
+    out.skippedVersion = raw.skippedVersion.trim();
+  }
+
+  if (Array.isArray(raw.launchArgs)) {
+    out.launchArgs = raw.launchArgs.filter((a) => typeof a === "string" && a.length > 0).map((a) => String(a));
+  }
+
+  if (raw.launchEnv && typeof raw.launchEnv === "object" && !Array.isArray(raw.launchEnv)) {
+    const env = {};
+    for (const key of Object.keys(raw.launchEnv)) {
+      const value = raw.launchEnv[key];
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue; // not a usable env name
+      if (value == null) continue; // null clears the key on merge
+      if (typeof value === "object") continue;
+      env[key] = String(value);
+    }
+    out.launchEnv = env;
+  }
+
+  return out;
+}
+
+/** Clean the whole appPrefs map; apps that end up with no usable keys are kept. */
+function sanitizeAppPrefs(raw) {
+  const out = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  for (const appId of Object.keys(raw)) {
+    const id = String(appId).toLowerCase();
+    if (!id) continue;
+    out[id] = sanitizeAppPref(raw[appId]);
+  }
+  return out;
+}
+
+/**
+ * Deep-merge one patch into one app's prefs (SPEC v0.2 setAppPref semantics):
+ * objects (launchEnv) merge key-wise — a null value removes a key — arrays
+ * (launchArgs) are replaced wholesale, unknown keys are dropped.
+ */
+function mergeAppPref(current, patch) {
+  const base = sanitizeAppPref(current);
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) return base;
+  const clean = sanitizeAppPref(patch);
+
+  for (const key of APP_PREF_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
+    const rawValue = patch[key];
+
+    // explicit null/undefined clears the preference (falls back to global)
+    if (rawValue == null) {
+      delete base[key];
+      continue;
+    }
+    if (!Object.prototype.hasOwnProperty.call(clean, key)) continue; // junk value → ignore
+
+    if (key === "launchEnv") {
+      const merged = Object.assign({}, base.launchEnv || {}, clean.launchEnv);
+      for (const envKey of Object.keys(rawValue)) {
+        if (rawValue[envKey] === null) delete merged[envKey];
+      }
+      base.launchEnv = merged;
+      continue;
+    }
+    base[key] = clean[key]; // arrays are replaced, scalars overwritten
+  }
+  return base;
+}
+
 function sanitize(raw) {
   const s = Object.assign(defaults(), raw && typeof raw === "object" ? raw : {});
   s.owners = Array.isArray(s.owners) ? s.owners.filter((o) => typeof o === "string" && o.trim()).map((o) => o.trim()) : defaults().owners;
@@ -87,6 +205,18 @@ function sanitize(raw) {
   s.installRoot = expandHome(s.installRoot) || defaults().installRoot;
   s.adbPath = typeof s.adbPath === "string" && s.adbPath.trim() ? s.adbPath.trim() : "adb";
   s.token = typeof s.token === "string" && s.token.trim() ? s.token.trim() : null;
+
+  // ---- v0.2 ----
+  s.appPrefs = sanitizeAppPrefs(s.appPrefs);
+  s.updatePolicy = UPDATE_POLICIES.includes(s.updatePolicy) ? s.updatePolicy : defaults().updatePolicy;
+  s.includePrereleases = bool(s.includePrereleases, false);
+  s.notifications = bool(s.notifications, true);
+  s.autostart = bool(s.autostart, false);
+  s.startMinimized = bool(s.startMinimized, false);
+  s.createDesktopEntries = bool(s.createDesktopEntries, true);
+  const maxDl = Math.floor(Number(s.maxConcurrentDownloads));
+  s.maxConcurrentDownloads = Number.isFinite(maxDl) && maxDl >= 1 ? Math.min(maxDl, 8) : defaults().maxConcurrentDownloads;
+  s.preferredDeviceSerial = trimmedString(s.preferredDeviceSerial);
   return s;
 }
 
@@ -108,6 +238,173 @@ function save(patch) {
   writeJsonAtomic(settingsPath(), next);
   if (patch && Object.prototype.hasOwnProperty.call(patch, "token")) tokenCache = undefined;
   return load();
+}
+
+/**
+ * Merge `patch` into ONE app's prefs and persist (SPEC v0.2 `setAppPref`).
+ * @returns {object} effective settings
+ */
+function setAppPref(appId, patch) {
+  const id = String(appId || "").trim().toLowerCase();
+  if (!id) throw new Error("setAppPref needs an app id");
+  const stored = loadRaw();
+  const prefs = Object.assign({}, stored.appPrefs);
+  prefs[id] = mergeAppPref(prefs[id], patch);
+  return save({ appPrefs: prefs });
+}
+
+/** One app's stored prefs ({} when it has none). */
+function getAppPref(settings, appId) {
+  const s = settings || load();
+  const id = String(appId || "").toLowerCase();
+  return (s.appPrefs && s.appPrefs[id]) || {};
+}
+
+/** Per-app override → global default. */
+function effectiveUpdatePolicy(settings, appId) {
+  const pref = getAppPref(settings, appId);
+  if (UPDATE_POLICIES.includes(pref.updatePolicy)) return pref.updatePolicy;
+  const s = settings || load();
+  return UPDATE_POLICIES.includes(s.updatePolicy) ? s.updatePolicy : "notify";
+}
+
+function effectiveIncludePrereleases(settings, appId) {
+  const pref = getAppPref(settings, appId);
+  if (typeof pref.includePrereleases === "boolean") return pref.includePrereleases;
+  const s = settings || load();
+  return Boolean(s.includePrereleases);
+}
+
+/* ------------------------------------------------------------------ */
+/* export / import                                                     */
+/* ------------------------------------------------------------------ */
+
+/** Settings as portable JSON — never carries the token (SPEC v0.2). */
+function exportSettings(settings) {
+  const s = Object.assign({}, settings || loadRaw());
+  delete s.token;
+  delete s.tokenSource;
+  return `${JSON.stringify(s, null, 2)}\n`;
+}
+
+/**
+ * Import a settings JSON string. The token is never taken from an import, and
+ * every value goes through the normal sanitiser.
+ * @returns {{settings:object, applied:string[], skipped:string[]}}
+ */
+function importSettings(json) {
+  let parsed;
+  try {
+    parsed = typeof json === "string" ? JSON.parse(json) : json;
+  } catch (e) {
+    throw new Error(`Could not read the settings file — it is not valid JSON (${e.message})`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Could not read the settings file — expected a JSON object");
+  }
+
+  const known = Object.keys(defaults());
+  const base = defaults();
+  const applied = [];
+  const skipped = [];
+  const patch = {};
+
+  for (const key of Object.keys(parsed)) {
+    if (key === "token") {
+      skipped.push("token"); // deliberate: tokens are never imported silently
+      continue;
+    }
+    if (!known.includes(key)) {
+      skipped.push(key);
+      continue;
+    }
+    // a value that only survives as the default was junk — report it as skipped
+    const wanted = sanitize({ [key]: parsed[key] })[key];
+    const fellBackToDefault =
+      JSON.stringify(wanted) === JSON.stringify(base[key]) && JSON.stringify(parsed[key]) !== JSON.stringify(wanted);
+    if (fellBackToDefault) {
+      skipped.push(key);
+      continue;
+    }
+    patch[key] = parsed[key];
+    applied.push(key);
+  }
+
+  save(patch);
+  return { settings: load(), applied: [...new Set(applied)], skipped: [...new Set(skipped)] };
+}
+
+/* ------------------------------------------------------------------ */
+/* XDG autostart                                                       */
+/* ------------------------------------------------------------------ */
+
+function autostartDir() {
+  const xdg = process.env.XDG_CONFIG_HOME;
+  const base = xdg && xdg.trim() ? xdg : path.join(os.homedir(), ".config");
+  return path.join(base, "autostart");
+}
+
+function autostartPath() {
+  return path.join(autostartDir(), `${APP_NAME}.desktop`);
+}
+
+/** Quote a path for a .desktop Exec= line. */
+function execQuote(p) {
+  const s = String(p || "");
+  if (/^[A-Za-z0-9_\-./=:@+]+$/.test(s)) return s;
+  return `"${s.replace(/(["`$\\])/g, "\\$1")}"`;
+}
+
+/**
+ * Write ~/.config/autostart/nx-hub.desktop. `exePath` is resolved by the caller
+ * (index.js: process.env.APPIMAGE || app.getPath("exe")) so this stays pure.
+ */
+function writeAutostart(exePath, { startMinimized = false } = {}) {
+  if (!exePath) throw new Error("writeAutostart needs the path of the running binary");
+  const exec = `${execQuote(exePath)}${startMinimized ? " --minimized" : ""}`;
+  const lines = [
+    "[Desktop Entry]",
+    "Type=Application",
+    "Name=NX Hub",
+    "Comment=Installer, updater and launcher for the NX app family",
+    `Exec=${exec}`,
+    "Terminal=false",
+    "Categories=Utility;",
+    "X-GNOME-Autostart-enabled=true",
+    "",
+  ];
+  ensureDir(autostartDir());
+  const file = autostartPath();
+  fs.writeFileSync(file, lines.join("\n"), { mode: 0o644 });
+  return file;
+}
+
+/** @returns {boolean} true when an entry was there and is now gone */
+function removeAutostart() {
+  const file = autostartPath();
+  try {
+    if (!fs.existsSync(file)) return false;
+    fs.rmSync(file, { force: true });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/** settings.autostart → write/remove the entry. Never throws. */
+function applyAutostart(settings, exePath) {
+  const s = settings || load();
+  try {
+    if (s.autostart) {
+      if (!exePath) return { enabled: false, path: null, error: "no executable path" };
+      return { enabled: true, path: writeAutostart(exePath, { startMinimized: s.startMinimized }) };
+    }
+    removeAutostart();
+    return { enabled: false, path: null };
+  } catch (e) {
+    log(`autostart: ${e.message}`);
+    return { enabled: false, path: null, error: e.message };
+  }
 }
 
 function installRoot(settings) {
@@ -175,6 +472,8 @@ function log(...parts) {
 module.exports = {
   NX_CONNECTOR_PORT,
   APP_NAME,
+  UPDATE_POLICIES,
+  APP_PREF_KEYS,
   defaults,
   expandHome,
   dataDir,
@@ -189,6 +488,21 @@ module.exports = {
   loadRaw,
   load,
   save,
+  sanitize,
+  sanitizeAppPref,
+  sanitizeAppPrefs,
+  mergeAppPref,
+  setAppPref,
+  getAppPref,
+  effectiveUpdatePolicy,
+  effectiveIncludePrereleases,
+  exportSettings,
+  importSettings,
+  autostartDir,
+  autostartPath,
+  writeAutostart,
+  removeAutostart,
+  applyAutostart,
   installRoot,
   installPathFor,
   resolveToken,

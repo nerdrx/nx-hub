@@ -87,17 +87,54 @@ async function launch({ app, artifact, installedPath, ctx }) {
   return mod.launch({ app, artifact: effective, installedPath: dir, ctx: c });
 }
 
+/**
+ * SPEC v0.2: restore the `<installdir>.prev` copy the last install kept.
+ * Only dir-based kinds support it; everything else refuses with a clear message.
+ */
+async function rollback({ app, artifact, installedPath, ctx }) {
+  const c = normCtx(ctx);
+  const dir = installedPath || installDirFor(app, artifact, c);
+  const manifest = await readManifest(dir);
+  const effective = manifest?.kind && KINDS[manifest.kind] ? { ...artifact, kind: manifest.kind } : artifact;
+  const mod = moduleFor(effective);
+  if (typeof mod.rollback !== "function") {
+    throw new Error(`"${effective.kind}" installs cannot be rolled back`);
+  }
+  c.log(`rollback ${describe(app, effective)} at ${dir}`);
+  return mod.rollback({ app, artifact: effective, installedPath: dir, ctx: c });
+}
+
+/** Does this kind keep a previous version at all? (core/UI ask before offering it) */
+function canRollback(kind) {
+  const mod = KINDS[kind];
+  return Boolean(mod && typeof mod.rollback === "function");
+}
+
 /** Never throws — a machine without adb still gets a valid status object. */
 async function getAdbStatus(ctx) {
   return adb.getAdbStatus(normCtx(ctx));
+}
+
+/** SPEC v0.2: `adb connect <host:port>`. Throws a friendly error on failure. */
+async function adbConnect(ctx, hostPort) {
+  return adb.adbConnect(normCtx(ctx), hostPort);
+}
+
+/** SPEC v0.2: {serial, model, batteryPct, storageFreeBytes}. Never throws. */
+async function getDeviceInfo(ctx, serial) {
+  return adb.getDeviceInfo(normCtx(ctx), serial);
 }
 
 module.exports = {
   install,
   uninstall,
   launch,
+  rollback,
   getAdbStatus,
+  adbConnect,
+  getDeviceInfo,
   // ---- extras (not part of the frozen four, handy for core/tests) ----
+  canRollback,
   KINDS: Object.keys(KINDS),
   installDirFor: (app, artifact, ctx) => installDirFor(app, artifact, normCtx(ctx)),
   readManifest,

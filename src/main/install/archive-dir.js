@@ -7,6 +7,7 @@ const path = require("node:path");
 const {
   installDirFor, exists, extractArchive, pickBinary, walkFiles, spawnDetached,
   stagedInstall, writeManifest, readManifest, throwIfAborted,
+  launchExtras, rollbackDir,
 } = require("./util");
 const { writeDesktopEntry, findIcon, updateDesktopDatabase, execArg } = require("./desktop");
 const { standardUninstall, nameHints } = require("./common");
@@ -57,7 +58,7 @@ async function install({ app, artifact, filePath, ctx }) {
     });
     if (binary) ctx.log(`archive-dir: launch binary = ${binary}`);
     else ctx.log("archive-dir: no executable found — installed without a launch target");
-  });
+  }, { keepPrev: true }); // SPEC v0.2: keep the replaced install for rollback
 
   const desktopEntries = [];
   let icon = null;
@@ -103,10 +104,26 @@ async function launch({ app, artifact, installedPath, ctx }) {
   const abs = path.join(installDir, rel);
   if (!(await exists(abs))) throw new Error(`Launch binary missing at ${abs} — reinstall the app`);
   await fsp.chmod(abs, 0o755).catch(() => {});
-  ctx.log(`launching ${abs}`);
+  // v0.2: appPrefs.launchArgs / launchEnv
+  const { args, env } = launchExtras(ctx);
+  ctx.log(`launching ${abs}${args.length ? ` ${args.join(" ")}` : ""}`);
   // cwd = the binary's own dir: game builds expect their assets relative to it
-  const child = spawnDetached(abs, [], { cwd: path.dirname(abs) });
-  return { pid: child.pid, command: abs };
+  const child = spawnDetached(abs, args, { cwd: path.dirname(abs), env });
+  return { pid: child.pid, command: abs, args };
 }
 
-module.exports = { install, uninstall, launch, flattenSingleRoot };
+/** SPEC v0.2: restore <installDir>.prev. */
+async function rollback({ app, artifact, installedPath, ctx }) {
+  const installDir = installedPath || installDirFor(app, artifact, ctx);
+  ctx.emitProgress("install", 30, "Restoring the previous version");
+  await rollbackDir(installDir);
+  const manifest = await readManifest(installDir);
+  ctx.emitProgress("cleanup", 100, "Previous version restored");
+  return {
+    version: manifest?.version ?? null,
+    path: installDir,
+    launchable: Boolean(manifest?.binary),
+  };
+}
+
+module.exports = { install, uninstall, launch, rollback, flattenSingleRoot };

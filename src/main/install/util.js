@@ -35,8 +35,32 @@ function normCtx(ctx = {}) {
     // Optional: absolute path to an icon core wants used when we can't extract
     // one from the artifact (e.g. assets/icon.png). Safe to omit.
     fallbackIcon: ctx.fallbackIcon || null,
+    // v0.2: this app's user preferences ({launchArgs, launchEnv, …}); core
+    // threads them through so launch() can honour them.
+    appPrefs: ctx.appPrefs && typeof ctx.appPrefs === "object" ? ctx.appPrefs : {},
     raw: ctx,
   };
+}
+
+/**
+ * Merge the per-app launch preferences into a spawn spec (SPEC v0.2):
+ * `launchArgs` are APPENDED to the engine's own args, `launchEnv` is layered
+ * over the inherited environment.
+ */
+function launchExtras(ctx, base = {}) {
+  const prefs = (ctx && ctx.appPrefs) || {};
+  const extraArgs = Array.isArray(prefs.launchArgs)
+    ? prefs.launchArgs.filter((a) => typeof a === "string" && a.length).map(String)
+    : [];
+  const args = [...(base.args || []), ...extraArgs];
+  const env = Object.assign({}, base.env || process.env);
+  if (prefs.launchEnv && typeof prefs.launchEnv === "object" && !Array.isArray(prefs.launchEnv)) {
+    for (const [k, v] of Object.entries(prefs.launchEnv)) {
+      if (v == null || typeof v === "object") continue;
+      env[k] = String(v);
+    }
+  }
+  return { args, env };
 }
 
 class AbortError extends Error {
@@ -236,12 +260,63 @@ async function readManifest(installDir) {
 // ---------------------------------------------------------------------------
 // staged (atomic-ish) installs
 
+/** `<installDir>.prev` — the version kept for one-click rollback (SPEC v0.2). */
+function prevDirFor(installDir) {
+  return `${installDir}.prev`;
+}
+
+async function hasPrev(installDir) {
+  return isDir(prevDirFor(installDir));
+}
+
+/**
+ * Swap `<installDir>.prev` back into place (SPEC v0.2 rollback).
+ *
+ * The current install is first renamed to a staging name; only then does .prev
+ * move in. If that second rename fails, the current install is put straight
+ * back — so a failure can never destroy BOTH copies. On success the replaced
+ * version becomes the new .prev, so the user can roll forward again.
+ */
+async function rollbackDir(installDir) {
+  const prev = prevDirFor(installDir);
+  if (!(await isDir(prev))) {
+    throw new Error("No previous version kept for this install — nothing to roll back to");
+  }
+  const parent = path.dirname(installDir);
+  const stash = path.join(parent, `.${path.basename(installDir)}.rollback-${rand()}`);
+
+  let stashed = false;
+  if (await exists(installDir)) {
+    await fsp.rename(installDir, stash);
+    stashed = true;
+  }
+  try {
+    await fsp.rename(prev, installDir);
+  } catch (err) {
+    if (stashed) await fsp.rename(stash, installDir).catch(() => {});
+    throw new Error(`Rollback failed: ${err.message}`);
+  }
+  if (stashed) {
+    // keep what we just replaced as the new .prev (roll forward)
+    try {
+      await fsp.rename(stash, prev);
+    } catch {
+      await rmrf(stash).catch(() => {});
+    }
+  }
+  return { path: installDir, prev };
+}
+
 /**
  * Run `fn(stageDir)` against a fresh sibling directory, then swap it into place
  * as `installDir`. A failure anywhere leaves the previous install untouched and
  * no partial install dir behind — which is the whole point.
+ *
+ * With `{keepPrev: true}` the replaced install is retained as `<installDir>.prev`
+ * (replacing any older one) instead of being deleted — that is what rollback
+ * restores. Only dir-based kinds ask for it.
  */
-async function stagedInstall(installDir, fn) {
+async function stagedInstall(installDir, fn, { keepPrev = false } = {}) {
   const parent = path.dirname(installDir);
   const base = path.basename(installDir);
   await mkdirp(parent);
@@ -271,6 +346,16 @@ async function stagedInstall(installDir, fn) {
     }
     await rmrf(stage).catch(() => {});
     throw err;
+  }
+  if (hadOld && keepPrev) {
+    const prev = prevDirFor(installDir);
+    await rmrf(prev).catch(() => {});
+    try {
+      await fsp.rename(backup, prev);
+      return result;
+    } catch {
+      /* keeping .prev is best-effort — never fail an install over it */
+    }
   }
   await rmrf(backup).catch(() => {});
   return result;
@@ -492,6 +577,10 @@ module.exports = {
   writeManifest,
   readManifest,
   stagedInstall,
+  prevDirFor,
+  hasPrev,
+  rollbackDir,
+  launchExtras,
   withWorkDir,
   walkFiles,
   isExecMode,

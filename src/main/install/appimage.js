@@ -14,6 +14,7 @@ const path = require("node:path");
 const {
   installDirFor, rmrf, exists, run, walkFiles, spawnDetached,
   stagedInstall, withWorkDir, writeManifest, readManifest, throwIfAborted,
+  launchExtras, rollbackDir,
 } = require("./util");
 const { writeDesktopEntry, findIcon, updateDesktopDatabase, execArg } = require("./desktop");
 const { standardUninstall, nameHints } = require("./common");
@@ -95,7 +96,7 @@ async function install({ app, artifact, filePath, ctx }) {
 
     sandboxed = await hasChromeSandbox(stage);
     ctx.log(`appimage: chrome-sandbox ${sandboxed ? "present → ELECTRON_DISABLE_SANDBOX=1" : "absent"}`);
-  });
+  }, { keepPrev: true }); // SPEC v0.2: keep the replaced install for rollback
 
   // Desktop entry points at the final location (after the swap).
   ctx.emitProgress("install", 88, "Creating desktop entry");
@@ -140,11 +141,23 @@ async function launch({ app, artifact, installedPath, ctx }) {
   if (!(await exists(appRun))) throw new Error(`AppRun missing at ${appRun} — reinstall the app`);
   await fsp.chmod(appRun, 0o755).catch(() => {});
   const sandboxed = manifest?.sandboxed ?? (await hasChromeSandbox(installDir));
-  const env = { ...process.env };
-  if (sandboxed) env.ELECTRON_DISABLE_SANDBOX = "1";
-  ctx.log(`launching ${appRun}${sandboxed ? " (sandbox disabled)" : ""}`);
-  const child = spawnDetached(appRun, [], { cwd: installDir, env });
-  return { pid: child.pid, command: appRun };
+  const baseEnv = { ...process.env };
+  if (sandboxed) baseEnv.ELECTRON_DISABLE_SANDBOX = "1";
+  // v0.2: appPrefs.launchArgs are appended, launchEnv layered on top
+  const { args, env } = launchExtras(ctx, { env: baseEnv });
+  ctx.log(`launching ${appRun}${args.length ? ` ${args.join(" ")}` : ""}${sandboxed ? " (sandbox disabled)" : ""}`);
+  const child = spawnDetached(appRun, args, { cwd: installDir, env });
+  return { pid: child.pid, command: appRun, args };
 }
 
-module.exports = { install, uninstall, launch, hasChromeSandbox, launchSpec };
+/** SPEC v0.2: restore <installDir>.prev. */
+async function rollback({ app, artifact, installedPath, ctx }) {
+  const installDir = installedPath || installDirFor(app, artifact, ctx);
+  ctx.emitProgress("install", 30, "Restoring the previous version");
+  await rollbackDir(installDir);
+  const manifest = await readManifest(installDir);
+  ctx.emitProgress("cleanup", 100, "Previous version restored");
+  return { version: manifest?.version ?? null, path: installDir, launchable: true };
+}
+
+module.exports = { install, uninstall, launch, rollback, hasChromeSandbox, launchSpec };

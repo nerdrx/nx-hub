@@ -311,7 +311,17 @@ function startMockGitHub(opts = {}) {
     if (m) {
       const rel = data.releases[`${m[1]}/${m[2]}`];
       if (!rel) return notFound();
-      return json(rel);
+      return json(Array.isArray(rel) ? rel.find((r) => !r.prerelease && !r.draft) || rel[0] : rel);
+    }
+
+    // GET /repos/:owner/:repo/releases  (v0.2 list, paginated)
+    m = p.match(/^\/repos\/([^/]+)\/([^/]+)\/releases$/);
+    if (m) {
+      const rel = data.releases[`${m[1]}/${m[2]}`];
+      if (!rel) return json([]); // GitHub answers [] for a repo without releases
+      const page = Number(url.searchParams.get("page") || 1);
+      const list = Array.isArray(rel) ? rel : [rel];
+      return json(page === 1 ? list : []);
     }
 
     // GET /repos/:owner/:repo/releases/assets/:id  (octet-stream download)
@@ -319,9 +329,11 @@ function startMockGitHub(opts = {}) {
     if (m) {
       const id = Number(m[3]);
       let found = null;
-      for (const rel of Object.values(data.releases)) {
-        const a = rel.assets.find((x) => x.id === id);
-        if (a) found = a;
+      for (const entry of Object.values(data.releases)) {
+        for (const rel of Array.isArray(entry) ? entry : [entry]) {
+          const a = (rel.assets || []).find((x) => x.id === id);
+          if (a) found = a;
+        }
       }
       if (!found) return notFound();
       stats.downloads += 1;
@@ -365,8 +377,13 @@ function startMockGitHub(opts = {}) {
           rateLimited = v;
         },
         assetNamed(fullName, name) {
-          const rel = data.releases[fullName];
-          return rel && rel.assets.find((a) => a.name === name);
+          const entry = data.releases[fullName];
+          if (!entry) return undefined;
+          for (const rel of Array.isArray(entry) ? entry : [entry]) {
+            const a = (rel.assets || []).find((x) => x.name === name);
+            if (a) return a;
+          }
+          return undefined;
         },
         close: () =>
           new Promise((done) => {

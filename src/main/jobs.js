@@ -24,6 +24,57 @@ let seq = 0;
 const jobs = new Map(); // jobId → job
 const queues = new Map(); // appId → { pending: [jobId], active: jobId|null }
 
+/**
+ * SPEC v0.2 `maxConcurrentDownloads`: a counting semaphore around the transfer
+ * itself. Installs stay serialised per app (the queues above); this only caps
+ * how many downloads run at the same time ACROSS apps.
+ */
+const downloads = { limit: 0, active: 0, waiters: [] };
+
+function setDownloadLimit(n) {
+  const limit = Number(n);
+  if (!Number.isFinite(limit) || limit < 1) return downloads.limit;
+  downloads.limit = Math.floor(limit);
+  drainDownloadWaiters();
+  return downloads.limit;
+}
+
+function drainDownloadWaiters() {
+  while (downloads.active < downloads.limit && downloads.waiters.length) {
+    downloads.active += 1;
+    const next = downloads.waiters.shift();
+    next();
+  }
+}
+
+async function acquireDownloadSlot() {
+  if (downloads.limit < 1) setDownloadLimit(config.load().maxConcurrentDownloads || 2);
+  if (downloads.active < downloads.limit) {
+    downloads.active += 1;
+    return;
+  }
+  await new Promise((resolve) => downloads.waiters.push(resolve));
+}
+
+function releaseDownloadSlot() {
+  downloads.active = Math.max(0, downloads.active - 1);
+  drainDownloadWaiters();
+}
+
+/** Run `fn` holding one download slot. */
+async function withDownloadSlot(fn) {
+  await acquireDownloadSlot();
+  try {
+    return await fn();
+  } finally {
+    releaseDownloadSlot();
+  }
+}
+
+function downloadStats() {
+  return { limit: downloads.limit, active: downloads.active, waiting: downloads.waiters.length };
+}
+
 function init(d = {}) {
   deps = Object.assign(deps, d);
   return module.exports;
@@ -115,6 +166,8 @@ function makeCtx(job, settings, overrides = {}) {
       dataDir: config.dataDir(),
       installRoot: config.installRoot(settings),
       settings,
+      // v0.2: this app's prefs (launchArgs / launchEnv / …) travel with the ctx
+      appPrefs: config.getAppPref(settings, job.appId),
       fallbackIcon: fallbackIcon(),
       log: (msg) => config.log(`[${job.type}:${job.appId}/${job.artifactId}] ${msg}`),
       emitProgress: (phase, pct, message) => progress(job, phase, pct, message),
@@ -137,13 +190,19 @@ function prune() {
  * Queue a job. One runs per app at a time; extra jobs for the same app wait.
  * @returns {string} jobId
  */
-function enqueue(type, appId, artifactId) {
+function enqueue(type, appId, artifactId, opts = {}) {
   const { app, artifact } = resolve(appId, artifactId);
   if (!app) throw new Error(`Unknown app: ${appId}`);
   if (!artifact) throw new Error(`Unknown artifact ${artifactId} for ${appId}`);
 
+  const tag = opts.tag ? String(opts.tag) : null;
   const dup = [...jobs.values()].find(
-    (j) => j.appId === app.id && j.artifactId === artifact.id && j.type === type && (j.status === "queued" || j.status === "running")
+    (j) =>
+      j.appId === app.id &&
+      j.artifactId === artifact.id &&
+      j.type === type &&
+      (j.tag || null) === tag &&
+      (j.status === "queued" || j.status === "running")
   );
   if (dup) return dup.id;
 
@@ -155,6 +214,7 @@ function enqueue(type, appId, artifactId) {
     artifactId: artifact.id,
     appName: app.name,
     artifactLabel: artifact.label,
+    tag, // v0.2: installVersion target ("" / null = the app's latest)
     status: "queued",
     phase: type === "install" ? "download" : "install",
     pct: 0,
@@ -178,6 +238,15 @@ function install(appId, artifactId) {
 }
 function uninstall(appId, artifactId) {
   return enqueue("uninstall", appId, artifactId);
+}
+/** SPEC v0.2: install ANY published version (the UI confirms downgrades). */
+function installVersion(appId, artifactId, tag) {
+  if (!tag) return install(appId, artifactId);
+  return enqueue("install", appId, artifactId, { tag });
+}
+/** SPEC v0.2: restore the kept `<installdir>.prev`. */
+function rollback(appId, artifactId) {
+  return enqueue("rollback", appId, artifactId);
 }
 
 function cancelJob(jobId) {
@@ -238,6 +307,7 @@ async function pump(appId) {
   try {
     if (job.type === "install") await runInstall(job);
     else if (job.type === "uninstall") await runUninstall(job);
+    else if (job.type === "rollback") await runRollback(job);
     else throw new Error(`Unknown job type ${job.type}`);
     if (job.status === "running") finish(job, "done", job.message || "done");
   } catch (e) {
@@ -271,26 +341,74 @@ function siblingsFromArtifact(artifact) {
   return [{ name: artifact.checksumName || `${artifact.assetName}.sha256`, url: artifact.checksumUrl, id: artifact.checksumId }];
 }
 
-async function runInstall(job) {
-  const { app, artifact } = resolve(job.appId, job.artifactId);
-  if (!app || !artifact) throw new Error("App or artifact disappeared — refresh and try again");
-  if (!app.latest) throw new Error(`${app.name} has no release to install`);
-  const settings = config.load();
+/**
+ * v0.2: an install can target any release. The live artifact keeps its identity
+ * (id, kind, overlay hints) — only the ASSET fields come from the chosen
+ * release, matched by artifact id / assetPattern against that release's assets.
+ */
+function retargetArtifact(app, artifact, tag) {
+  const release = discovery.findRelease(app.id, tag);
+  if (!release) throw new Error(`${app.name} has no release tagged ${tag}`);
+  const match = discovery.matchArtifactInRelease(app.id, artifact.id, release, artifact);
+  if (!match) {
+    throw new Error(`Release ${release.tag_name} has no download matching "${artifact.label}"`);
+  }
+  const version = discovery.parseVersion(release.tag_name);
+  const target = Object.assign({}, artifact, {
+    assetName: match.assetName,
+    assetUrl: match.assetUrl,
+    assetId: match.assetId,
+    size: match.size,
+    checksumName: match.checksumName || null,
+    checksumUrl: match.checksumUrl || null,
+    checksumId: match.checksumId || null,
+    version,
+  });
+  return { target, release, version };
+}
 
-  // 1. download
+async function runInstall(job) {
+  const { app, artifact: liveArtifact } = resolve(job.appId, job.artifactId);
+  if (!app || !liveArtifact) throw new Error("App or artifact disappeared — refresh and try again");
+  const settings = config.load();
+  setDownloadLimit(settings.maxConcurrentDownloads);
+
+  // pick the release to install: an explicit tag (installVersion) or "latest"
+  let artifact = liveArtifact;
+  let version = app.latest ? app.latest.version : null;
+  if (job.tag) {
+    const retargeted = retargetArtifact(app, liveArtifact, job.tag);
+    artifact = retargeted.target;
+    version = retargeted.version;
+    job.targetVersion = version;
+  } else if (!app.latest) {
+    throw new Error(`${app.name} has no release to install`);
+  }
+
+  // 1. download (or reuse what the "download" update policy already fetched)
   const downloads = config.downloadsDir();
   config.ensureDir(downloads);
   const filePath = path.join(downloads, `${app.id}-${artifact.assetName}`);
-  progress(job, "download", 0, `downloading ${artifact.assetName}`);
-  await gh().downloadAsset(assetFromArtifact(artifact), filePath, {
-    signal: job.controller.signal,
-    siblings: siblingsFromArtifact(artifact),
-    onProgress: (p) => progress(job, p.phase || "download", p.pct, p.message),
-  });
+  const cached = stateStore.getDownload(app.id, liveArtifact.id);
+  const reusable =
+    cached && cached.path === filePath && String(cached.version) === String(version) && fs.existsSync(filePath);
+
+  if (reusable) {
+    progress(job, "download", 100, `using the downloaded ${artifact.assetName}`);
+  } else {
+    progress(job, "download", 0, `downloading ${artifact.assetName}`);
+    await withDownloadSlot(() =>
+      gh().downloadAsset(assetFromArtifact(artifact), filePath, {
+        signal: job.controller.signal,
+        siblings: siblingsFromArtifact(artifact),
+        onProgress: (p) => progress(job, p.phase || "download", p.pct, p.message),
+      })
+    );
+  }
   if (job.cancelRequested) throw new Error("aborted");
 
   // SPEC: core sets artifact.version before handing off to the engine
-  artifact.version = app.latest.version;
+  artifact.version = version;
 
   // 2. install
   let result;
@@ -316,7 +434,7 @@ async function runInstall(job) {
 
   // 3. record
   stateStore.recordInstall(app.id, artifact.id, {
-    version: result.version || app.latest.version,
+    version: result.version || version,
     path: result.path || null,
     launchable: result.launchable !== false,
     iconPath: result.iconPath || null,
@@ -326,6 +444,7 @@ async function runInstall(job) {
   // 4. cleanup
   progress(job, "cleanup", 100, "cleaning up");
   safeUnlink(filePath); // the engine copied whatever it needed out of downloads/
+  stateStore.removeDownload(app.id, artifact.id); // the pre-download was consumed
   try {
     discovery.remerge();
   } catch (_) {
@@ -333,7 +452,7 @@ async function runInstall(job) {
   }
   // the engine may return its own note (tarball-prefix records one in the manifest)
   const note = result.postInstallNote || artifact.postInstallNote || null;
-  job.message = note ? `Installed. ${note}` : `Installed ${app.name} ${app.latest.version}`;
+  job.message = note ? `Installed. ${note}` : `Installed ${app.name} ${version}`;
   if (note) emit({ type: "toast", level: "info", message: note });
   return result;
 }
@@ -383,7 +502,11 @@ async function runSelfUpdate(job, { app, artifact, filePath, settings }) {
       }
     }, 400);
   }
-  return { version: (staged && staged.version) || app.latest.version, path: target, launchable: true };
+  return {
+    version: (staged && staged.version) || artifact.version || (app.latest && app.latest.version) || null,
+    path: target,
+    launchable: true,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -416,6 +539,41 @@ async function runUninstall(job) {
   job.message = `Removed ${app.name} — ${artifact.label}`;
 }
 
+/**
+ * SPEC v0.2 rollback: hand the kept `<installdir>.prev` back to the engine,
+ * then record the restored version. Runs through the per-app queue like any
+ * other job, so it can never race an install of the same app.
+ */
+async function runRollback(job) {
+  const { app, artifact } = resolve(job.appId, job.artifactId);
+  if (!app || !artifact) throw new Error("App or artifact disappeared — refresh and try again");
+  const settings = config.load();
+  const rec = stateStore.getInstall(job.appId, job.artifactId);
+  const installedPath = (rec && rec.path) || (artifact.installed && artifact.installed.path) || null;
+
+  const engine = getEngine();
+  if (typeof engine.rollback !== "function") throw new Error("This build cannot roll installs back");
+
+  progress(job, "install", 20, `restoring the previous ${artifact.label}`);
+  const result = (await engine.rollback({ app, artifact, installedPath, ctx: makeCtx(job, settings) })) || {};
+
+  const version = result.version != null ? result.version : artifact.prevVersion || null;
+  stateStore.recordInstall(app.id, artifact.id, {
+    version,
+    path: result.path || installedPath || null,
+    launchable: result.launchable !== false,
+    installedAt: new Date().toISOString(),
+  });
+  try {
+    discovery.remerge();
+  } catch (_) {
+    /* cache may be empty in tests */
+  }
+  progress(job, "cleanup", 100, "restored");
+  job.message = `Restored ${app.name}${version ? ` ${version}` : ""}`;
+  return result;
+}
+
 /** Launch is immediate (not queued) — SPEC: window.nxhub.launch → engine.launch. */
 async function launch(appId, artifactId) {
   const { app, artifact } = resolve(appId, artifactId);
@@ -428,6 +586,8 @@ async function launch(appId, artifactId) {
     dataDir: config.dataDir(),
     installRoot: config.installRoot(settings),
     settings,
+    // v0.2: launchArgs / launchEnv for this app reach the engine through ctx
+    appPrefs: config.getAppPref(settings, app.id),
     fallbackIcon: fallbackIcon(),
     log: (msg) => config.log(`[launch:${app.id}/${artifact.id}] ${msg}`),
     emitProgress: () => {},
@@ -435,6 +595,95 @@ async function launch(appId, artifactId) {
   };
   config.log(`launch ${app.id}/${artifact.id}`);
   return engine.launch({ app, artifact, installedPath, ctx });
+}
+
+/* ------------------------------------------------------------------ */
+/* v0.2: update policies                                               */
+/* ------------------------------------------------------------------ */
+
+/** Pre-fetch an artifact's asset into the download cache ("download" policy). */
+async function predownload(app, artifact, version) {
+  const dir = config.downloadsDir();
+  config.ensureDir(dir);
+  const filePath = path.join(dir, `${app.id}-${artifact.assetName}`);
+  const already = stateStore.getDownload(app.id, artifact.id);
+  if (already && already.path === filePath && String(already.version) === String(version) && fs.existsSync(filePath)) {
+    return { path: filePath, cached: true };
+  }
+  await withDownloadSlot(() =>
+    gh().downloadAsset(assetFromArtifact(artifact), filePath, {
+      siblings: siblingsFromArtifact(artifact),
+      onProgress: () => {},
+    })
+  );
+  stateStore.recordDownload(app.id, artifact.id, { version, path: filePath, assetName: artifact.assetName });
+  return { path: filePath, cached: false };
+}
+
+/**
+ * Apply the effective update policy (appPrefs → global) to every artifact with
+ * an update pending. Called after EVERY discovery refresh, scheduled or manual.
+ *
+ *  "notify"   → emit `update-available` once per (app, version); the OS
+ *               notification itself is the ipc/index layer's job (electron
+ *               must not leak into these modules).
+ *  "download" → fetch the asset into the cache and flag readyToInstall.
+ *  "install"  → queue a normal install (serialised per app by the queue).
+ *
+ * Never throws: one broken app must not stop the others.
+ */
+async function applyUpdatePolicies(opts = {}) {
+  const settings = opts.settings || config.load();
+  setDownloadLimit(settings.maxConcurrentDownloads);
+  const apps = opts.apps || discovery.getCached().apps || [];
+  const result = { notified: [], downloaded: [], installing: [], errors: [] };
+
+  for (const app of apps) {
+    if (!app || !app.latest) continue;
+    if (app.localHidden) continue; // the user hid it — stay quiet
+    const policy = config.effectiveUpdatePolicy(settings, app.id);
+    const version = app.latest.version;
+
+    for (const artifact of app.artifacts || []) {
+      if (!artifact.updateAvailable) continue;
+      const target = { appId: app.id, appName: app.name, artifactId: artifact.id, version };
+      try {
+        if (policy === "install") {
+          if (activeFor(app.id) && activeFor(app.id).artifactId === artifact.id) continue;
+          const jobId = install(app.id, artifact.id);
+          result.installing.push(Object.assign({ jobId }, target));
+          continue;
+        }
+
+        if (policy === "download") {
+          const { cached } = await predownload(app, artifact, version);
+          artifact.readyToInstall = true;
+          artifact.readyPath = path.join(config.downloadsDir(), `${app.id}-${artifact.assetName}`);
+          if (!cached) result.downloaded.push(target);
+          continue;
+        }
+
+        // "notify" (default) — once per app+version, persisted in state.json
+        if (stateStore.wasNotified(app.id, version)) continue;
+        stateStore.markNotified(app.id, version);
+        result.notified.push(target);
+        emit({ type: "update-available", appId: app.id, appName: app.name, artifactId: artifact.id, version });
+      } catch (e) {
+        config.log(`update policy (${policy}) failed for ${app.id}/${artifact.id}: ${e.message}`);
+        result.errors.push(Object.assign({ message: e.message }, target));
+      }
+    }
+  }
+
+  if (result.downloaded.length) {
+    try {
+      discovery.remerge();
+    } catch (_) {
+      /* cache may be empty in tests */
+    }
+    emit({ type: "state-changed" });
+  }
+  return result;
 }
 
 /* ------------------------------------------------------------------ */
@@ -480,18 +729,27 @@ function _reset() {
   jobs.clear();
   queues.clear();
   seq = 0;
+  downloads.limit = 0;
+  downloads.active = 0;
+  downloads.waiters.length = 0;
 }
 
 module.exports = {
   init,
   enqueue,
   install,
+  installVersion,
   uninstall,
+  rollback,
   launch,
   cancelJob,
   list,
   activeFor,
   getEngine,
+  applyUpdatePolicies,
+  setDownloadLimit,
+  downloadStats,
+  withDownloadSlot,
   _reset,
   _jobs: jobs,
 };
