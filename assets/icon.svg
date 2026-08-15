@@ -1,59 +1,79 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="NX Hub">
   <title>NX Hub</title>
+<!--
+  NX Hub. A beveled glass crystal: a pointy-top hexagon cut into a six-face
+  bevel around a sunken, lit well, with the NX monogram sculpted from the same
+  glass. Violet #7700FF family throughout, cyan #00e5ff only as the light
+  trapped inside, on the app's own #0a0714 field.
 
-  <!--
-    NX Hub mark. Hexagonal tile, violet #7700FF dominant, cyan #00e5ff as a
-    subordinate edge line, dark #0a0714 field, bold geometric "NX" monogram.
+  How it is built, from the outside in:
 
-    Two deliberate construction choices keep this stable across rasterisers:
+  1. Bevel. Each of the six faces is a separate quad running from the outer
+     hexagon to the inner one. Its tone is not picked by hand - it is
+     0.5 + 0.5*dot(face normal, light) with the light arriving from the upper
+     left, mapped through one violet ramp. That is why the two upper faces
+     read bright and the lower right reads nearly black: it is a single
+     consistent lighting model, so the solid always looks like one object.
+     Corners are rounded by splitting each corner arc at its midpoint and
+     giving half to each neighbouring face, which keeps the band seamless
+     without a single clip path.
+  2. Well. A radial violet-to-near-black field with the same two lights the
+     app's background runs on - violet up-left, cyan down-right - plus four
+     specks of dust. Its rim carries a seam that is black where the wall turns
+     away from the light and violet where it bounces back up.
+  3. Refraction. Cyan catches on the inner lip of the three faces that turn
+     toward the light; a hard white line runs along the outer silhouette on
+     the same side. These two edges are what stop the shape reading as flat
+     vector art.
+  4. Monogram. The N is one continuous centre line (up, diagonal, up); the X
+     is two crossing arms at the same slope. Both are stroked, then trimmed by
+     a horizontal band at the cap lines - so every terminal, and every mitre
+     that would otherwise spike past the cap, ends in a flat typographic cut.
+     No <text>, no font, no traced outlines. A cyan casing sits under a
+     white-to-violet face, giving the letters a lit top and an underglow.
 
-    1. All three concentric rings stroke the SAME base path (#hex) at different
-       widths. A stroke expands perpendicular to the path uniformly, so the
-       rings are exactly concentric and evenly thick by construction - no
-       hand-computed inner polygons that drift at the vertices. Measured as
-       perpendicular offset from the base path:
-           violet rim   +6 .. +22   (16px)
-           cyan edge    +2 .. +6    (4px)
-           dark field   inside +2
-       stroke-linejoin="round" supplies the corner rounding.
-
-    2. The monogram is explicit geometry, not <text> - no font dependency, so
-       it rasterises identically on any machine.
-
-    The hexagon is stretched ~7% taller than regular (h/R = 0.93) so it sits
-    evenly in the square canvas; a regular hexagon leaves 4x more padding above
-    and below than at the sides.
-  -->
-
+  Small sizes do not use this file. assets/icons/{16,24,32}x*.png come from a
+  simplified variant - wider hexagon, no bevel, no well, flat white monogram -
+  because below 48px the bevel, the cyan fringe and the violet-footed letters
+  all collapse into one smudge. assets/tray.svg is a third variant: flat brand
+  violet with the monogram knocked out, so it stays legible on a light or a
+  dark tray and survives being tinted.
+-->
   <defs>
-    <!-- base hexagon: circumradius 214, half-height 198, centred (256,256) -->
-    <path id="hex" d="M470 256 L363 58 L149 58 L42 256 L149 454 L363 454 Z"/>
-
-    <!--
-      "NX" monogram, cap height 160 (y 176..336), stem width 38, centred on
-      x=256. N spans 105..245, X spans 267..407, 22px letter gap.
-      N diagonal: run 64 / drop 93 gives a perpendicular weight of 38.0,
-      optically identical to the vertical stems.
-      X arms: run 140 / drop 160 gives a horizontal terminal width of 50,
-      which is also the waist width - so the arms never pinch at the crossing.
-    -->
-    <path id="mono" d="M105 336 L105 176 L143 176 L207 269 L207 176 L245 176 L245 336 L207 336 L143 243 L143 336 Z
-                       M267 176 L317 176 L337 211.6 L357 176 L407 176 L362 256 L407 336 L357 336 L337 300.4 L317 336 L267 336 L312 256 Z"/>
-
-    <filter id="monoGlow" x="-25%" y="-25%" width="150%" height="150%">
-      <feGaussianBlur stdDeviation="7"/>
-    </filter>
+    <linearGradient id="nxf0" gradientUnits="userSpaceOnUse" x1="357.43" y1="53.15" x2="235.71" y2="296.57"><stop offset="0" stop-color="#9e60f8"/><stop offset="1" stop-color="#773dcb"/></linearGradient>
+    <linearGradient id="nxf1" gradientUnits="userSpaceOnUse" x1="465" y1="256" x2="214.2" y2="256"><stop offset="0" stop-color="#612fb4"/><stop offset="1" stop-color="#3e108b"/></linearGradient>
+    <linearGradient id="nxf2" gradientUnits="userSpaceOnUse" x1="357.43" y1="458.85" x2="235.71" y2="215.43"><stop offset="0" stop-color="#4d2c88"/><stop offset="1" stop-color="#2b0c62"/></linearGradient>
+    <linearGradient id="nxf3" gradientUnits="userSpaceOnUse" x1="154.57" y1="458.85" x2="276.29" y2="215.43"><stop offset="0" stop-color="#612fb3"/><stop offset="1" stop-color="#3e108b"/></linearGradient>
+    <linearGradient id="nxf4" gradientUnits="userSpaceOnUse" x1="47" y1="256" x2="297.8" y2="256"><stop offset="0" stop-color="#9d5ef8"/><stop offset="1" stop-color="#763bcb"/></linearGradient>
+    <linearGradient id="nxf5" gradientUnits="userSpaceOnUse" x1="154.57" y1="53.15" x2="276.29" y2="296.57"><stop offset="0" stop-color="#be94f6"/><stop offset="1" stop-color="#946dc9"/></linearGradient>
+    <radialGradient id="nxw" cx="0.4" cy="0.34" r="0.78"><stop offset="0" stop-color="#2a1354"/><stop offset="0.62" stop-color="#180e33"/><stop offset="1" stop-color="#0e0a1e"/></radialGradient>
+    <radialGradient id="nxn1" gradientUnits="userSpaceOnUse" cx="222" cy="214" r="172"><stop offset="0" stop-color="#8a2bff" stop-opacity="0.6"/><stop offset="1" stop-color="#8a2bff" stop-opacity="0"/></radialGradient>
+    <radialGradient id="nxn2" gradientUnits="userSpaceOnUse" cx="332" cy="372" r="122"><stop offset="0" stop-color="#00e5ff" stop-opacity="0.2"/><stop offset="1" stop-color="#00e5ff" stop-opacity="0"/></radialGradient>
+    <linearGradient id="nxs" x1="0.3" y1="0" x2="0.7" y2="1"><stop offset="0" stop-color="#000000" stop-opacity="0.55"/><stop offset="0.55" stop-color="#000000" stop-opacity="0.12"/><stop offset="1" stop-color="#b076ff" stop-opacity="0.38"/></linearGradient>
+    <linearGradient id="nxr" gradientUnits="userSpaceOnUse" x1="80" y1="61.74" x2="432" y2="352.57"><stop offset="0" stop-color="#00e5ff" stop-opacity="0.85"/><stop offset="0.55" stop-color="#8fdcff" stop-opacity="0.28"/><stop offset="1" stop-color="#00e5ff" stop-opacity="0"/></linearGradient>
+    <linearGradient id="nxe" x1="0.1" y1="0" x2="0.9" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity="0.85"/><stop offset="0.42" stop-color="#e6d2ff" stop-opacity="0.18"/><stop offset="1" stop-color="#ffffff" stop-opacity="0.06"/></linearGradient>
+    <filter id="nxb" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="5"/></filter>
+    <clipPath id="nxt"><rect x="0" y="201" width="512" height="110"/></clipPath>
+    <linearGradient id="nxl" x1="0" y1="0" x2="0.25" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="0.5" stop-color="#f2ebff"/><stop offset="1" stop-color="#b98cff"/></linearGradient>
+    <linearGradient id="nxk" gradientUnits="userSpaceOnUse" x1="0" y1="201" x2="0" y2="311"><stop offset="0" stop-color="#ffffff" stop-opacity="0.9"/><stop offset="0.34" stop-color="#ffffff" stop-opacity="0.18"/><stop offset="0.55" stop-color="#ffffff" stop-opacity="0"/></linearGradient>
   </defs>
-
-  <!-- violet rim: fill + stroke covers the path out to +22 -->
-  <use href="#hex" fill="#7700FF" stroke="#7700FF" stroke-width="44" stroke-linejoin="round"/>
-  <!-- cyan edge: ring at +-6, only +2..+6 survives the dark field below -->
-  <use href="#hex" fill="none" stroke="#00e5ff" stroke-width="12" stroke-linejoin="round"/>
-  <!-- dark field: fill + stroke covers out to +2 -->
-  <use href="#hex" fill="#0a0714" stroke="#0a0714" stroke-width="4" stroke-linejoin="round"/>
-
-  <!-- monogram: soft cyan halo, crisp cyan edge, violet face -->
-  <use href="#mono" fill="#00e5ff" opacity="0.4" filter="url(#monoGlow)"/>
-  <use href="#mono" fill="none" stroke="#00e5ff" stroke-width="9" stroke-linejoin="round"/>
-  <use href="#mono" fill="#7700FF"/>
+  <path d="M256,29.34Q265.62,29.34 275.24,34.68L445.76,129.32Q455.38,134.66 460.19,142.83L429.6,160.84Q427.19,156.76 422.38,154.09L265.62,67.08Q260.81,64.41 256,64.41Z" fill="url(#nxf0)"/>
+  <path d="M460.19,142.83Q465,151 465,162L465,350Q465,361 460.19,369.17L429.6,351.16Q432,347.07 432,341.57L432,170.43Q432,164.93 429.6,160.84Z" fill="url(#nxf1)"/>
+  <path d="M460.19,369.17Q455.38,377.34 445.76,382.68L275.24,477.32Q265.62,482.66 256,482.66L256,447.59Q260.81,447.59 265.62,444.92L422.38,357.91Q427.19,355.24 429.6,351.16Z" fill="url(#nxf2)"/>
+  <path d="M256,482.66Q246.38,482.66 236.76,477.32L66.24,382.68Q56.62,377.34 51.81,369.17L82.4,351.16Q84.81,355.24 89.62,357.91L246.38,444.92Q251.19,447.59 256,447.59Z" fill="url(#nxf3)"/>
+  <path d="M51.81,369.17Q47,361 47,350L47,162Q47,151 51.81,142.83L82.4,160.84Q80,164.93 80,170.43L80,341.57Q80,347.07 82.4,351.16Z" fill="url(#nxf4)"/>
+  <path d="M51.81,142.83Q56.62,134.66 66.24,129.32L236.76,34.68Q246.38,29.34 256,29.34L256,64.41Q251.19,64.41 246.38,67.08L89.62,154.09Q84.81,156.76 82.4,160.84Z" fill="url(#nxf5)"/>
+  <path d="M246.38,67.08Q256,61.74 265.62,67.08L422.38,154.09Q432,159.43 432,170.43L432,341.57Q432,352.57 422.38,357.91L265.62,444.92Q256,450.26 246.38,444.92L89.62,357.91Q80,352.57 80,341.57L80,170.43Q80,159.43 89.62,154.09Z" fill="url(#nxw)"/>
+  <path d="M246.38,67.08Q256,61.74 265.62,67.08L422.38,154.09Q432,159.43 432,170.43L432,341.57Q432,352.57 422.38,357.91L265.62,444.92Q256,450.26 246.38,444.92L89.62,357.91Q80,352.57 80,341.57L80,170.43Q80,159.43 89.62,154.09Z" fill="url(#nxn1)"/>
+  <path d="M246.38,67.08Q256,61.74 265.62,67.08L422.38,154.09Q432,159.43 432,170.43L432,341.57Q432,352.57 422.38,357.91L265.62,444.92Q256,450.26 246.38,444.92L89.62,357.91Q80,352.57 80,341.57L80,170.43Q80,159.43 89.62,154.09Z" fill="url(#nxn2)"/>
+  <g fill="#cbb6ff"><circle cx="176" cy="152" r="3.4" opacity="0.75"/><circle cx="330" cy="176" r="2.4" opacity="0.5"/><circle cx="205" cy="330" r="2.2" opacity="0.45"/><circle cx="318" cy="308" r="3" opacity="0.35"/></g>
+  <path d="M246.38,67.08Q256,61.74 265.62,67.08L422.38,154.09Q432,159.43 432,170.43L432,341.57Q432,352.57 422.38,357.91L265.62,444.92Q256,450.26 246.38,444.92L89.62,357.91Q80,352.57 80,341.57L80,170.43Q80,159.43 89.62,154.09ZM253.38,72.35Q256,70.89 258.62,72.35L421.38,162.68Q424,164.14 424,167.14L424,344.86Q424,347.86 421.38,349.32L258.62,439.65Q256,441.11 253.38,439.65L90.62,349.32Q88,347.86 88,344.86L88,167.14Q88,164.14 90.62,162.68Z" fill-rule="evenodd" fill="url(#nxs)"/>
+  <g fill="url(#nxr)"><path d="M82.4,351.16Q80,347.07 80,341.57L80,170.43Q80,164.93 82.4,160.84L89.44,164.98Q89,165.72 89,166.72L89,345.28Q89,346.28 89.44,347.02Z"/><path d="M82.4,160.84Q84.81,156.76 89.62,154.09L246.38,67.08Q251.19,64.41 256,64.41L256,72.52Q255.13,72.52 254.25,73.01L90.75,163.75Q89.87,164.24 89.44,164.98Z"/><path d="M256,64.41Q260.81,64.41 265.62,67.08L422.38,154.09Q427.19,156.76 429.6,160.84L422.56,164.98Q422.13,164.24 421.25,163.75L257.75,73.01Q256.87,72.52 256,72.52Z"/></g>
+  <path d="M236.76,34.68Q256,24 275.24,34.68L445.76,129.32Q465,140 465,162L465,350Q465,372 445.76,382.68L275.24,477.32Q256,488 236.76,477.32L66.24,382.68Q47,372 47,350L47,162Q47,140 66.24,129.32ZM242.01,38.63Q256,30.86 269.99,38.63L445.01,135.77Q459,143.53 459,159.53L459,352.47Q459,368.47 445.01,376.23L269.99,473.37Q256,481.14 242.01,473.37L66.99,376.23Q53,368.47 53,352.47L53,159.53Q53,143.53 66.99,135.77Z" fill-rule="evenodd" fill="url(#nxe)"/>
+  <g filter="url(#nxb)" opacity="0.42"><path d="M162.18,201L162.18,311M232.18,201L232.18,311M162.18,201L232.18,311M277.5,201L347.5,311M347.5,201L277.5,311" fill="none" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="4" stroke="#00e5ff" stroke-width="28"/></g>
+  <g clip-path="url(#nxt)">
+  <path d="M162.18,357L162.18,201L232.18,311L232.18,155 M252.8,162.19L372.2,349.81M372.2,162.19L252.8,349.81" fill="none" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="4" stroke="#00e5ff" stroke-width="28" opacity="0.85"/>
+  <g transform="translate(0,-1.6)"><path d="M162.18,357L162.18,201L232.18,311L232.18,155 M252.8,162.19L372.2,349.81M372.2,162.19L252.8,349.81" fill="none" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="4" stroke="url(#nxl)" stroke-width="25"/></g>
+  <g transform="translate(0,-1.6)"><path d="M162.18,357L162.18,201L232.18,311L232.18,155 M252.8,162.19L372.2,349.81M372.2,162.19L252.8,349.81" fill="none" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="4" stroke="url(#nxk)" stroke-width="25"/></g>
+  </g>
 </svg>

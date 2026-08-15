@@ -1,33 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="NX Hub">
   <title>NX Hub tray</title>
+<!--
+  Tray variant of the NX Hub mark, tuned for 32px.
 
-  <!--
-    Tray variant of the NX Hub mark, tuned for 32px.
-    Same geometry as icon.svg, but simplified for the size:
+  The bevel, the well and every refractive edge are dropped: at 32px each of
+  them lands on well under a pixel and only greys the silhouette. What is left
+  is the part that carries the identity at that size - the hexagon and the NX -
+  as a single flat brand-violet shape with the monogram knocked out.
 
-    - The cyan tile ring is dropped. At 32px it would land on ~0.3 device
-      pixels and only muddy the rim into a grey fringe.
-    - The violet rim is thickened (16px -> 22px, ~1.4px at 32) so the hexagon
-      silhouette stays crisp.
-    - The blurred halo is dropped; the cyan edge on the letters is thickened
-      (9 -> 16) so it survives the downscale as definition rather than noise.
-
-    The tile keeps its own dark field rather than going flat-monochrome, so the
-    icon holds contrast on both light and dark panels instead of disappearing
-    into one of them.
-  -->
-
+  Knocking the letters out rather than drawing them light means the counters
+  show whatever is behind them, so the mark reads on a light tray and a dark
+  one, and it survives a monochrome tint intact (the holes stay holes).
+-->
   <defs>
-    <path id="hex" d="M470 256 L363 58 L149 58 L42 256 L149 454 L363 454 Z"/>
-    <path id="mono" d="M105 336 L105 176 L143 176 L207 269 L207 176 L245 176 L245 336 L207 336 L143 243 L143 336 Z
-                       M267 176 L317 176 L337 211.6 L357 176 L407 176 L362 256 L407 336 L357 336 L337 300.4 L317 336 L267 336 L312 256 Z"/>
+    <linearGradient id="nxg" x1="0.15" y1="0" x2="0.85" y2="1"><stop offset="0" stop-color="#9f63f7"/><stop offset="0.5" stop-color="#7718f2"/><stop offset="1" stop-color="#4812a0"/></linearGradient>
+    <clipPath id="nxt"><rect x="0" y="185" width="512" height="142"/></clipPath>
+    <mask id="nxm"><rect width="512" height="512" fill="#fff"/><g clip-path="url(#nxt)"><path d="M138.06,373L138.06,185L220.06,327L220.06,139 M266,145.16L394,366.84M394,145.16L266,366.84" fill="none" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="4" stroke="#000" stroke-width="38"/></g></mask>
   </defs>
-
-  <!-- violet rim out to +26 -->
-  <use href="#hex" fill="#7700FF" stroke="#7700FF" stroke-width="52" stroke-linejoin="round"/>
-  <!-- dark field out to +4, leaving a 22px rim -->
-  <use href="#hex" fill="#0a0714" stroke="#0a0714" stroke-width="8" stroke-linejoin="round"/>
-
-  <use href="#mono" fill="none" stroke="#00e5ff" stroke-width="10" stroke-linejoin="round"/>
-  <use href="#mono" fill="#7700FF"/>
+  <path d="M240.13,18.49Q256,10 271.87,18.49L470.13,124.51Q486,133 486,151L486,361Q486,379 470.13,387.49L271.87,493.51Q256,502 240.13,493.51L41.87,387.49Q26,379 26,361L26,151Q26,133 41.87,124.51Z" fill="url(#nxg)" mask="url(#nxm)"/>
 </svg>

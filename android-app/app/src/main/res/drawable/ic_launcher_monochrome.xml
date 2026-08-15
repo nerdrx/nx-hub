@@ -1,26 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  NX Hub themed icon. One flat tint, so the crystal reduces to its two
+  invariants: the hexagon ring and the NX. The monogram is a shade
+  heavier than the colour version to survive the tint at launcher size.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <path
-        android:pathData="M54,24 L80,39 L80,69 L54,84 L28,69 L28,39 Z"
-        android:fillColor="#00000000"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="4" />
-    <path
-        android:pathData="M39,64.9 L39,43.1 L51.3,64.9 L51.3,43.1"
-        android:fillColor="#00000000"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="4.1"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
-    <path
-        android:pathData="M58.1,43.1 L70.4,64.9 M70.4,43.1 L58.1,64.9"
-        android:fillColor="#00000000"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="4.1"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
+        android:pathData="M51.222,22.042Q54,20.5 56.778,22.042L81.401,35.708Q84.179,37.25 84.179,40.427L84.179,67.573Q84.179,70.75 81.401,72.292L56.778,85.958Q54,87.5 51.222,85.958L26.599,72.292Q23.821,70.75 23.821,67.573L23.821,40.427Q23.821,37.25 26.599,35.708ZM53.563,25.546Q54,25.304 54.437,25.546L79.542,39.48Q79.979,39.722 79.979,40.222L79.979,67.778Q79.979,68.278 79.542,68.52L54.437,82.454Q54,82.696 53.563,82.454L28.458,68.52Q28.021,68.278 28.021,67.778L28.021,40.222Q28.021,39.722 28.458,39.48Z"
+        android:fillType="evenOdd"
+        android:fillColor="#FFFFFFFF" />
+    <group>
+        <clip-path android:pathData="M25.121,46.058L82.879,46.058L82.879,61.942L25.121,61.942Z" />
+        <path
+            android:pathData="M39.854,68.584L39.854,46.058L49.962,61.942L49.962,39.416 M54.044,40.454L71.284,67.546M71.284,40.454L54.044,67.546"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="4.621"
+            android:strokeLineJoin="miter"
+            android:strokeMiterLimit="4"
+            android:fillColor="#00000000" />
+    </group>
 </vector>
