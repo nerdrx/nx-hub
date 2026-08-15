@@ -32,10 +32,10 @@
   --danger: #ff5470;
 
   /* ------------------------------------------------------------- geometry */
-  --radius: 18px;
-  --radius-sm: 12px;
-  --radius-xs: 8px;
-  --pill: 999px;
+  --radius: 6px;   /* angular glass — cards */
+  --radius-sm: 4px; /* rows, wells, inputs */
+  --radius-xs: 3px; /* chips, code */
+  --pill: 5px;      /* legacy name; pills are retired — buttons/tabs/chips are cut sharp */
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", Cantarell, sans-serif;
   --mono: ui-monospace, "JetBrains Mono", "Fira Code", Consolas, monospace;
 
@@ -470,7 +470,7 @@ body.sky-parked .neb {
   position: relative;
   width: 76px;
   height: 76px;
-  border-radius: 22px;
+  border-radius: var(--radius); /* tile icon plate — matches the angular system */
   display: flex;
   align-items: center;
   justify-content: center;

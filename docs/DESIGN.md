@@ -1,6 +1,6 @@
 # The NX Design Language
 
-**Version 1.0 · extracted from NX Hub v0.3.3 (the reference implementation)**
+**Version 1.1 · extracted from NX Hub v0.3.6 (the reference implementation)**
 
 This document is the canonical specification of the NX visual language —
 "liquid glass on deep space." It is written to be dropped into any project's
@@ -32,6 +32,10 @@ Rules that make it feel expensive:
   the room, halve it.
 - No solid gray lines anywhere. Dividers are gradient hairlines that fade at
   both ends.
+- **Angular, never rounded.** Radii stay in the 3–6px band; pill shapes are
+  banned. The mark is a faceted crystal and every container echoes its cut
+  edges — large radii read as a toy. Perfect circles are reserved for status
+  dots and spinners only.
 - One light source: **upper-left**, in every gradient, bevel, and edge. Light
   consistency is why surfaces read as one physical world.
 
@@ -56,11 +60,12 @@ Copy these verbatim into `:root` (CSS) or mirror them as resources (Android
   --line: #2a1f45;
   --danger: #ff5470;
 
-  /* geometry */
-  --radius: 18px;      /* cards, sheets */
-  --radius-sm: 12px;   /* rows, wells, inputs */
-  --radius-xs: 8px;    /* chips, code */
-  --pill: 999px;       /* buttons, tabs, badges */
+  /* geometry — ANGULAR. Corners are cut, not rounded; sharpness echoes the
+     faceted crystal mark. Pills are banned outright. */
+  --radius: 6px;       /* cards, sheets */
+  --radius-sm: 4px;    /* rows, wells, inputs */
+  --radius-xs: 3px;    /* chips, code */
+  --pill: 5px;         /* legacy token name — buttons/tabs/badges, cut sharp */
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", Cantarell, sans-serif;
   --mono: ui-monospace, "JetBrains Mono", "Fira Code", Consolas, monospace;
 
@@ -162,14 +167,14 @@ Implementation notes:
 
 ## 5. Components
 
-**Buttons** are glass pills (`--pill` radius). Primary: violet fill with an
+**Buttons** are sharp-cut glass blocks (`--pill` radius — a 5px chamfer, not a pill). Primary: violet fill with an
 inner top highlight and a soft violet glow; hover lifts 1–2px
 (`translateY(-1px)`) and blooms the glow; press scales to `0.96`. Secondary:
 `--glass-chip` fill with `--edge` border. Danger uses `--danger` only for
 genuinely destructive actions. Amber is reserved for "update available" class
 actions. Disabled: 40% opacity, no hover response.
 
-**The tab pill**: navigation tabs share one sliding indicator — a single
+**The tab indicator**: navigation tabs share one sliding indicator — a single
 element translated between equal-width tab slots with `--ease-spring`, never
 per-tab background toggles. (CSS-only via `:has()` on the active tab.)
 
@@ -180,7 +185,7 @@ as **masonry** (CSS `columns`, `break-inside: avoid`) so mixed heights pack
 tightly — top-aligned grid rows with ragged holes read as fragmentation.
 
 **Chips / badges**: uppercase micro-labels, 10–11px, `letter-spacing: 0.12em+`,
-`--glass-chip` fill, `--pill` radius. Status chips: cyan = live/connected,
+`--glass-chip` fill, sharp-cut corners. Status chips: cyan = live/connected,
 amber = pending attention, muted = inert.
 
 **Progress**: a recessed well trough with a luminous violet→cyan liquid fill
@@ -288,6 +293,7 @@ Before shipping any NX-branded surface, verify:
 - [ ] `prefers-reduced-motion` fully honored.
 - [ ] Text contrast comfortable over every fill it sits on.
 - [ ] Mixed-height collections pack (masonry), never leave ragged holes.
+- [ ] No pill shapes; every radius is in the 3–6px band (circles = dots/spinners only).
 - [ ] The mark is pointy-top, correct variant for the size.
 - [ ] Copy is sentence-case, concrete, and tells the user what to do next.
 
