@@ -126,6 +126,21 @@ function selectRelease(entry, { includePrereleases = false } = {}) {
   return stable.length ? stable[0] : sorted[0];
 }
 
+/**
+ * The ordered candidate list artifact-fallback walks: newest first, honoring
+ * the prerelease preference the same way selectRelease does (stable releases
+ * only, unless prereleases are opted in or nothing stable exists).
+ */
+function eligibleReleases(entry, includePrereleases) {
+  if (!entry) return [];
+  const list = (Array.isArray(entry) ? entry : [entry]).filter((r) => r && !r.draft);
+  if (!list.length) return [];
+  const sorted = [...list].sort(byRecency);
+  if (includePrereleases) return sorted;
+  const stable = sorted.filter((r) => !r.prerelease);
+  return stable.length ? stable : sorted;
+}
+
 /** Release list → the UI-facing shape (SPEC: getReleases). */
 function releaseSummary(release) {
   if (!release) return null;
@@ -348,12 +363,29 @@ function buildApp({ repo, release, overlay, installedState, adb, primaryOwner, s
 
   const s = settings || config.load();
   const prefs = config.getAppPref(s, id);
-  const chosen = selectRelease(release, {
-    includePrereleases: config.effectiveIncludePrereleases(s, id),
-  });
+  const includePre = config.effectiveIncludePrereleases(s, id);
+  const chosen = selectRelease(release, { includePrereleases: includePre });
 
-  const artifacts = chosen ? buildArtifacts(chosen, ovl) : [];
+  // Artifacts come from the newest release that SHIPS each artifact type — a
+  // release that only patches one platform (e.g. an Android-only fix) must not
+  // make the other platforms' artifacts vanish from the card. Every artifact
+  // carries the version/tag of the release it actually came from.
   const hadAnyRelease = Array.isArray(release) ? release.length > 0 : Boolean(release);
+  const eligible = eligibleReleases(release, includePre);
+  const artifacts = [];
+  const seenIds = new Set();
+  for (const rel of eligible) {
+    const relVersion = parseVersion(rel.tag_name);
+    for (const artifact of buildArtifacts(rel, ovl)) {
+      if (seenIds.has(artifact.id)) continue;
+      seenIds.add(artifact.id);
+      artifact.sourceTag = rel.tag_name || null;
+      artifact.sourceVersion = relVersion;
+      artifact.sourcePublishedAt = rel.published_at || rel.created_at || null;
+      artifact.fromOlderRelease = chosen ? rel !== chosen : false;
+      artifacts.push(artifact);
+    }
+  }
   release = chosen;
 
   const latest = release
@@ -475,11 +507,13 @@ function mergeInstalled(app, installedState, adb, settings) {
     }
 
     artifact.installed = installed;
-    const newer = Boolean(
-      installed && app.latest && installed.version && String(installed.version) !== String(app.latest.version)
-    );
+    // Per-artifact comparison: the artifact's OWN source release version, not
+    // the app's newest tag — an Android-only patch must not flag the desktop
+    // build as updatable (or vice versa).
+    const target = artifact.sourceVersion || (app.latest && app.latest.version) || null;
+    const newer = Boolean(installed && target && installed.version && String(installed.version) !== String(target));
     // SPEC v0.2: skippedVersion suppresses the update for EXACTLY that version
-    const skipped = Boolean(newer && skippedVersion && app.latest && String(skippedVersion) === String(app.latest.version));
+    const skipped = Boolean(newer && skippedVersion && String(skippedVersion) === String(target));
     artifact.updateAvailable = newer && !skipped;
     artifact.updateSkipped = skipped;
     artifact.launchable = kindLaunchable(artifact) && (!rec || rec.launchable !== false);
@@ -493,9 +527,9 @@ function mergeInstalled(app, installedState, adb, settings) {
     const ready = Boolean(
       download &&
         download.path &&
-        app.latest &&
+        target &&
         download.version &&
-        String(download.version) === String(app.latest.version) &&
+        String(download.version) === String(target) &&
         fileExists(download.path)
     );
     artifact.readyToInstall = ready;

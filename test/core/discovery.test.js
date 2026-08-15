@@ -422,3 +422,42 @@ test("refresh() survives a failing source and reports it", async (t) => {
     "private repos stay hidden when anonymous"
   );
 });
+
+test("a single-platform patch release does not evict the other platforms' artifacts", () => {
+  // The PulseNX case: v1.1.1 ships ONLY the APK; the AppImage/exe live in v1.0.1.
+  let seq = 9000;
+  const a = (name) => ({ name, id: ++seq, size: 10, url: "u" });
+  const releaseList = [
+    helpers.release("v1.1.1", [a("pulsenx-bridge-1.1.1.apk")], { published_at: "2026-08-15T08:00:00Z" }),
+    helpers.release(
+      "v1.0.1",
+      [a("pulsenx-bridge-1.0.1.apk"), a("PulseNX-1.0.1-linux.AppImage"), a("PulseNX-1.0.1-windows-portable.exe")],
+      { published_at: "2026-08-14T08:00:00Z" }
+    ),
+  ];
+  const apps = discovery.buildApps({
+    repos: [repoFor("pulsenx")],
+    releases: { "nerdrx/pulsenx": releaseList },
+    overlay: { hidden: [], apps: {} },
+    installedState: {
+      installed: { pulsenx: { "appimage-linux": { version: "1.0.1", path: "/x", installedAt: "t" } } },
+    },
+    adb: {},
+    primaryOwner: "nerdrx",
+  });
+  const app = apps[0];
+  const by = Object.fromEntries(app.artifacts.map((x) => [x.id, x]));
+
+  assert.strictEqual(app.latest.version, "1.1.1", "app-level latest is still the newest release");
+  assert.ok(by["apk-adb-android"], "APK from the patch release present");
+  assert.ok(by["appimage-linux"], "AppImage survives via the older release");
+  assert.ok(by["windows-portable-windows"], "exe survives via the older release");
+
+  assert.strictEqual(by["apk-adb-android"].sourceVersion, "1.1.1");
+  assert.strictEqual(by["appimage-linux"].sourceVersion, "1.0.1");
+  assert.strictEqual(by["appimage-linux"].fromOlderRelease, true);
+  assert.strictEqual(by["apk-adb-android"].fromOlderRelease, false);
+
+  // installed 1.0.1 AppImage vs its OWN source 1.0.1 → up to date, no phantom update
+  assert.strictEqual(by["appimage-linux"].updateAvailable, false, "no phantom update against 1.1.1");
+});

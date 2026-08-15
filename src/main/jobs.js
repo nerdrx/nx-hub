@@ -373,9 +373,11 @@ async function runInstall(job) {
   const settings = config.load();
   setDownloadLimit(settings.maxConcurrentDownloads);
 
-  // pick the release to install: an explicit tag (installVersion) or "latest"
+  // pick the release to install: an explicit tag (installVersion) or the
+  // artifact's own source release (which may be older than app.latest when a
+  // release only patched a different platform)
   let artifact = liveArtifact;
-  let version = app.latest ? app.latest.version : null;
+  let version = liveArtifact.sourceVersion || (app.latest ? app.latest.version : null);
   if (job.tag) {
     const retargeted = retargetArtifact(app, liveArtifact, job.tag);
     artifact = retargeted.target;

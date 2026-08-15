@@ -89,4 +89,18 @@ class GitHubJsonTest {
         assertNull(GitHubJson.parseLatestFromList("[]"))
         assertTrue(GitHubJson.parseRepos("{\"message\":\"Bad credentials\"}").isEmpty())
     }
+    @Test
+    fun `latestWithApk falls back past a desktop-only patch release`() {
+        val json = """[
+          {"tag_name":"v1.2.0","draft":false,"prerelease":false,"assets":[{"name":"App-1.2.0-linux.AppImage","url":"u","size":1}]},
+          {"tag_name":"v1.1.1","draft":false,"prerelease":false,"assets":[{"name":"bridge-1.1.1.apk","url":"u","size":1}]}
+        ]"""
+        val rel = GitHubJson.latestWithApk(json, includePrereleases = false)
+        org.junit.Assert.assertEquals("v1.1.1", rel?.tag)
+        // and when the newest DOES have an apk, it wins
+        val json2 = """[
+          {"tag_name":"v2.0.0","draft":false,"prerelease":false,"assets":[{"name":"bridge-2.0.0.apk","url":"u","size":1}]}
+        ]"""
+        org.junit.Assert.assertEquals("v2.0.0", GitHubJson.latestWithApk(json2, false)?.tag)
+    }
 }

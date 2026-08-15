@@ -132,7 +132,9 @@ class GitHubClient(private val cacheDir: File, private val tokenProvider: () -> 
     fun latestRelease(owner: String, name: String, includePrereleases: Boolean): Release? {
         val r = get("$API/repos/$owner/$name/releases?per_page=10")
         val body = r.body ?: return null
-        val rel = GitHubJson.parseLatestFromList(body) ?: return null
+        // Newest release carrying an APK — single-platform desktop patches must
+        // not evict this repo from the phone's list.
+        val rel = GitHubJson.latestWithApk(body, includePrereleases) ?: return null
         return if (!includePrereleases && rel.prerelease) null else rel
     }
 

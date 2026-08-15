@@ -47,14 +47,36 @@ object GitHubJson {
     fun parseLatestFromList(json: String?): Release? {
         if (json.isNullOrBlank()) return null
         return try {
-            val arr = JSONArray(json)
-            val all = (0 until arr.length())
-                .mapNotNull { i -> arr.optJSONObject(i)?.let(::release) }
-                .filter { !it.draft }
+            val all = usableReleases(json)
             all.firstOrNull { !it.prerelease } ?: all.firstOrNull()
         } catch (e: Exception) {
             null
         }
+    }
+
+    /** All non-draft releases, newest first (GitHub's list order). */
+    fun usableReleases(json: String?): List<Release> {
+        if (json.isNullOrBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(json)
+            (0 until arr.length())
+                .mapNotNull { i -> arr.optJSONObject(i)?.let(::release) }
+                .filter { !it.draft }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    /**
+     * Newest release that actually SHIPS an APK — a release that only patched
+     * the desktop builds must not make the phone's entry disappear. Prefers
+     * stable releases; falls back to pre-releases, then to the plain newest.
+     */
+    fun latestWithApk(json: String?, includePrereleases: Boolean): Release? {
+        val all = usableReleases(json)
+        val pool = if (includePrereleases) all else all.filter { !it.prerelease }.ifEmpty { all }
+        val hasApk = { r: Release -> r.assets.any { it.name.endsWith(".apk", ignoreCase = true) } }
+        return pool.firstOrNull(hasApk) ?: pool.firstOrNull()
     }
 
     fun release(o: JSONObject): Release? {
