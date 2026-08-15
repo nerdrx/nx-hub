@@ -238,7 +238,8 @@ async function main() {
     check(ids.includes("wivrn-nx"), "wivrn-nx discovered", ids.join(","));
     check(ids.includes("banish-protocol"), "banish-protocol discovered");
     check(ids.includes("quadforge"), "quadforge discovered");
-    check(!ids.includes("petri"), "hidden repo filtered out");
+    const petri = state.apps.find((a) => a.id === "petri");
+    check(Boolean(petri && petri.overlayHidden), "hidden repo listed with the overlayHidden flag");
 
     const limbo = state.apps.find((a) => a.id === "banish-protocol");
     check(limbo.name === "LIMBO PROTOCOL", "overlay name applied", limbo.name);

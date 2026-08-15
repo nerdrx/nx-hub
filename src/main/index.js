@@ -58,10 +58,34 @@ const PLACEHOLDER = `data:text/html;charset=utf-8,${encodeURIComponent(
    <div id="nxhub-placeholder">NX Hub — renderer not built yet</div></body></html>`
 )}`;
 
+const BOUNDS_FILE = () => path.join(config.dataDir(), "window.json");
+
+function savedBounds() {
+  try {
+    const b = JSON.parse(fs.readFileSync(BOUNDS_FILE(), "utf8"));
+    if (b && Number(b.width) >= 900 && Number(b.height) >= 600) return b;
+  } catch (_) {
+    /* first run */
+  }
+  return null;
+}
+
+function persistBounds(win) {
+  try {
+    const b = { ...win.getNormalBounds(), maximized: win.isMaximized() };
+    fs.writeFileSync(BOUNDS_FILE(), JSON.stringify(b));
+  } catch (_) {
+    /* best effort */
+  }
+}
+
 function createWindow({ minimized = false } = {}) {
+  const prev = savedBounds();
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: prev ? prev.width : 1200,
+    height: prev ? prev.height : 800,
+    x: prev && Number.isFinite(prev.x) ? prev.x : undefined,
+    y: prev && Number.isFinite(prev.y) ? prev.y : undefined,
     minWidth: 900,
     minHeight: 600,
     backgroundColor: "#0a0714",
@@ -86,10 +110,20 @@ function createWindow({ minimized = false } = {}) {
 
   // v0.2: --minimized / settings.startMinimized → stay hidden, tray only
   if (minimized) config.log("starting minimized to the tray");
-  else mainWindow.once("ready-to-show", () => mainWindow.show());
+  else
+    mainWindow.once("ready-to-show", () => {
+      if (prev && prev.maximized) mainWindow.maximize();
+      mainWindow.show();
+    });
+
+  // Remember size/position/maximized state across sessions.
+  for (const evt of ["resized", "moved", "maximize", "unmaximize"]) {
+    mainWindow.on(evt, () => persistBounds(mainWindow));
+  }
 
   // Close → hide to tray. Real quit goes through before-quit.
   mainWindow.on("close", (e) => {
+    persistBounds(mainWindow);
     if (quitting) return;
     e.preventDefault();
     mainWindow.hide();
