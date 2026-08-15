@@ -461,3 +461,53 @@ test("a single-platform patch release does not evict the other platforms' artifa
   // installed 1.0.1 AppImage vs its OWN source 1.0.1 → up to date, no phantom update
   assert.strictEqual(by["appimage-linux"].updateAvailable, false, "no phantom update against 1.1.1");
 });
+
+test("fallback fills GAPS only — old releases cannot add same-platform flavor rows", () => {
+  // The VRCX case: every release ships several linux+windows assets. The
+  // fallback must add NOTHING when the latest already covers those bases.
+  let seq = 9500;
+  const a = (name) => ({ name, id: ++seq, size: 10, url: "u" });
+  const rel = (tag, names, at) => helpers.release(tag, names.map(a), { published_at: at });
+  const releaseList = [
+    rel("v17", ["VRCX_17_x64.AppImage", "VRCX-win-17.zip"], "2026-08-15T08:00:00Z"),
+    rel("v16", ["VRCX_16_x64.AppImage", "VRCX_16_alt.AppImage", "VRCX-win-16.zip"], "2026-08-01T08:00:00Z"),
+    rel("v15", ["VRCX_15_x64.AppImage", "VRCX_15_alt.AppImage"], "2026-07-01T08:00:00Z"),
+  ];
+  const app = discovery.buildApps({
+    repos: [repoFor("vrcx-modschnitstelle")],
+    releases: { "nerdrx/vrcx-modschnitstelle": releaseList },
+    overlay: { hidden: [], apps: {} },
+    installedState: { installed: {} },
+    adb: {},
+    primaryOwner: "nerdrx",
+  })[0];
+  const bases = app.artifacts.map((x) => `${x.kind}-${x.platform}`);
+  assert.deepStrictEqual([...new Set(bases)].length, bases.length, "one row per kind+platform base");
+  assert.ok(app.artifacts.every((x) => !x.fromOlderRelease), "nothing needed from older releases");
+});
+
+test("releaseFallback:false restores strict latest-release-only artifacts", () => {
+  let seq = 9600;
+  const a = (name) => ({ name, id: ++seq, size: 10, url: "u" });
+  const releaseList = [
+    helpers.release("v2", [a("bridge-2.apk")], { published_at: "2026-08-15T08:00:00Z" }),
+    helpers.release("v1", [a("bridge-1.apk"), a("App-1-linux.AppImage")], { published_at: "2026-08-01T08:00:00Z" }),
+  ];
+  const build = () =>
+    discovery.buildApps({
+      repos: [repoFor("pulsenx")],
+      releases: { "nerdrx/pulsenx": releaseList },
+      overlay: { hidden: [], apps: {} },
+      installedState: { installed: {} },
+      adb: {},
+      primaryOwner: "nerdrx",
+    })[0];
+
+  config.save({ appPrefs: { pulsenx: { releaseFallback: false } } });
+  const strict = build();
+  assert.deepStrictEqual(strict.artifacts.map((x) => x.kind), ["apk-adb"], "old-behavior toggle: latest only");
+
+  config.save({ appPrefs: { pulsenx: { releaseFallback: null } } });
+  const filled = build();
+  assert.ok(filled.artifacts.some((x) => x.kind === "appimage" && x.fromOlderRelease), "default fills the gap");
+});

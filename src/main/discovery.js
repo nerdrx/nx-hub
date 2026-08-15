@@ -372,18 +372,32 @@ function buildApp({ repo, release, overlay, installedState, adb, primaryOwner, s
   // carries the version/tag of the release it actually came from.
   const hadAnyRelease = Array.isArray(release) ? release.length > 0 : Boolean(release);
   const eligible = eligibleReleases(release, includePre);
+  // Per-app opt-out back to strict latest-release-only behavior.
+  const fallbackOn = prefs.releaseFallback !== false;
   const artifacts = [];
-  const seenIds = new Set();
-  for (const rel of eligible) {
+  const seenBases = new Set(); // `${kind}-${platform}` — coarse identity across releases
+  const tagArtifacts = (rel, isLatest) => {
     const relVersion = parseVersion(rel.tag_name);
     for (const artifact of buildArtifacts(rel, ovl)) {
-      if (seenIds.has(artifact.id)) continue;
-      seenIds.add(artifact.id);
+      const base = `${artifact.kind}-${artifact.platform}`;
+      // An older release may only FILL A GAP: contribute a kind+platform the
+      // newer releases don't ship at all. Matching exact ids instead would let
+      // every old release smuggle its extra same-platform flavors in as new
+      // rows (seen in the field: a card with eleven "Linux app" rows).
+      if (!isLatest && seenBases.has(base)) continue;
+      seenBases.add(base);
       artifact.sourceTag = rel.tag_name || null;
       artifact.sourceVersion = relVersion;
       artifact.sourcePublishedAt = rel.published_at || rel.created_at || null;
-      artifact.fromOlderRelease = chosen ? rel !== chosen : false;
+      artifact.fromOlderRelease = !isLatest;
       artifacts.push(artifact);
+    }
+  };
+  if (chosen) tagArtifacts(chosen, true);
+  if (fallbackOn) {
+    for (const rel of eligible) {
+      if (rel === chosen) continue;
+      tagArtifacts(rel, false);
     }
   }
   release = chosen;

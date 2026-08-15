@@ -53,6 +53,7 @@ const APP_PREF_KEYS = [
   "launchArgs",
   "launchEnv",
   "hidden",
+  "releaseFallback",
 ];
 
 function defaults() {
@@ -124,6 +125,8 @@ function sanitizeAppPref(raw) {
   if (typeof raw.includePrereleases === "boolean") out.includePrereleases = raw.includePrereleases;
   if (typeof raw.favorite === "boolean") out.favorite = raw.favorite;
   if (typeof raw.hidden === "boolean") out.hidden = raw.hidden;
+  // false = latest-release-only (the pre-0.2.6 behavior), per user request
+  if (typeof raw.releaseFallback === "boolean") out.releaseFallback = raw.releaseFallback;
 
   if (typeof raw.skippedVersion === "string" && raw.skippedVersion.trim()) {
     out.skippedVersion = raw.skippedVersion.trim();
