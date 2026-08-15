@@ -133,7 +133,7 @@ export function renderJobBar(job, opts = {}) {
     </div>`;
 }
 
-export function renderPostInstallNote(app, artifact) {
+export function renderPostInstallNote(app, artifact, caps = {}) {
   // Overlay-declared command wins; the heuristic is only a fallback.
   const cmd = artifact.postInstallCmd || extractCommand(artifact.postInstallNote);
   return `
@@ -146,6 +146,11 @@ export function renderPostInstallNote(app, artifact) {
       ${
         cmd
           ? `<div class="pin-cmd"><code>${esc(cmd)}</code>
+        ${
+          artifact.postInstallCmd && caps.runPostInstallCmd !== false
+            ? `<button class="btn btn-primary btn-sm" data-act="run-cmd" data-app="${esc(app.id)}" data-art="${esc(artifact.id)}">${icons.terminal}<span>Run</span></button>`
+            : ''
+        }
         <button class="btn btn-ghost btn-sm" data-act="copy" data-copy="${esc(cmd)}">${icons.copy}<span>Copy</span></button></div>`
           : ''
       }
@@ -231,7 +236,7 @@ export function renderAppCard(app, ctx = {}) {
         a.installed &&
         !has(ctx.dismissedNotes, artifactKey(app.id, a.id))
     )
-    .map((a) => renderPostInstallNote(app, a))
+    .map((a) => renderPostInstallNote(app, a, ctx.caps || {}))
     .join('');
 
   const orphanJob = job && !(app.artifacts || []).some((a) => a.id === job.artifactId);

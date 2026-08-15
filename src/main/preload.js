@@ -29,6 +29,7 @@ const api = {
   getLogs: (tailLines) => ipcRenderer.invoke("nxhub:getLogs", tailLines),
   exportSettings: () => ipcRenderer.invoke("nxhub:exportSettings"),
   importSettings: (json) => ipcRenderer.invoke("nxhub:importSettings", json),
+  runPostInstallCmd: (appId, artifactId) => ipcRenderer.invoke("nxhub:runPostInstallCmd", appId, artifactId),
   onEvent: (cb) => {
     if (typeof cb !== "function") return () => {};
     const handler = (_event, payload) => {

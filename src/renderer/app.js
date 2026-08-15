@@ -65,6 +65,7 @@ const V02_METHODS = [
   'getLogs',
   'exportSettings',
   'importSettings',
+  'runPostInstallCmd',
 ];
 
 const ui = {
@@ -1025,6 +1026,19 @@ async function onAction(act, el, ev) {
     case 'copy':
       await copyText(el.getAttribute('data-copy') || '');
       break;
+    case 'run-cmd': {
+      // Ids only — main resolves and executes the artifact's own command.
+      el.disabled = true;
+      const label = el.querySelector('span');
+      if (label) label.textContent = 'Running…';
+      try {
+        await call('runPostInstallCmd', appId, artId);
+      } finally {
+        el.disabled = false;
+        if (label) label.textContent = 'Run';
+      }
+      break;
+    }
     case 'dismiss-note':
       ui.dismissedNotes.add(artifactKey(appId, artId));
       saveUiPrefs();

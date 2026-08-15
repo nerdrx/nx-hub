@@ -220,6 +220,9 @@ getDeviceInfo()                       // {serial, model, batteryPct, storageFree
 getDiskUsage()                        // {perApp: {appId: bytes}, downloads: bytes, total: bytes}
 clearDownloadCache()
 getLogs(tailLines); exportSettings(); importSettings(json)
+runPostInstallCmd(appId, artifactId)  // executes the artifact's OWN overlay
+                                      // postInstallCmd (ids only cross IPC —
+                                      // never a command string); sudo → pkexec
 ```
 Events: `update-available {appId, version}` (also fires an OS notification when
 settings.notifications). Engines: launch() honors appPrefs launchArgs/launchEnv;

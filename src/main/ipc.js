@@ -190,6 +190,27 @@ function register() {
   });
   handle("nxhub:cancelJob", (jobId) => jobs.cancelJob(jobId));
 
+  // Post-install command, by ID ONLY — the executed string is the artifact's
+  // own overlay-curated postInstallCmd, resolved here, never renderer input.
+  handle("nxhub:runPostInstallCmd", async (appId, artifactId) => {
+    const { artifact, app } = discovery.findArtifact(appId, artifactId) || {};
+    const cmd = artifact && artifact.postInstallCmd;
+    if (!cmd) throw new Error("This artifact has no post-install command");
+    const runcmd = require("./runcmd");
+    const spec = runcmd.rewriteForPrivilege(cmd);
+    config.log(`post-install cmd for ${appId}/${artifactId}: ${spec.cmd}`);
+    const res = await runcmd.runShell(spec.cmd);
+    if (res.ok) {
+      emit({ type: "toast", level: "info", message: `Done: ${cmd}` });
+    } else if (res.timedOut) {
+      emit({ type: "toast", level: "error", message: `Timed out: ${cmd}` });
+    } else {
+      const tail = res.output ? ` — ${res.output.split("\n").slice(-2).join(" · ").slice(0, 200)}` : "";
+      emit({ type: "toast", level: "error", message: `Failed (exit ${res.code})${tail}` });
+    }
+    return { ok: res.ok, code: res.code, output: res.output, privileged: spec.privileged, app: app && app.id };
+  });
+
   handle("nxhub:setSettings", async (patch) => {
     const before = config.load();
     const next = config.save(patch || {});

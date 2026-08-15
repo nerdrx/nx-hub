@@ -790,6 +790,11 @@ export function createMock() {
     async exportSettings() {
       return JSON.stringify({ version: 2, exportedAt: new Date().toISOString(), settings: state.settings }, null, 2);
     },
+    async runPostInstallCmd(appId, artifactId) {
+      await sleep(900);
+      emit({ type: 'toast', level: 'info', message: `Done: (mock) post-install command for ${appId}/${artifactId}` });
+      return { ok: true, code: 0, output: 'mock: command executed', privileged: false };
+    },
     async importSettings(json) {
       try {
         const parsed = typeof json === 'string' ? JSON.parse(json) : json;
