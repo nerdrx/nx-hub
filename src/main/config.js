@@ -58,7 +58,7 @@ const APP_PREF_KEYS = [
 
 function defaults() {
   return {
-    owners: ["nerdrx"],
+    owners: ["nerdrx", "Arikazei"],
     extraRepos: [],
     checkIntervalHours: 6,
     installRoot: path.join(os.homedir(), "Applications"),
@@ -200,6 +200,9 @@ function mergeAppPref(current, patch) {
 function sanitize(raw) {
   const s = Object.assign(defaults(), raw && typeof raw === "object" ? raw : {});
   s.owners = Array.isArray(s.owners) ? s.owners.filter((o) => typeof o === "string" && o.trim()).map((o) => o.trim()) : defaults().owners;
+  // Default upgrade: installs still on the ORIGINAL default source list get the
+  // new default (an explicit custom list — anything else — is left alone).
+  if (s.owners.length === 1 && s.owners[0] === "nerdrx") s.owners = defaults().owners;
   s.extraRepos = Array.isArray(s.extraRepos)
     ? s.extraRepos.filter((r) => typeof r === "string" && r.includes("/")).map((r) => r.trim())
     : [];

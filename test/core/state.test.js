@@ -55,7 +55,7 @@ test("settings defaults match the SPEC", (t) => {
   delete process.env.NX_HUB_INSTALL_ROOT;
 
   const s = config.load();
-  assert.deepStrictEqual(s.owners, ["nerdrx"]);
+  assert.deepStrictEqual(s.owners, ["nerdrx", "Arikazei"], "both accounts are standard sources");
   assert.deepStrictEqual(s.extraRepos, []);
   assert.strictEqual(s.checkIntervalHours, 6);
   assert.strictEqual(s.installRoot, path.join(os.homedir(), "Applications"));

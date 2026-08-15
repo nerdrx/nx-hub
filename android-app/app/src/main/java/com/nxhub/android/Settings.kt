@@ -22,7 +22,12 @@ class Settings(context: Context) {
     private val crypto = TokenCrypto(context.applicationContext)
 
     var owners: List<String>
-        get() = prefs.getString(KEY_OWNERS, null)?.toList() ?: DEFAULT_OWNERS
+        get() {
+            val stored = prefs.getString(KEY_OWNERS, null)?.toList() ?: return DEFAULT_OWNERS
+            // Default upgrade: a stored list equal to the ORIGINAL default gets
+            // the new default; an explicit custom list is left alone.
+            return if (stored == listOf("nerdrx")) DEFAULT_OWNERS else stored
+        }
         set(v) = prefs.edit().putString(KEY_OWNERS, v.clean().toStored()).apply()
 
     var extraRepos: List<String>
@@ -71,7 +76,7 @@ class Settings(context: Context) {
         private const val KEY_TOKEN = "token_enc"
         private const val KEY_PRERELEASE = "includePrereleases"
         private const val KEY_PKG_PREFIX = "pkg."
-        val DEFAULT_OWNERS = listOf("nerdrx")
+        val DEFAULT_OWNERS = listOf("nerdrx", "Arikazei")
         const val OVERLAY_URL =
             "https://raw.githubusercontent.com/nerdrx/nx-hub/main/registry/overrides.json"
     }
