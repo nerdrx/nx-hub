@@ -1256,7 +1256,9 @@ function onHubEvent(ev) {
     }
     case 'job-error':
       ui.liveJobs.delete(`${ev.appId}::${ev.artifactId}`);
-      toast('error', ev.message || 'Job failed');
+      // Background-policy failures stay quiet — the update badge and the
+      // card's own hints carry the state; only user-initiated jobs toast.
+      if (!ev.silent) toast('error', ev.message || 'Job failed');
       pullState();
       break;
     case 'toast':

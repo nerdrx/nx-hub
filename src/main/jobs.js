@@ -12,6 +12,10 @@ const discovery = require("./discovery");
 
 const KEEP_FINISHED = 20;
 
+// Auto-install ("install" policy) attempts, one per app+artifact+version —
+// a failed background install must not retry (and re-toast) every refresh.
+const policyAttempts = new Set();
+
 let deps = {
   emit: () => {},
   engine: null, // injected in tests; otherwise lazily required
@@ -215,6 +219,7 @@ function enqueue(type, appId, artifactId, opts = {}) {
     appName: app.name,
     artifactLabel: artifact.label,
     tag, // v0.2: installVersion target ("" / null = the app's latest)
+    origin: opts.origin === "policy" ? "policy" : "user",
     status: "queued",
     phase: type === "install" ? "download" : "install",
     pct: 0,
@@ -233,8 +238,8 @@ function enqueue(type, appId, artifactId, opts = {}) {
   return job.id;
 }
 
-function install(appId, artifactId) {
-  return enqueue("install", appId, artifactId);
+function install(appId, artifactId, opts = {}) {
+  return enqueue("install", appId, artifactId, opts);
 }
 function uninstall(appId, artifactId) {
   return enqueue("uninstall", appId, artifactId);
@@ -285,6 +290,8 @@ function finish(job, status, message) {
       appId: job.appId,
       artifactId: job.artifactId,
       message: job.error,
+      // Background-policy failures are logged and badged, never toasted.
+      silent: job.origin === "policy",
     });
   }
   prune();
@@ -666,8 +673,17 @@ async function applyUpdatePolicies(opts = {}) {
       const target = { appId: app.id, appName: app.name, artifactId: artifact.id, version };
       try {
         if (policy === "install") {
+          // Preconditions the background engine must respect: never attempt a
+          // sideload with no device attached (seen in the field: an error
+          // toast every refresh cycle), and never auto-retry a version that
+          // already failed once — the card badge keeps carrying the update,
+          // and a user-initiated install always remains possible.
+          if (artifact.kind === "apk-adb" && artifact.deviceOffline) continue;
+          const attemptKey = `${app.id}::${artifact.id}::${version}`;
+          if (policyAttempts.has(attemptKey)) continue;
           if (activeFor(app.id) && activeFor(app.id).artifactId === artifact.id) continue;
-          const jobId = install(app.id, artifact.id);
+          policyAttempts.add(attemptKey);
+          const jobId = install(app.id, artifact.id, { origin: "policy" });
           result.installing.push(Object.assign({ jobId }, target));
           continue;
         }

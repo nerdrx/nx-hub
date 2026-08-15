@@ -309,3 +309,53 @@ test("the semaphore picks up settings.maxConcurrentDownloads on first use", asyn
   await Promise.all([first, second]);
   assert.deepStrictEqual(order, ["first", "second"]);
 });
+
+test("install policy: offline-device APKs are skipped, failures never auto-retry, and errors are silent", async (t) => {
+  const env = helpers.useTempEnv();
+  t.after(() => env.cleanup());
+  jobs._reset();
+
+  const events = [];
+  let installCalls = 0;
+  const failingEngine = {
+    install: async () => {
+      installCalls += 1;
+      throw new Error("no device");
+    },
+    uninstall: async () => {},
+    launch: async () => {},
+    getAdbStatus: async () => ({ available: false, devices: [], apkVersions: {} }),
+  };
+
+  const apkOffline = {
+    id: "apk-adb-android", kind: "apk-adb", platform: "android", label: "APK",
+    assetName: "a.apk", assetUrl: "u", updateAvailable: true, deviceOffline: true,
+  };
+  const zipArt = {
+    id: "archive-dir-linux", kind: "archive-dir", platform: "linux", label: "Zip",
+    assetName: "a.zip", assetUrl: "u", updateAvailable: true, sourceVersion: "2.0",
+  };
+  const app = { id: "demo", name: "Demo", latest: { version: "2.0" }, artifacts: [apkOffline, zipArt] };
+
+  jobs.init({
+    emit: (e) => events.push(e),
+    engine: failingEngine,
+    github: { downloadAsset: async () => ({ sha256: "x", verified: false }) },
+    resolve: (appId, artId) => ({ app, artifact: app.artifacts.find((a) => a.id === artId) }),
+  });
+  config.save({ updatePolicy: "install" });
+
+  const r1 = await jobs.applyUpdatePolicies({ apps: [app], settings: config.load() });
+  assert.strictEqual(r1.installing.length, 1, "only the non-APK artifact was attempted");
+  assert.ok(!r1.installing.some((x) => x.artifactId === "apk-adb-android"), "offline APK skipped");
+
+  await new Promise((res) => setTimeout(res, 150)); // let the queued job fail
+  const err = events.find((e) => e.type === "job-error");
+  assert.ok(err, "the failing install emitted job-error");
+  assert.strictEqual(err.silent, true, "policy-origin failures are silent");
+
+  const before = installCalls;
+  const r2 = await jobs.applyUpdatePolicies({ apps: [app], settings: config.load() });
+  assert.strictEqual(r2.installing.length, 0, "failed version is not re-attempted");
+  assert.strictEqual(installCalls, before, "no second engine call");
+});
