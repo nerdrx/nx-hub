@@ -21,6 +21,9 @@ export const DEFAULT_APP_PREF = {
   skippedVersion: '',
   favorite: false,
   hidden: false,
+  // Older releases may fill kind+platform gaps the newest release left empty.
+  // Default on; off = only files from the newest release are offered.
+  releaseFallback: true,
   launchArgs: [],
   launchEnv: {},
 };
@@ -39,6 +42,8 @@ export function normalizeAppPref(pref) {
     skippedVersion: str(p.skippedVersion).trim(),
     favorite: !!p.favorite,
     hidden: !!p.hidden,
+    // Defaults to true — only an explicit false turns the fallback off.
+    releaseFallback: p.releaseFallback !== false,
     launchArgs: Array.isArray(p.launchArgs) ? p.launchArgs.map(str).filter((a) => a !== '') : [],
     launchEnv: normalizeEnv(p.launchEnv),
   };

@@ -34,6 +34,13 @@ export function artifactKey(appId, artifactId) {
   return `${appId}::${artifactId}`;
 }
 
+/** Tag to show on an artifact that survived from an older release. */
+export function sourceLabel(artifact) {
+  if (!artifact) return '';
+  if (artifact.sourceTag) return String(artifact.sourceTag);
+  return artifact.sourceVersion ? `v${artifact.sourceVersion}` : '';
+}
+
 /** Pull the runnable command out of a postInstallNote for the copy button. */
 export function extractCommand(note) {
   if (!note) return '';
@@ -140,7 +147,10 @@ export function renderPostInstallNote(app, artifact) {
 }
 
 export function renderArtifactRow(app, artifact, ctx = {}) {
-  const latest = (app.latest && app.latest.version) || '';
+  // A release can ship only some platforms; an artifact that survived from an
+  // older release carries its own sourceVersion, and the row must be labelled
+  // against THAT — not against the app-level latest.
+  const latest = artifact.sourceVersion || (app.latest && app.latest.version) || '';
   const job =
     ctx.job && (ctx.job.artifactId === artifact.id || !ctx.job.artifactId) ? ctx.job : null;
   const state = artifactActions(app, artifact, {
@@ -167,6 +177,10 @@ export function renderArtifactRow(app, artifact, ctx = {}) {
         }</div>
         <div class="art-ver ${shown.updateAvailable ? 'has-update' : ''}">${esc(versionLabel(shown, latest))}${
           deviceVersion ? '<span class="art-live" title="read live from the device">on device</span>' : ''
+        }${
+          artifact.fromOlderRelease
+            ? `<span class="art-src" title="from an earlier release — the newest release didn't ship this platform">${icons.history}<span>from ${esc(sourceLabel(artifact))}</span></span>`
+            : ''
         }</div>
         ${
           state.hint

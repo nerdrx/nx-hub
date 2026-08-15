@@ -38,7 +38,7 @@ export function renderTile(tile, ctx = {}) {
 
   return `
   <div class="tile ${tile.disabled ? 'is-disabled' : ''}" data-tile="${esc(tile.key)}"
-       data-app="${esc(tile.appId)}" data-art="${esc(tile.artifactId)}">
+       data-app="${esc(tile.appId)}" data-art="${esc(tile.artifactId)}" style="--h:${Number(tile.hue) || 265}">
     <button class="tile-hit" data-act="tile-launch" data-app="${esc(tile.appId)}" data-art="${esc(tile.artifactId)}" data-tile="${esc(tile.key)}"
             ${tile.disabled ? 'disabled' : ''} title="${esc(tile.title)}">
       <span class="tile-art" style="--h:${Number(tile.hue) || 265}">${art}</span>

@@ -59,6 +59,11 @@ function artifact(a) {
     postInstallNote: a.postInstallNote || '',
     installed: a.installed || null,
     updateAvailable: false,
+    // Set when this artifact survived from an older release because the newest
+    // one did not ship this platform.
+    sourceVersion: a.sourceVersion || '',
+    sourceTag: a.sourceTag || '',
+    fromOlderRelease: !!a.fromOlderRelease,
     // v0.2
     rollbackAvailable: !!a.rollbackAvailable,
     prevVersion: a.prevVersion || '',
@@ -143,17 +148,22 @@ function baseApps() {
           size: 9_800_000,
           packageId: 'com.pulsenx.bridge',
         }),
+        // v2.3.0 was an Android-only fix: the PC artifacts survive from v2.2.0
+        // and keep their own version, so their rows read against 2.2.0.
         artifact({
           id: 'appimage-linux',
           label: 'PC dashboard (Linux)',
           platform: 'linux',
           kind: 'appimage',
-          assetName: 'PulseNX-2.3.0-x86_64.AppImage',
+          assetName: 'PulseNX-2.2.0-x86_64.AppImage',
           size: 84_600_000,
+          sourceVersion: '2.2.0',
+          sourceTag: 'v2.2.0',
+          fromOlderRelease: true,
           // iconPath is optional (core records it when it can extract one) —
           // this fake path exercises the <img> path and its monogram fallback.
           installed: {
-            version: '2.3.0',
+            version: '2.2.0',
             path: '/home/nerdrx/Applications/nx/pulsenx/appimage-linux',
             iconPath: '/home/nerdrx/Applications/nx/pulsenx/appimage-linux/pulsenx.png',
             installedAt: iso(11),
@@ -164,8 +174,11 @@ function baseApps() {
           label: 'PC dashboard (Windows)',
           platform: 'windows',
           kind: 'windows-portable',
-          assetName: 'PulseNX-2.3.0-windows-portable.exe',
+          assetName: 'PulseNX-2.2.0-windows-portable.exe',
           size: 71_200_000,
+          sourceVersion: '2.2.0',
+          sourceTag: 'v2.2.0',
+          fromOlderRelease: true,
         }),
       ],
     },
@@ -323,7 +336,10 @@ function recompute(apps, settings) {
   for (const app of apps) {
     const latest = app.latest && app.latest.version;
     for (const a of app.artifacts) {
-      a.updateAvailable = !!(a.installed && latest && isNewer(latest, a.installed.version));
+      // An artifact carried over from an older release is compared against the
+      // version that actually shipped it, like main does.
+      const target = a.sourceVersion || latest;
+      a.updateAvailable = !!(a.installed && target && isNewer(target, a.installed.version));
       if (!a.updateAvailable) a.readyToInstall = false;
     }
     // main mirrors the per-app "hidden" pref onto the app model
@@ -427,7 +443,8 @@ export function createMock() {
         launchEnv: { WIVRN_BITRATE: '80000000' },
       },
       wivrn: { hidden: true },
-      quadforge: { skippedVersion: '0.9.0' },
+      // strict mode: only artifacts from the newest release are offered
+      quadforge: { skippedVersion: '0.9.0', releaseFallback: false },
     },
     updatePolicy: 'notify',
     includePrereleases: false,
@@ -855,6 +872,13 @@ export function createMock() {
       app.latest.version = bits.join('.');
       app.latest.tag = `v${app.latest.version}`;
       app.latest.publishedAt = new Date().toISOString();
+      // The simulated release ships every platform, so nothing rides on an
+      // older release any more.
+      for (const a of app.artifacts) {
+        a.sourceVersion = '';
+        a.sourceTag = '';
+        a.fromOlderRelease = false;
+      }
       releases.delete(app.id);
       recompute(state.apps, state.settings);
       changed();

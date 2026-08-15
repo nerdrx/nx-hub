@@ -21,6 +21,7 @@ import {
   splitArgs,
   validateEnvKey,
 } from '../../src/renderer/lib/prefs.js';
+import { renderAppOptions } from '../../src/renderer/views/appoptions.js';
 
 /* -------------------------------------------------------------- normalizing */
 
@@ -44,6 +45,28 @@ test('normalizeAppPref fills every field and rejects junk', () => {
   assert.equal(p.hidden, false);
   assert.deepEqual(p.launchArgs, ['--a', '7']);
   assert.deepEqual(p.launchEnv, { OK: 'x', NUM: '5' });
+  assert.equal(p.releaseFallback, true, 'the release fallback is on unless turned off');
+});
+
+test('releaseFallback defaults on and only an explicit false turns it off', () => {
+  assert.equal(DEFAULT_APP_PREF.releaseFallback, true);
+  assert.equal(normalizeAppPref({}).releaseFallback, true);
+  assert.equal(normalizeAppPref({ releaseFallback: undefined }).releaseFallback, true);
+  assert.equal(normalizeAppPref({ releaseFallback: false }).releaseFallback, false);
+  assert.equal(normalizeAppPref({ releaseFallback: 0 }).releaseFallback, true, 'only false is off');
+
+  // …and the options sheet shows it as a checkbox, checked by default.
+  const app = { id: 'pulsenx', name: 'PulseNX', latest: { version: '1.1.1' } };
+  const on = renderAppOptions(app, normalizeAppPref({}), {});
+  assert.ok(on.includes('Fill missing platforms from older releases'));
+  assert.ok(on.includes('When off, only files from the newest release are offered.'));
+  assert.ok(
+    /data-pref="releaseFallback"[^>]* checked/.test(on),
+    `expected the toggle to be checked by default: ${on}`
+  );
+
+  const off = renderAppOptions(app, normalizeAppPref({ releaseFallback: false }), {});
+  assert.ok(!/data-pref="releaseFallback"[^>]* checked/.test(off), 'off stays off');
 });
 
 test('normalizeAppPrefs tolerates arrays, null and empty keys', () => {

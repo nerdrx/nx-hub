@@ -82,6 +82,16 @@ export function renderAppOptions(app, draft, ctx = {}) {
     </section>
 
     <section class="fieldset">
+      <h3>Artifacts</h3>
+      ${checkbox(
+        'releaseFallback',
+        'Fill missing platforms from older releases',
+        d.releaseFallback !== false,
+        'When off, only files from the newest release are offered.'
+      )}
+    </section>
+
+    <section class="fieldset">
       <h3>In the hub</h3>
       ${checkbox('favorite', 'Favorite', !!d.favorite, 'pinned to the front of the launcher')}
       ${checkbox('hidden', 'Hide from the list', !!d.hidden, 'stays installed — reveal it again under “Show hidden”')}

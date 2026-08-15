@@ -11,6 +11,12 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
+    <!-- The light the glass refracts: three slow blobs under everything. -->
+    <div id="nebula" class="nebula" aria-hidden="true">
+      <span class="neb neb-1"></span>
+      <span class="neb neb-2"></span>
+      <span class="neb neb-3"></span>
+    </div>
     <header id="header">
       <canvas id="stars" class="star-layer star-far" aria-hidden="true"></canvas>
       <canvas id="stars-near" class="star-layer star-near" aria-hidden="true"></canvas>
@@ -52,10 +58,6 @@
         <section id="hidden-apps" class="hidden-apps" aria-label="Hidden apps"></section>
       </div>
     </main>
-
-    <footer id="footer">
-      <span class="made">made with Claude</span>
-    </footer>
 
     <div id="panel-root"></div>
     <div id="sheet-root"></div>

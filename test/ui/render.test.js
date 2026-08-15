@@ -218,6 +218,49 @@ test('apk rows show the device model, or the no-headset hint', () => {
   assert.ok(off.includes('chip-android'));
 });
 
+test('an artifact from an older release is labelled against its own version', () => {
+  const app = normalizeApp({
+    id: 'pulsenx',
+    repo: 'nerdrx/pulsenx',
+    name: 'PulseNX',
+    latest: { version: '1.1.1', tag: 'v1.1.1' },
+    artifacts: [
+      {
+        id: 'appimage-linux',
+        label: 'PC dashboard (Linux)',
+        platform: 'linux',
+        kind: 'appimage',
+        sourceVersion: '1.0.1',
+        sourceTag: 'v1.0.1',
+        fromOlderRelease: true,
+        installed: { version: '1.0.1' },
+      },
+      {
+        id: 'apk-adb-android',
+        label: 'Android bridge APK',
+        platform: 'android',
+        kind: 'apk-adb',
+        installed: { version: '1.1.1' },
+      },
+    ],
+  });
+  const [linux, android] = app.artifacts;
+  assert.equal(linux.sourceVersion, '1.0.1', 'normalizeArtifact keeps the source version');
+  assert.equal(linux.fromOlderRelease, true);
+  assert.equal(linux.updateAvailable, false, 'it is current for the release that shipped it');
+
+  const row = renderArtifactRow(app, linux, { platform: 'linux' });
+  assert.ok(row.includes('1.0.1 · up to date'), `expected the row to read against 1.0.1: ${row}`);
+  assert.ok(!row.includes('1.0.1 → 1.1.1'), 'the app-level version must not create a phantom update');
+  assert.ok(row.includes('from v1.0.1'), 'the row says where it came from');
+  assert.ok(row.includes("newest release didn't ship this platform"), 'and explains it on hover');
+
+  // A platform the newest release DID ship keeps the plain label.
+  const apk = renderArtifactRow(app, android, { platform: 'linux' });
+  assert.ok(apk.includes('1.1.1 · up to date'));
+  assert.ok(!apk.includes('art-src'), 'no marker when the artifact is from the latest release');
+});
+
 /* --------------------------------------------------- panels, banners, misc */
 
 test('settings panel renders sources, token state and about', () => {

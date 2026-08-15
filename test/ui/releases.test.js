@@ -219,7 +219,9 @@ test('installVersion in the mock actually moves the installed version', async ()
   }
   assert.equal(art.installed.version, older.version);
   assert.equal(art.rollbackAvailable, true, 'the replaced version becomes a rollback target');
-  assert.equal(art.prevVersion, '2.3.0');
+  // The Linux artifact rides on v2.2.0 (v2.3.0 was Android-only), so that is
+  // what the downgrade replaces.
+  assert.equal(art.prevVersion, '2.2.0');
   dev.stop();
 });
 

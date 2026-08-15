@@ -580,6 +580,7 @@ async function saveAppPrefs(appId) {
     skippedVersion: d.skippedVersion || '',
     favorite: !!d.favorite,
     hidden: !!d.hidden,
+    releaseFallback: d.releaseFallback !== false,
     launchArgs: parsed.args,
     launchEnv: envFromRows(d.envRows),
   };
@@ -1490,6 +1491,9 @@ function requestSkyFrame() {
 
 function setSkyRunning(on) {
   const want = on && !prefersReducedMotion() && !document.hidden;
+  // The nebula is pure CSS; park it on the same signal as the starfield so a
+  // hidden window costs nothing.
+  if (document.body && document.body.classList) document.body.classList.toggle('sky-parked', !want);
   if (want === sky.running) return;
   sky.running = want;
   sky.last = 0;

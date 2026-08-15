@@ -128,15 +128,6 @@
             </LinearLayout>
         </com.nxhub.android.PullRefreshScrollView>
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:gravity="center"
-            android:paddingTop="8dp"
-            android:paddingBottom="10dp"
-            android:text="@string/made_with"
-            android:textColor="@color/nx_violet"
-            android:textSize="12sp" />
     </LinearLayout>
 
     <!-- Snackbar -->

@@ -76,7 +76,13 @@ export function normalizeArtifact(artifact, latestVersion) {
     packageId: a.packageId || '',
     postInstallNote: a.postInstallNote || '',
     installed: a.installed && typeof a.installed === 'object' ? a.installed : null,
-    updateAvailable: artifactHasUpdate(a, latestVersion),
+    // A release may only ship some platforms; an artifact then survives from the
+    // newest release that carried it, with its OWN version. sourceVersion is the
+    // version this row should be compared and labelled against.
+    sourceVersion: a.sourceVersion ? String(a.sourceVersion) : '',
+    sourceTag: a.sourceTag ? String(a.sourceTag) : '',
+    fromOlderRelease: !!a.fromOlderRelease,
+    updateAvailable: artifactHasUpdate(a, a.sourceVersion || latestVersion),
     launchable: a.launchable !== false,
     // v0.2 — engines keep one previous install for rollback and may stage an
     // already-downloaded update that only needs applying.
