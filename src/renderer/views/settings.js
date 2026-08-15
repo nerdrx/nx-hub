@@ -175,6 +175,7 @@ export function renderSettingsPanel(draft, ctx = {}) {
         ${check('autostart', 'Start NX Hub at login', !!d.autostart, 'creates an XDG autostart entry')}
         ${check('startMinimized', 'Start minimized to the tray', !!d.startMinimized)}
         ${check('createDesktopEntries', 'Create desktop entries for installed apps', d.createDesktopEntries !== false, 'menu entries + icons under ~/.local/share/applications')}
+        ${check('cliShim', 'Install the nx terminal command', d.cliShim !== false, 'keeps ~/.local/bin/nx pointing at this hub — list, install, update and launch from any shell')}
       </section>
 
       <section class="fieldset">

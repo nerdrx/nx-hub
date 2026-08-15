@@ -11,6 +11,7 @@ const discovery = require("./discovery");
 const jobs = require("./jobs");
 const ipc = require("./ipc");
 const e2e = require("./e2e");
+const cliShim = require("../cli/shim");
 
 const ROOT = path.join(__dirname, "..", "..");
 const RENDERER = path.join(ROOT, "src", "renderer", "index.html");
@@ -35,6 +36,27 @@ function selfExecPath() {
 function startsMinimized(settings) {
   if (process.argv.includes("--minimized")) return true;
   return Boolean((settings || config.load()).startMinimized);
+}
+
+/**
+ * Keep `~/.local/bin/nx` pointing at THIS install (settings.cliShim, default
+ * true). Idempotent: rewritten only when the baked paths changed — which is
+ * exactly what makes the command survive a self-update — removed when the
+ * setting is turned off, and never written over a foreign file of that name.
+ */
+function syncCliShim(settings) {
+  // The e2e harness runs with temp data dirs but the REAL $HOME — a test must
+  // never install a command into the user's ~/.local/bin.
+  if (process.env.NX_HUB_E2E === "1") return { action: "skipped", reason: "e2e run" };
+  const s = settings || config.load();
+  const result = cliShim.sync(s, { binary: process.execPath, appDir: ROOT });
+  if (result.action === "written" || result.action === "updated") {
+    config.log(`cli shim ${result.action}: ${result.path}`);
+    if (result.onPath === false) config.log(`note: ${path.dirname(result.path)} is not on PATH — add it to use \`nx\``);
+  } else if (result.action === "foreign" || result.action === "error" || result.reason) {
+    config.log(`cli shim ${result.action}${result.reason ? ` — ${result.reason}` : ""}`);
+  }
+  return result;
 }
 
 function syncAutostart(settings) {
@@ -276,6 +298,7 @@ function wire() {
     onSettingsChanged: (settings) => {
       scheduleRefresh(settings);
       syncAutostart(settings); // v0.2: XDG autostart follows the setting
+      syncCliShim(settings); // v0.3: ~/.local/bin/nx follows the setting
     },
   });
 }
@@ -310,6 +333,7 @@ function main() {
     e2e.start({ getWindow });
     scheduleRefresh(settings);
     syncAutostart(settings);
+    syncCliShim(settings);
     discovery
       .refresh({ force: false })
       .then(() => updateTray())

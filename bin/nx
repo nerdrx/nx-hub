@@ -1,0 +1,27 @@
+#!/bin/sh
+# nx-hub-shim
+# NX Hub CLI — source-checkout launcher.
+#
+# The copy the hub writes to ~/.local/bin/nx has the absolute hub binary and app
+# dir baked in (src/cli/shim.js renders it). THIS one resolves them relative to
+# itself, so `bin/nx …` works straight out of a git checkout:
+#
+#   NX_HUB_BINARY=…  the runtime to use (default: node on PATH; point it at the
+#                    hub's electron binary to run exactly like the installed shim)
+set -e
+
+SELF=$0
+# follow symlinks without depending on GNU readlink -f
+while [ -L "$SELF" ]; do
+  LINK=$(ls -ld -- "$SELF" | sed -e 's/.* -> //')
+  case $LINK in
+    /*) SELF=$LINK ;;
+    *) SELF=$(dirname -- "$SELF")/$LINK ;;
+  esac
+done
+NX_HUB_APP_DIR=$(CDPATH= cd -- "$(dirname -- "$SELF")/.." && pwd)
+NX_HUB_BINARY=${NX_HUB_BINARY:-node}
+
+# ELECTRON_RUN_AS_NODE is harmless for plain node and mandatory for the hub's
+# electron binary: it keeps this a headless process (no window, no singleton).
+ELECTRON_RUN_AS_NODE=1 exec "$NX_HUB_BINARY" "$NX_HUB_APP_DIR/src/cli/index.js" "$@"

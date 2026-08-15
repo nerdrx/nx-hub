@@ -250,3 +250,78 @@ in config.js and keeps jobs/state modules UI-agnostic so a bus can attach later.
   adapted from nxtakt's) — never on the real desktop.
 - Real-world smoke test at the end: discovery against live GitHub, install
   QuadForge (small, harmless) into a temp install root.
+
+## CLI (`nx`, v0.3)
+
+A terminal front end for the same logic layer the GUI drives. `src/cli/**` is a
+thin presentation layer over `config` / `github` / `discovery` / `state` /
+`jobs` / `install/engine` — it re-implements none of them and requires no
+electron API (only `ELECTRON_RUN_AS_NODE`), no system node, and no dependencies
+(ANSI and argv parsing are hand-rolled).
+
+| Command | Arguments | Does |
+| --- | --- | --- |
+| `nx list` | `[--all] [--json]` | every app: installed version(s), latest, status glyph (`✓` up to date, `↑` update, `·` not installed). Non-installable repos (unreleased, overlay-hidden, wrong platform) are summarised in a dim bottom block; `--all` spells out the reason per app. |
+| `nx info <app>` | `[--json]` | the card in text: repo, tagline, latest, per-artifact table (id, label, platform, size, source version + provenance, installed, status) and post-install notes. |
+| `nx install <app> [artifact]` | `[--tag <tag>]` | `jobs.install` / `jobs.installVersion`. |
+| `nx uninstall <app> [artifact]` | `[-y]` | `jobs.uninstall`; confirms first on a TTY. |
+| `nx update [<app>]` | `[--all]` | bare = list what is pending (installs nothing); `--all` or a named app = install them, one job at a time. |
+| `nx launch <app> [artifact]` | | `jobs.launch` (engine `launch()`). |
+| `nx rollback <app> [artifact]` | `[-y]` | `jobs.rollback` — the kept `<installdir>.prev`. |
+| `nx versions <app>` | `[--json]` | `discovery.getReleases`, marking latest / installed / prerelease. |
+| `nx refresh` | `[--force] [--json]` | `discovery.refresh`; `--force` bypasses the ETag cache. |
+| `nx doctor` | `[--offline] [--json]` | hub version, runtime, data dir, install root, token source (settings / `gh` / anonymous), sources, rate-limit state, install-engine availability, adb + devices, shim state, install count. Runs one discovery pass unless `--offline`. |
+| `nx help` | | command list. `nx --version` prints the hub version. |
+
+Aliases: `ls`, `i`/`add`, `rm`/`remove`, `up`/`upgrade`, `run`/`start`, `sync`,
+`status`. **App matching**: exact id → exact name/repo → unambiguous prefix →
+unambiguous substring (all case-insensitive, ordinal — never `localeCompare`);
+ambiguous prints the candidates and exits 1. **Artifact matching**: optional
+when exactly one artifact fits the command (installable on this platform —
+android counts, it sideloads over adb — installed, launchable, rollbackable);
+otherwise the candidate ids are listed.
+
+**Exit codes**: `0` ok · `1` usage / user error (unknown command or flag,
+unknown or ambiguous app, nothing installed to act on) · `2` operation failed
+(job error, unreachable sources with nothing cached).
+
+**Output**: 24-bit ANSI in the NX palette (see DESIGN §10) on a TTY; plain text
+when the stream is not a TTY, when `NO_COLOR` is set, or with `--plain` /
+`--no-color`. Progress is a single `\r`-rewritten bar on **stderr** (violet fill,
+dim trough, cyan percentage) and degrades to one line per phase when not a TTY,
+so stdout stays clean for pipes. `--json` output is the only thing on stdout in
+json mode, errors included (`{ok:false,error}`). All formatting is
+locale-independent (ISO dates, the hub's own `fmtBytes`). The hub's console log
+is muted unless `--verbose`; the file log always keeps everything.
+
+**Shim**: `bin/nx` in the repo runs the CLI from a checkout. The hub itself
+writes `~/.local/bin/nx` on startup (`settings.cliShim`, default true, sanitized
+like the other booleans) with the CURRENT `process.execPath` and app dir baked
+in:
+
+```sh
+#!/bin/sh
+# nx-hub-shim
+NX_HUB_BINARY='…/nx-hub'; NX_HUB_APP_DIR='…/resources/app.asar'
+ELECTRON_RUN_AS_NODE=1 exec "$NX_HUB_BINARY" "$NX_HUB_APP_DIR/src/cli/index.js" "$@"
+```
+
+`ELECTRON_RUN_AS_NODE=1` runs the hub's bundled electron as plain node — no
+window, no single-instance lock, so `nx` works while the GUI is running (asar
+paths included). It is rewritten whenever those paths change (self-update,
+move), removed when the setting is turned off, and **never** written over a file
+at that path lacking the `# nx-hub-shim` marker. Skipped on win32 and when the
+hub runs from a temporary AppImage FUSE mount (`/tmp/.mount_*`), whose paths die
+with the process. `nx shim [--force]` reports/rewrites it.
+
+**Concurrency with the GUI**: the CLI runs discovery in its own process and
+writes `state.json` through the same atomic write (tmp + rename) — last writer
+wins per file, which is acceptable because installs are recorded per
+app/artifact and the GUI re-reads state after every job. The CLI deliberately
+does NOT wire discovery's `afterRefresh` hook, so a `nx list` never triggers
+background update policies.
+
+**Tests**: `test/cli/**` (in the `npm test` glob) — argv parsing, app/artifact
+matching, list/info/versions/doctor rendering (plain and styled), progress-line
+rendering, shim generation, command dispatch + exit codes with a faked runtime,
+plus an end-to-end pass on the real stack against the mock GitHub in temp dirs.

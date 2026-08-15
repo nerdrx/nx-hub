@@ -280,6 +280,29 @@ technology is negotiable.
 for warnings, muted lavender for secondary text; uppercase wide-tracked section
 labels echo the chip language.
 
+The concrete mapping, as implemented in NX Hub's `nx` command
+(`src/cli/ansi.js`), is 24-bit SGR — no 256-colour approximations, no
+dependencies:
+
+| Token | Escape | Used for |
+| --- | --- | --- |
+| Violet `#7700FF` | `ESC[38;2;119;0;255m` | section labels, command names, the filled part of a progress bar |
+| Cyan `#00e5ff` | `ESC[38;2;0;229;255m` | live values: versions, percentages, counts, the `✓` glyph |
+| Amber `#ffb300` | `ESC[38;2;255;179;0m` | update available (`↑`), throttling, anything asking for attention |
+| Muted `#9a8fc0` | `ESC[38;2;154;143;192m` | secondary text, table headers, key columns |
+| Text `#efeaff` | `ESC[38;2;239;234;255m` | body rows |
+| Red `#ff5470` | `ESC[38;2;255;84;112m` | failures only |
+| — | `ESC[2m` (dim) | the trough of a bar, hints, the bottom "other repos" block |
+
+Section labels are `track()`ed — `"Apps"` → `A P P S` — the terminal's version
+of the uppercase micro-label chip. Status is carried by three glyphs and never
+by emoji: `✓` up to date (cyan), `↑` update available (amber), `·` not
+installed (muted). Progress is one line rewritten with `\r`: violet `█` fill on
+a dim `░` trough, cyan percentage, muted phase. Everything degrades to plain
+ASCII when the stream is not a TTY, when `NO_COLOR` is set, or on `--plain` —
+the layout is identical, only the escapes disappear, and the bar becomes one
+line per phase so logs stay readable.
+
 ## 11. The review checklist
 
 Before shipping any NX-branded surface, verify:

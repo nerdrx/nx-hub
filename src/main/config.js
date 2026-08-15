@@ -74,6 +74,8 @@ function defaults() {
     createDesktopEntries: true,
     maxConcurrentDownloads: 2,
     preferredDeviceSerial: null,
+    // CLI: keep ~/.local/bin/nx pointing at this install (src/cli/shim.js)
+    cliShim: true,
   };
 }
 
@@ -220,6 +222,7 @@ function sanitize(raw) {
   s.autostart = bool(s.autostart, false);
   s.startMinimized = bool(s.startMinimized, false);
   s.createDesktopEntries = bool(s.createDesktopEntries, true);
+  s.cliShim = bool(s.cliShim, true);
   const maxDl = Math.floor(Number(s.maxConcurrentDownloads));
   s.maxConcurrentDownloads = Number.isFinite(maxDl) && maxDl >= 1 ? Math.min(maxDl, 8) : defaults().maxConcurrentDownloads;
   s.preferredDeviceSerial = trimmedString(s.preferredDeviceSerial);

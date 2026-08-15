@@ -11,7 +11,7 @@
 [![release](https://img.shields.io/github/v/release/nerdrx/nx-hub?display_name=tag&color=7700FF&labelColor=171028)](https://github.com/nerdrx/nx-hub/releases/latest)
 [![license](https://img.shields.io/badge/license-MIT-00e5ff?labelColor=171028)](LICENSE)
 ![platforms](https://img.shields.io/badge/linux%20·%20windows%20·%20android-efeaff?label=platforms&labelColor=171028)
-![tests](https://img.shields.io/badge/tests-384%20passing-00e5ff?labelColor=171028)
+![tests](https://img.shields.io/badge/tests-494%20passing-00e5ff?labelColor=171028)
 
 <br>
 
@@ -45,6 +45,7 @@ every device, simultaneously.
 - [The integrity pipeline](#the-integrity-pipeline)
 - [Update orchestration](#update-orchestration)
 - [Device support](#device-support)
+- [The terminal](#the-terminal)
 - [The Android companion](#the-android-companion)
 - [Getting started](#getting-started)
 - [Configuration](#configuration)
@@ -68,6 +69,7 @@ every device, simultaneously.
 | **Version time travel** | Full release history per app, install-any-version with downgrade confirmation, and single-click rollback to the retained previous install. |
 | **Launcher surface** | Icon tiles ordered by favorites and recency, tray quick-launch, and remote launch of installed APKs on the connected device. |
 | **Self-hosting** | The hub is an entry in its own catalog and updates itself through the identical pipeline, relaunching into the new binary. |
+| **A first-class CLI** | `nx list · install · update --all · launch · rollback · doctor` — the same engine from any shell, with `--json` for scripting. |
 
 <br>
 

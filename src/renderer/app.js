@@ -511,6 +511,7 @@ async function saveSettings() {
     autostart: !!d.autostart,
     startMinimized: !!d.startMinimized,
     createDesktopEntries: d.createDesktopEntries !== false,
+    cliShim: d.cliShim !== false,
     maxConcurrentDownloads: clampConcurrency(d.maxConcurrentDownloads),
   };
   const ok = await call('setSettings', patch);
