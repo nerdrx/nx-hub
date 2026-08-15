@@ -443,6 +443,14 @@ function buildApp({ repo, release, overlay, installedState, adb, primaryOwner, s
   };
   if (primaryOwner && String(owner).toLowerCase() !== String(primaryOwner).toLowerCase()) app.foreignOwner = true;
 
+  // v0.5: how the UI labels this app's connector status fields (SPEC "Status
+  // rendering"). Absent → the UI renders fields generically.
+  if (ovl.connector && Array.isArray(ovl.connector.fields)) {
+    app.connectorFields = ovl.connector.fields
+      .filter((f) => f && typeof f.key === "string")
+      .map((f) => ({ key: f.key, label: f.label || f.key, unit: f.unit || "", kind: f.kind || "text" }));
+  }
+
   // ---- v0.2 per-app preferences (the app is still discovered when hidden) ----
   app.localHidden = prefs.hidden === true;
   app.favorite = prefs.favorite === true;

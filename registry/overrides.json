@@ -67,7 +67,22 @@
           "kind": "windows-portable",
           "platform": "windows"
         }
-      ]
+      ],
+      "connector": {
+        "fields": [
+          {
+            "key": "hr",
+            "label": "Heart rate",
+            "unit": "bpm",
+            "kind": "number"
+          },
+          {
+            "key": "connected",
+            "label": "Watch",
+            "kind": "bool"
+          }
+        ]
+      }
     },
     "OscGoesBrrr-NX-Patches": {
       "name": "OGB NX-Patches",
