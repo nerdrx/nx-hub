@@ -511,3 +511,23 @@ test("releaseFallback:false restores strict latest-release-only artifacts", () =
   const filled = build();
   assert.ok(filled.artifacts.some((x) => x.kind === "appimage" && x.fromOlderRelease), "default fills the gap");
 });
+
+test("device versionName with a tag prefix does not produce a phantom update (nx-1.3 vs 1.3)", () => {
+  let seq = 9700;
+  const a = (name) => ({ name, id: ++seq, size: 10, url: "u" });
+  const app = discovery.buildApps({
+    repos: [repoFor("wivrn-nx")],
+    releases: { "nerdrx/wivrn-nx": helpers.release("nx-1.3", [a("wivrn-nx-release.apk")]) },
+    overlay: OVERLAY,
+    installedState: { installed: {} },
+    adb: {
+      available: true,
+      devices: [{ serial: "PIXEL7", model: "Pixel 7", state: "device" }],
+      apkVersions: { "org.meumeu.wivrn.nx": "nx-1.3" }, // raw versionName from dumpsys
+    },
+    primaryOwner: "nerdrx",
+  })[0];
+  const apk = app.artifacts.find((x) => x.kind === "apk-adb");
+  assert.ok(apk.installed, "device version counts as installed");
+  assert.strictEqual(apk.updateAvailable, false, "nx-1.3 and 1.3 are the same version");
+});

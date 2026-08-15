@@ -525,9 +525,13 @@ function mergeInstalled(app, installedState, adb, settings) {
     // the app's newest tag — an Android-only patch must not flag the desktop
     // build as updatable (or vice versa).
     const target = artifact.sourceVersion || (app.latest && app.latest.version) || null;
-    const newer = Boolean(installed && target && installed.version && String(installed.version) !== String(target));
+    // Normalize BOTH sides through parseVersion — a device may report the raw
+    // versionName "nx-1.3" while the release tag normalizes to "1.3"; raw
+    // string compare produced a phantom "nx-1.3 → 1.3" update.
+    const norm = (v) => String(parseVersion(v) ?? v);
+    const newer = Boolean(installed && target && installed.version && norm(installed.version) !== norm(target));
     // SPEC v0.2: skippedVersion suppresses the update for EXACTLY that version
-    const skipped = Boolean(newer && skippedVersion && String(skippedVersion) === String(target));
+    const skipped = Boolean(newer && skippedVersion && norm(skippedVersion) === norm(target));
     artifact.updateAvailable = newer && !skipped;
     artifact.updateSkipped = skipped;
     artifact.launchable = kindLaunchable(artifact) && (!rec || rec.launchable !== false);
