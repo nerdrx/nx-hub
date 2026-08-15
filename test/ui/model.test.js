@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  activeJobFor,
   normalizeState,
   normalizeAdb,
   normalizeApp,
@@ -238,4 +239,17 @@ test('appHasUpdate ignores unpublished repos', () => {
   const state = normalizeState({ apps: APPS_V2 });
   assert.equal(appHasUpdate(state.apps.find((a) => a.id === 'd'), state.settings), false);
   assert.equal(appHasUpdate(null, {}), false);
+});
+
+test('activeJobFor: finished jobs never produce a progress bar', () => {
+  const jobs = [
+    { appId: 'vrcx', artifactId: 'a', status: 'done', pct: 100, phase: 'cleanup' },
+    { appId: 'vrcx', artifactId: 'a', status: 'running', pct: 40, phase: 'download' },
+    { appId: 'ogb', artifactId: 'b', status: 'error', pct: 10 },
+    { appId: 'live', artifactId: 'c', pct: 55 }, // live progress event — no status
+  ];
+  assert.equal(activeJobFor(jobs, 'vrcx').pct, 40, 'skips the done job, finds the running one');
+  assert.equal(activeJobFor(jobs, 'ogb'), null, 'error jobs are history, not bars');
+  assert.equal(activeJobFor(jobs, 'live').pct, 55, 'statusless live events stay active');
+  assert.equal(activeJobFor(jobs, 'other'), null);
 });

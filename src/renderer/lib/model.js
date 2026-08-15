@@ -123,6 +123,8 @@ export function normalizeJob(job) {
     phase: j.phase || 'download',
     pct: Number.isFinite(Number(j.pct)) ? Number(j.pct) : -1,
     message: j.message || '',
+    // '' means "unknown" (live progress events carry no status) — treat as active.
+    status: j.status || '',
     action: j.action || j.type || 'install',
   };
 }
@@ -254,6 +256,16 @@ export function notInstallableReason(app) {
   }
   const v = app.latest && app.latest.version ? ` — latest is ${app.latest.version}` : '';
   return `nothing installable on this machine${v}`;
+}
+
+/**
+ * The job whose progress a card should show: queued/running only. Finished
+ * jobs stay in main's history list and must never render as an eternal bar;
+ * '' status means a live progress event — always active.
+ */
+export function activeJobFor(jobs, appId) {
+  const active = (j) => !j.status || j.status === 'queued' || j.status === 'running';
+  return asArray(jobs).find((j) => j && j.appId === appId && active(j)) || null;
 }
 
 export function githubUrl(repo) {

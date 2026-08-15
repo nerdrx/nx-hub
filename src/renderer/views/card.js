@@ -289,7 +289,10 @@ export function renderUnpublishedCard(app, reason) {
         ${app.private ? `<span class="lock" title="private repository">${icons.lock}</span>` : ''}
       </div>
       ${app.tagline ? `<p class="tagline">${esc(app.tagline)}</p>` : ''}
-      <div class="meta"><span class="muted">${esc(label)}</span></div>
+      <div class="meta">
+        <span class="muted">${esc(label)}</span>
+        <a class="repo-link" href="#" data-act="open" data-url="${esc(githubUrl(app.repo))}">${esc(app.repo)}</a>
+      </div>
     </div>
     <div class="art-actions">
       <button class="btn btn-ghost" data-act="open" data-url="${esc(githubUrl(app.repo))}">Open GitHub</button>

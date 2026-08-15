@@ -9,6 +9,7 @@ import {
   normalizeState,
   filterApps,
   splitPublished,
+  activeJobFor,
   notInstallableReason,
   githubUrl,
   visibleApps,
@@ -219,7 +220,7 @@ function jobsForRender() {
 }
 
 function jobForApp(jobs, appId) {
-  return jobs.find((j) => j && j.appId === appId) || null;
+  return activeJobFor(jobs, appId);
 }
 
 /* ------------------------------------------------------------------ toasts */
