@@ -85,7 +85,9 @@ test("every v0.2 channel is registered and answers", async (t) => {
   jobs._reset();
   jobs.init({ emit: (e) => events.push(e), github: clientFor(mock, env), engine: null, resolve: null });
 
-  config.save({ owners: ["nerdrx"], extraRepos: [] });
+  // Hermetic adb: a real phone on the developer's USB port must never leak
+  // into this test (bit us once — the device list overrode PICO123 below).
+  config.save({ owners: ["nerdrx"], extraRepos: [], adbPath: path.join(env.root, "no-such-adb") });
   await discovery.refresh({ force: true });
 
   for (const name of V02_METHODS) {

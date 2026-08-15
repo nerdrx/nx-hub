@@ -244,6 +244,11 @@ function register() {
 
   handle("nxhub:getDeviceInfo", async () => {
     try {
+      // The devices sheet calls this on open — rescan the device list in the
+      // same breath so the list and the info tiles can never disagree (seen
+      // in the field: freshly authorized phone showed info but "No device").
+      await discovery.refreshAdb().catch(() => {});
+      emit({ type: "state-changed" });
       return await engineOrThrow().getDeviceInfo(engineCtx());
     } catch (e) {
       config.log(`getDeviceInfo: ${e.message}`);
