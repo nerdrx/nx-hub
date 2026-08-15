@@ -233,13 +233,71 @@ autostart .desktop toggle. Prerelease handling switches from /releases/latest to
 the /releases list, filtered per app pref. All new UI text stays English;
 formatting must be locale-independent (host machines may run de_DE).
 
-## Future (not v1 — do not build, do not preclude)
+## NX Connector (v0.5 — frozen 2026-08-16)
 
-**NX Connector**: the hub as a local rendezvous for NX apps — a small always-on
-WS endpoint (`ws://127.0.0.1:9021`, reserved now) where installed NX apps can
-announce themselves and publish status (PulseNX vitals, WiVRn session state,
-OGB link status), surfaced in hub cards/tray. v1 only reserves the port constant
-in config.js and keeps jobs/state modules UI-agnostic so a bus can attach later.
+The hub hosts a local rendezvous bus; NX apps announce presence and stream
+status; the hub renders it and orchestrates multi-app **stacks**.
+
+### Bus (`src/main/connector/` — [bus])
+
+WebSocket server on `ws://127.0.0.1:9021` (config.NX_CONNECTOR_PORT), loopback
+only, zero npm deps (hand-rolled RFC6455 server: GET upgrade, masked client
+frames, text only, ≤16KB frames). Auth: shared secret at
+`<dataDir>/connector.token` (0600, created at init); clients present it in
+`hello`. Wire protocol (JSON per WS text frame):
+
+```js
+// client → hub
+{ type:"hello", app:"pulsenx", version:"1.2.1", pid, token, caps:["status"] }
+{ type:"status", fields:{ hr:72, connected:true } }  // ≤2KB, throttled 4/s
+{ type:"bye" }
+// hub → client
+{ type:"welcome", hub:"<version>" } | { type:"error", message } | { type:"ping" }
+{ type:"shutdown-request" }         // polite stop (stacks); client SHOULD exit
+```
+
+Module API (frozen): `init({port, dataDir, emit, log, hubVersion})→{close}` ·
+`getClients()→[{app,version,pid,since,lastSeen,fields}]` · `isPresent(appId)` ·
+`requestShutdown(appId)→bool` · `onChange(cb)`. Emits `{type:"connector-changed"}`
+through `emit` (debounced ≤4/s). Unknown/duplicate app ids: latest hello wins,
+id normalized lowercase. Client presence = open socket; 30s ping, 90s reap.
+
+Drop-in client: `docs/connector/nx-connector.js` (CommonJS, zero deps,
+node/electron): `connect({app, version, url?, tokenPath?}) → {sendStatus,
+close, on}` with auto-reconnect (1s→30s backoff) and silent no-hub tolerance.
+`docs/connector/PROTOCOL.md` documents the wire format for non-JS apps.
+
+### Status rendering (overlay + [ui])
+
+Overlay per app: `"connector": { "fields": [{ "key":"hr", "label":"Heart
+rate", "unit":"bpm", "kind":"number"|"text"|"bool" }] }` — cards show a live
+status strip when the app is present (cyan dot + formatted fields); unknown
+fields render `key: value` generically. Tray lines: "PulseNX · 72 bpm".
+`getState()` gains `connector: { clients }`.
+
+### Stacks (`src/main/stacks.js` — [stacks])
+
+`<dataDir>/stacks.json`. Model: `{ id, name, steps:[{ appId, artifactId?,
+health: { type:"connector"|"port"|"delay", timeoutMs?, port? }, optional? }] }`.
+`run`: sequential — launch step via jobs.launch, then gate: `connector` = app
+present on the bus; `port` = TCP connect on 127.0.0.1:port; `delay` = wait
+timeoutMs. Gate timeout (default 30s): step `optional` → continue, else stop
+run, report failed. `stop`: reverse order — `shutdown-request` via bus when
+present, else SIGTERM the launch pid (engine launch() already returns {pid});
+never SIGKILL. Module API (frozen): `init({jobs, connector, config, emit})` ·
+`list()/save(stack)/remove(id)` · `run(id)/stop(id)/running()`. Events:
+`{type:"stack-progress", stackId, stepIndex, appId, phase}` with phase ∈
+launching|waiting|healthy|failed|done|stopping|stopped.
+
+### IPC additions (frozen)
+
+`getConnector()` · `getStacks()` · `saveStack(stack)` · `deleteStack(id)` ·
+`runStack(id)` · `stopStack(id)`; events `connector-changed`, `stack-progress`.
+Launch view renders stack tiles (wide, distinct edge treatment) before app
+tiles; a Stacks editor sheet creates/edits (ordered app picker + health rule
+per step). CLI: `nx status` (bus clients), `nx stack ls|run|stop <id>`.
+
+## Future (not v1 — do not build, do not preclude)
 
 ## Verification
 
