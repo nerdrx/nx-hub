@@ -220,6 +220,105 @@ test('Escape closes the sheet first, then the settings panel', async () => {
   assert.equal(dom.html('panel-root'), '');
 });
 
+/* ------------------------------------------------------------------ v0.5 */
+
+test('a live bus client puts a status strip on its card', async () => {
+  await clickAndSettle({ 'data-act': 'view', 'data-view': 'manage' });
+  const grid = dom.html('grid');
+  assert.ok(grid.includes('class="live"'), 'the strip rendered');
+  assert.ok(grid.includes('>LIVE<'));
+  assert.ok(grid.includes('Heart rate'), 'the declared label won');
+  assert.ok(grid.includes('latency_ms'), 'the undeclared field still shows');
+
+  // Taking the app off the bus takes the strip with it.
+  mock().toggleBusClient('pulsenx');
+  await tick(80);
+  assert.ok(!dom.html('grid').includes('data-live="pulsenx"'), 'the strip left with the client');
+  mock().toggleBusClient('pulsenx');
+  await tick(80);
+  assert.ok(dom.html('grid').includes('data-live="pulsenx"'), 'and came back');
+});
+
+test('the launcher shows presence on tiles and the prebuilt stack tile', async () => {
+  await clickAndSettle({ 'data-act': 'view', 'data-view': 'launch' });
+  const launch = dom.html('launch');
+  assert.ok(launch.includes('class="tile-live"'), 'the presence dot rendered');
+  assert.ok(/tile-cap">\d+ bpm</.test(launch), launch.slice(0, 400));
+  assert.ok(launch.includes('tile-stack'), 'the stack tile rendered');
+  assert.ok(launch.includes('VR Night'));
+  assert.ok(launch.indexOf('tile-stack') < launch.indexOf('data-act="tile-launch"'), 'stacks come first');
+  assert.ok(launch.includes('data-act="stack-new"'), 'the ghost tile invites a new stack');
+  assert.equal(doc.getElementById('stacks-btn').hidden, false, 'the header entry appeared');
+});
+
+test('the stacks sheet edits, saves, runs and stops a stack', async () => {
+  await clickAndSettle({ 'data-act': 'stacks' }, 120);
+  assert.ok(dom.html('sheet-root').includes('VR Night'), 'the list opened');
+
+  await clickAndSettle({ 'data-act': 'stack-new' });
+  assert.ok(dom.html('sheet-root').includes('data-stack-field="name"'), 'the editor opened');
+
+  // The stub DOM never parses innerHTML, so stand-in inputs play the part of
+  // the fields the editor just rendered.
+  const sheet = doc.getElementById('sheet-root');
+  const field = (attrs, value) => {
+    const el = doc.createElement('input');
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    el.value = value;
+    sheet.appendChild(el);
+    return el;
+  };
+  const inputs = [
+    field({ 'data-stack-field': 'name' }, 'Test Stack'),
+    field({ 'data-step-field': 'appId', 'data-index': '0' }, 'pulsenx'),
+  ];
+
+  // Switching the health rule swaps the inputs under that step.
+  const gate = field({ 'data-step-field': 'healthType', 'data-index': '0' }, 'port');
+  inputs.push(gate);
+  doc.dispatch('change', { target: gate });
+  await tick(40);
+  assert.ok(dom.html('sheet-root').includes('data-step-field="port"'), 'the port box appeared');
+  gate.value = 'connector';
+  doc.dispatch('change', { target: gate });
+  await tick(40);
+  assert.ok(!dom.html('sheet-root').includes('data-step-field="port"'), 'and went away again');
+
+  // Saving with one blank step surfaces the error instead of writing junk.
+  await clickAndSettle({ 'data-act': 'stack-step-add' });
+  await clickAndSettle({ 'data-act': 'stack-save' }, 120);
+  assert.ok(dom.html('sheet-root').includes('Pick an app for this step'), 'the second step is empty');
+  assert.ok(!mock().stacks().some((s) => s.id === 'test-stack'), 'nothing was saved');
+
+  inputs.push(field({ 'data-step-field': 'appId', 'data-index': '1' }, 'wivrn-nx'));
+  await clickAndSettle({ 'data-act': 'stack-save' }, 200);
+  const saved = mock().stacks().find((s) => s.id === 'test-stack');
+  assert.ok(saved, 'the stack reached the bridge');
+  assert.deepEqual(saved.steps.map((s) => s.appId), ['pulsenx', 'wivrn-nx']);
+  assert.deepEqual(saved.steps.map((s) => s.health.type), ['connector', 'connector']);
+  assert.ok(dom.html('toasts').includes('saved'));
+  assert.ok(dom.html('sheet-root').includes('Test Stack'), 'the list came back with it');
+  for (const el of inputs) el.remove();
+
+  await clickAndSettle({ 'data-act': 'close-sheet' });
+  await clickAndSettle({ 'data-act': 'stack-run', 'data-stack': 'test-stack' }, 400);
+  let launch = dom.html('launch');
+  assert.ok(launch.includes('is-running'), 'the tile reads as running');
+  assert.ok(launch.includes('data-act="stack-stop"'), 'and offers a way out');
+  assert.ok(/st-(go|wait|ok)/.test(launch), launch.slice(launch.indexOf('tile-stack'), 400));
+
+  await clickAndSettle({ 'data-act': 'stack-stop', 'data-stack': 'test-stack' }, 700);
+  launch = dom.html('launch');
+  assert.ok(launch.includes('Stopped'), 'the stop landed');
+  assert.ok(!launch.includes('data-act="stack-stop"'));
+
+  await clickAndSettle({ 'data-act': 'stacks' }, 120);
+  globalThis.window.__confirm = true;
+  await clickAndSettle({ 'data-act': 'stack-delete', 'data-stack': 'test-stack' }, 200);
+  assert.ok(!mock().stacks().some((s) => s.id === 'test-stack'), 'delete went through');
+  await clickAndSettle({ 'data-act': 'close-sheet' });
+});
+
 test('the controller never throws on a junk event', () => {
   for (const ev of [null, 'nope', {}, { type: 'unknown' }, { type: 'update-available' }]) {
     app.onHubEvent(ev);

@@ -2,6 +2,7 @@
 // NX Hub — the window.nxhub surface (main-process half). Requires electron
 // objects only through init(deps), so buildState() stays unit-testable.
 
+const fs = require("fs");
 const path = require("path");
 
 const config = require("./config");
@@ -9,6 +10,17 @@ const discovery = require("./discovery");
 const jobs = require("./jobs");
 const stateStore = require("./state");
 const housekeeping = require("./housekeeping");
+const stacks = require("./stacks");
+
+/**
+ * v0.5: the NX Connector bus module, once index.js managed to start it — or
+ * null on every build/run without one (unit tests, a hub whose bus failed to
+ * bind). Everything downstream of it is written empty-safe on purpose.
+ */
+let connector = null;
+let snapshotTimer = null;
+let snapshotHeartbeat = null;
+let unsubscribeConnector = null;
 
 let deps = {
   ipcMain: null,
@@ -22,6 +34,10 @@ let deps = {
 
 function init(d = {}) {
   deps = Object.assign(deps, d);
+  // v0.5: the stacks orchestrator drives the same jobs the GUI does and emits
+  // through the same fan-out. The connector is passed as a getter so a bus that
+  // only boots later (or not at all) still resolves correctly at run time.
+  stacks.init({ jobs, connector: getConnectorModule, config, emit });
   register();
   return module.exports;
 }
@@ -79,6 +95,173 @@ function hubVersion() {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* v0.5: the NX Connector bus, as seen from the hub                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * `<dataDir>/connector-clients.json` — the bus's client list, mirrored to disk
+ * so OUT-OF-PROCESS readers can see it. The CLI runs in its own process and the
+ * wire protocol has no query message, so `nx status` reads this snapshot rather
+ * than pretending to be a client. Written atomically, debounced, and stamped:
+ * a reader treats anything older than ~2 minutes as "the hub is not running".
+ */
+function connectorSnapshotPath() {
+  return path.join(config.dataDir(), "connector-clients.json");
+}
+
+function clients() {
+  if (!connector || typeof connector.getClients !== "function") return [];
+  try {
+    const list = connector.getClients();
+    return Array.isArray(list) ? list : [];
+  } catch (e) {
+    config.log(`connector.getClients failed: ${e.message}`);
+    return [];
+  }
+}
+
+function writeConnectorSnapshot() {
+  try {
+    config.ensureDir(config.dataDir());
+    config.writeJsonAtomic(connectorSnapshotPath(), { ts: new Date().toISOString(), clients: clients() });
+  } catch (e) {
+    config.log(`connector snapshot failed: ${e.message}`);
+  }
+}
+
+/** Read the snapshot from any process. Never throws. */
+function readConnectorSnapshot(maxAgeMs = 120000) {
+  const file = connectorSnapshotPath();
+  let raw = null;
+  try {
+    raw = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (_) {
+    return { path: file, exists: false, stale: true, ageMs: null, ts: null, clients: [] };
+  }
+  const ts = raw && raw.ts ? String(raw.ts) : null;
+  const at = ts ? Date.parse(ts) : NaN;
+  const ageMs = Number.isFinite(at) ? Math.max(0, Date.now() - at) : null;
+  return {
+    path: file,
+    exists: true,
+    ts,
+    ageMs,
+    stale: ageMs == null || ageMs > maxAgeMs,
+    clients: raw && Array.isArray(raw.clients) ? raw.clients : [],
+  };
+}
+
+/**
+ * Adopt the bus module (index.js hands it over once `init()` succeeded) and
+ * keep the on-disk snapshot in step with it, debounced so a chatty app cannot
+ * turn status updates into disk writes.
+ */
+function setConnector(mod, { snapshotDebounceMs = 1000, snapshotHeartbeatMs = 60000 } = {}) {
+  if (typeof unsubscribeConnector === "function") {
+    try {
+      unsubscribeConnector();
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  unsubscribeConnector = null;
+  if (snapshotTimer) clearTimeout(snapshotTimer);
+  snapshotTimer = null;
+  if (snapshotHeartbeat) clearInterval(snapshotHeartbeat);
+  snapshotHeartbeat = null;
+  connector = mod || null;
+
+  if (connector && typeof connector.onChange === "function") {
+    const schedule = () => {
+      if (snapshotTimer) return;
+      snapshotTimer = setTimeout(() => {
+        snapshotTimer = null;
+        writeConnectorSnapshot();
+      }, Math.max(0, snapshotDebounceMs));
+      if (snapshotTimer.unref) snapshotTimer.unref();
+    };
+    try {
+      const off = connector.onChange(schedule);
+      if (typeof off === "function") unsubscribeConnector = off;
+    } catch (e) {
+      config.log(`connector.onChange failed: ${e.message}`);
+    }
+    // A quiet bus must not look like a dead hub: the snapshot's timestamp is
+    // the CLI's proof of life, so it is re-stamped well inside the staleness
+    // window even when nobody connects or disconnects.
+    if (snapshotHeartbeatMs > 0) {
+      snapshotHeartbeat = setInterval(writeConnectorSnapshot, snapshotHeartbeatMs);
+      if (snapshotHeartbeat.unref) snapshotHeartbeat.unref();
+    }
+  }
+  writeConnectorSnapshot(); // an empty list is itself news: "the hub is up"
+  return connector;
+}
+
+function getConnectorModule() {
+  return connector;
+}
+
+/** `getConnector()` — SPEC IPC addition. Empty-safe with no bus at all. */
+function getConnector() {
+  return { clients: clients() };
+}
+
+/**
+ * A live tray/card suffix for one client: the overlay's `connector.fields`
+ * decide what is worth showing ("PulseNX · 72 bpm"); an app with no field
+ * definitions still gets a presence marker.
+ */
+function formatFields(defs, values) {
+  const fields = Array.isArray(defs) ? defs : [];
+  const vals = values && typeof values === "object" ? values : {};
+  const out = [];
+  for (const def of fields) {
+    if (!def || !def.key) continue;
+    const raw = vals[def.key];
+    if (raw == null || raw === "") continue;
+    let text;
+    if (def.kind === "bool" || typeof raw === "boolean") text = raw ? "on" : "off";
+    else if (typeof raw === "number") text = String(raw);
+    else text = String(raw);
+    out.push(`${text}${def.unit ? ` ${def.unit}` : ""}`);
+    if (out.length === 2) break; // a tray line, not a dashboard
+  }
+  if (out.length) return out.join(" · ");
+  // Nothing declared (or nothing sent yet) — fall back to generic key: value.
+  const generic = Object.keys(vals)
+    .slice(0, 2)
+    .map((k) => `${k}: ${typeof vals[k] === "boolean" ? (vals[k] ? "on" : "off") : vals[k]}`);
+  return generic.join(" · ");
+}
+
+/** The overlay's connector block for an app, by id or repo name. */
+function connectorOverlayFields(appId) {
+  const cached = discovery.getCached() || {};
+  const apps = (cached.overlay && cached.overlay.apps) || {};
+  const app = (cached.apps || []).find((a) => a.id === appId);
+  const keys = [appId];
+  if (app && app.repo) keys.push(String(app.repo).split("/").pop());
+  for (const key of keys) {
+    const entry = apps[String(key).toLowerCase()];
+    if (entry && entry.connector && Array.isArray(entry.connector.fields)) return entry.connector.fields;
+  }
+  return [];
+}
+
+/**
+ * "PulseNX · 72 bpm" for a present app, "" for one that is not on the bus.
+ * `·` alone is the plain presence marker (the cyan dot the cards draw).
+ */
+function liveSuffix(appId, clientList) {
+  const list = Array.isArray(clientList) ? clientList : clients();
+  const client = list.find((c) => c && String(c.app).toLowerCase() === String(appId).toLowerCase());
+  if (!client) return "";
+  const text = formatFields(connectorOverlayFields(appId), client.fields);
+  return text ? ` · ${text}` : " ·";
+}
+
 /** SPEC: getState() → { apps, settings, jobs, adb, hubVersion, refreshing } */
 async function buildState() {
   const settings = config.load();
@@ -107,6 +290,8 @@ async function buildState() {
       selected: adb.selected || settings.preferredDeviceSerial || null,
     },
     hubVersion: hubVersion(),
+    // v0.5: whoever is on the bus right now (empty when the hub runs without one)
+    connector: { clients: clients() },
     refreshing: cached.refreshing,
     rateLimit: cached.rateLimit || null,
     errors: cached.errors || [],
@@ -311,6 +496,40 @@ function register() {
     return result;
   });
 
+  /* ---------------- v0.5: connector + stacks ---------------- */
+
+  handle("nxhub:getConnector", () => getConnector());
+
+  handle("nxhub:getStacks", () => stacks.list());
+
+  handle("nxhub:saveStack", async (stack) => {
+    const saved = stacks.save(stack);
+    emit({ type: "state-changed" });
+    return { ok: true, stack: saved, stacks: stacks.list() };
+  });
+
+  handle("nxhub:deleteStack", async (id) => {
+    const removed = stacks.remove(id);
+    emit({ type: "state-changed" });
+    return { ok: removed, stacks: stacks.list() };
+  });
+
+  // A run outlives any reasonable IPC round trip (a gate alone may wait 30s),
+  // so this starts it and returns — the renderer follows the stack-progress
+  // events, exactly like it follows job progress.
+  handle("nxhub:runStack", async (id) => {
+    const busy = stacks.running();
+    if (busy) throw new Error(`"${busy.stackId}" is still running`);
+    const started = stacks.run(id);
+    started.catch((e) => {
+      config.log(`stack ${id} failed: ${e.message}`);
+      emit({ type: "toast", level: "error", message: e.message || String(e) });
+    });
+    return { started: true, stackId: String(id) };
+  });
+
+  handle("nxhub:stopStack", (id) => stacks.stop(id));
+
   handle("nxhub:openExternal", async (url) => {
     const safe = safeExternal(url);
     if (!safe) throw new Error("Refusing to open a non-web URL");
@@ -329,16 +548,43 @@ function register() {
 function launchables() {
   const apps = discovery.getCached().apps || [];
   const st = stateStore.load();
+  const live = clients();
   const out = [];
   for (const app of apps) {
     for (const artifact of app.artifacts || []) {
       const rec = (st.installed[app.id] || {})[artifact.id];
       if (!rec) continue;
       if (artifact.launchable === false) continue; // discovery decides (kind + engine result)
-      out.push({ appId: app.id, artifactId: artifact.id, appName: app.name, label: artifact.label });
+      out.push({
+        appId: app.id,
+        artifactId: artifact.id,
+        appName: app.name,
+        label: artifact.label,
+        // v0.5: "" when the app is not on the bus, " · 72 bpm" when it is
+        live: liveSuffix(app.id, live),
+      });
     }
   }
   return out;
 }
 
-module.exports = { init, emit, buildState, launchables, hubVersion, getReleases, engineCtx };
+module.exports = {
+  init,
+  emit,
+  buildState,
+  launchables,
+  hubVersion,
+  getReleases,
+  engineCtx,
+  // v0.5: connector
+  setConnector,
+  getConnectorModule,
+  getConnector,
+  clients,
+  liveSuffix,
+  formatFields,
+  connectorOverlayFields,
+  connectorSnapshotPath,
+  readConnectorSnapshot,
+  writeConnectorSnapshot,
+};

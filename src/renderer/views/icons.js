@@ -125,6 +125,12 @@ export const trash = `
   <path d="M6.5 7 7.4 19a1.5 1.5 0 0 0 1.5 1.4h6.2a1.5 1.5 0 0 0 1.5-1.4L17.5 7"/>
 </svg>`;
 
+/** Layers — the stacks entry point (a stack of panes seen edge-on). */
+export const stack = `
+<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">
+  <path d="M12 3.4 20.2 8 12 12.6 3.8 8z"/><path d="m3.8 12.4 8.2 4.6 8.2-4.6"/><path d="m3.8 16.6 8.2 4.6 8.2-4.6"/>
+</svg>`;
+
 export const search = `
 <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
   <circle cx="11" cy="11" r="6"/><path d="m20 20-3.6-3.6"/>

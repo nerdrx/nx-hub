@@ -70,6 +70,21 @@ function matchApp(apps, query) {
   return { app: null, candidates: [], error: `No app matches "${query}". Try \`nx list\`.` };
 }
 
+/**
+ * v0.5: the same exact → prefix → substring resolution for stacks.
+ * @returns {{stack:object|null, candidates:object[], error:string|null}}
+ */
+function matchStack(stacks, query) {
+  const list = Array.isArray(stacks) ? stacks : [];
+  if (!query) return { stack: null, candidates: list, error: "Name a stack — try `nx stack ls`." };
+  const { match, candidates } = resolve(list, query, (s) => [s.id, s.name].filter(Boolean));
+  if (match) return { stack: match, candidates: [match], error: null };
+  if (candidates.length > 1) {
+    return { stack: null, candidates, error: `"${query}" matches ${candidates.length} stacks — be more specific.` };
+  }
+  return { stack: null, candidates: [], error: `No stack called "${query}". Try \`nx stack ls\`.` };
+}
+
 const ARTIFACT_MODES = {
   /** installable from this machine: same platform, or android (sideloaded over adb) */
   install: (a, host) => a.platform === host || a.platform === "android",
@@ -138,4 +153,4 @@ function emptyMessage(app, mode, host) {
   }
 }
 
-module.exports = { matchApp, pickArtifact, resolve, appKeys, artifactKeys, hostPlatform, ARTIFACT_MODES };
+module.exports = { matchApp, matchStack, pickArtifact, resolve, appKeys, artifactKeys, hostPlatform, ARTIFACT_MODES };

@@ -10,6 +10,7 @@
 // background); a `nx list` must never start an install behind the user's back.
 
 const fs = require("fs");
+const net = require("net");
 const path = require("path");
 
 const config = require("../main/config");
@@ -17,6 +18,8 @@ const github = require("../main/github");
 const discovery = require("../main/discovery");
 const jobs = require("../main/jobs");
 const stateStore = require("../main/state");
+const ipc = require("../main/ipc");
+const stacksStore = require("../main/stacks");
 const shim = require("./shim");
 
 const ROOT = path.join(__dirname, "..", "..");
@@ -62,6 +65,11 @@ function createRuntime() {
     github.init({ getToken: () => config.resolveToken(), cacheDir: config.cacheDir() });
     discovery.init({ emit });
     jobs.init({ emit });
+    // v0.5: stacks run IN THIS PROCESS when driven from the CLI — same store,
+    // same jobs, but no bus (the GUI hub owns the only connector server), so
+    // `connector` health gates fail fast and stop() falls back to SIGTERM on
+    // the pids this process launched.
+    stacksStore.init({ jobs, connector: null, config, emit });
   }
 
   /* ---------------- discovery ---------------- */
@@ -183,6 +191,99 @@ function createRuntime() {
     return jobs.launch(appId, artifactId);
   }
 
+  /* ---------------- v0.5: connector + stacks ---------------- */
+
+  /**
+   * Can THIS process bind the connector port? If it can, nothing is listening —
+   * no hub, no bus. The CLI never joins the bus as a client: the protocol has
+   * no query message, so presence is read from the hub's own snapshot file
+   * (`<dataDir>/connector-clients.json`, written by ipc.setConnector).
+   */
+  function probeBus(port = config.NX_CONNECTOR_PORT, { timeoutMs = 1500 } = {}) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (listening) => {
+        if (settled) return;
+        settled = true;
+        try {
+          server.close();
+        } catch (_) {
+          /* never listened */
+        }
+        resolve(listening);
+      };
+      const timer = setTimeout(() => done(false), timeoutMs);
+      if (timer.unref) timer.unref();
+      const server = net.createServer();
+      server.once("error", (e) => {
+        clearTimeout(timer);
+        done(e && e.code === "EADDRINUSE"); // in use = something IS listening
+      });
+      server.once("listening", () => {
+        clearTimeout(timer);
+        done(false);
+      });
+      try {
+        server.listen(port, "127.0.0.1");
+      } catch (_) {
+        clearTimeout(timer);
+        done(false);
+      }
+    });
+  }
+
+  /** Field definitions per app id, straight from the cached overlay (offline). */
+  function connectorFieldDefs() {
+    const overlay = discovery.normalizeOverlay(config.readJson(path.join(config.cacheDir(), "overlay.json"), null));
+    const out = {};
+    for (const key of Object.keys(overlay.apps || {})) {
+      const entry = overlay.apps[key];
+      if (entry && entry.connector && Array.isArray(entry.connector.fields)) out[key] = entry.connector.fields;
+    }
+    return out;
+  }
+
+  /** Everything `nx status` needs, in one object. */
+  async function connectorStatus({ maxAgeMs = 120000 } = {}) {
+    const snapshot = ipc.readConnectorSnapshot(maxAgeMs);
+    const listening = await probeBus();
+    return {
+      port: config.NX_CONNECTOR_PORT,
+      host: "127.0.0.1",
+      listening,
+      // The bus answers AND the hub's snapshot is fresh enough to trust.
+      online: listening && !snapshot.stale,
+      stale: snapshot.stale,
+      snapshotPath: snapshot.path,
+      snapshotExists: snapshot.exists,
+      ts: snapshot.ts,
+      ageMs: snapshot.ageMs,
+      clients: snapshot.clients,
+      fieldDefs: connectorFieldDefs(),
+      hubVersion: hubVersion(),
+    };
+  }
+
+  function stackList() {
+    boot();
+    return stacksStore.list();
+  }
+
+  function runStack(id) {
+    boot();
+    return stacksStore.run(id);
+  }
+
+  function stopStack(id) {
+    boot();
+    return stacksStore.stop(id);
+  }
+
+  function saveStack(stack) {
+    boot();
+    return stacksStore.save(stack);
+  }
+
   /* ---------------- doctor ---------------- */
 
   async function doctor() {
@@ -268,6 +369,13 @@ function createRuntime() {
     rollback,
     launch,
     doctor,
+    // v0.5
+    connectorStatus,
+    probeBus,
+    stackList,
+    runStack,
+    stopStack,
+    saveStack,
     hubVersion,
     config,
     discovery,

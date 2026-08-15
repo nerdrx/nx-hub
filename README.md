@@ -69,7 +69,7 @@ every device, simultaneously.
 | **Version time travel** | Full release history per app, install-any-version with downgrade confirmation, and single-click rollback to the retained previous install. |
 | **Launcher surface** | Icon tiles ordered by favorites and recency, tray quick-launch, and remote launch of installed APKs on the connected device. |
 | **Self-hosting** | The hub is an entry in its own catalog and updates itself through the identical pipeline, relaunching into the new binary. |
-| **A first-class CLI** | `nx list · install · update --all · launch · rollback · doctor` — the same engine from any shell, with `--json` for scripting. |
+| **A first-class CLI** | `nx list · install · update --all · launch · rollback · doctor · status · stack run` — the same engine from any shell, with `--json` for scripting. |
 
 <br>
 

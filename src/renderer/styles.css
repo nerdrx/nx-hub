@@ -2034,6 +2034,270 @@ select.input option {
 }
 .stepper-value { width: 64px; text-align: center; }
 
+/* ------------------------------------------------ connector: live status */
+
+/* Cyan is light inside the material, and live data is the one place it leads.
+   The strip is a well recessed into the card — never a second glass layer. */
+.live {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+  margin-top: 11px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--well);
+  box-shadow: inset 0 0 0 1px rgba(0, 229, 255, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--cyan);
+  box-shadow: 0 0 10px 1px rgba(0, 229, 255, 0.85);
+  animation: live-breathe 2.6s var(--ease-soft) infinite;
+}
+@keyframes live-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.live-chip {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--cyan);
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  border: 1px solid rgba(0, 229, 255, 0.3);
+  background: rgba(0, 229, 255, 0.09);
+}
+.live-fields {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.live-f {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.live-k {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.live-v {
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+/* Live numbers must not shuffle their own width while they tick. */
+.live-num {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  color: var(--cyan);
+}
+.live-u { color: var(--muted); font-size: 11px; margin-left: 3px; }
+.live-b { align-items: center; gap: 5px; }
+.live-b .live-g { font-size: 9px; line-height: 1; color: #4a3d6b; }
+.live-b.is-on .live-g { color: var(--cyan); text-shadow: 0 0 8px rgba(0, 229, 255, 0.8); }
+.live-b.is-on .live-k { color: var(--text); }
+.live-none { font-size: 12px; color: var(--muted); }
+
+/* Presence on a launcher tile: the dot, and the first field as a caption. */
+.tile-live {
+  position: absolute;
+  top: 9px;
+  left: 9px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 10px 1px rgba(0, 229, 255, 0.85);
+  z-index: 3;
+  animation: live-breathe 2.6s var(--ease-soft) infinite;
+}
+.tile-cap {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  color: var(--cyan);
+  text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ stack tiles */
+
+.tile-stack { grid-column: span 2; }
+.tile-stack .tile-hit {
+  aspect-ratio: auto;
+  min-height: 150px;
+  align-items: flex-start;
+  justify-content: space-between;
+  text-align: left;
+  gap: var(--sp-1);
+  padding: var(--sp-2);
+  background: radial-gradient(70% 120% at 12% 0%, rgba(119, 0, 255, 0.2), transparent 68%), var(--glass-1);
+}
+/* A stack is not an app: the lit edge says so before the label does. */
+.tile-stack .tile-hit::before { background: var(--edge-lit); }
+.st-top { display: flex; flex-direction: column; gap: 3px; }
+.st-kicker {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #c3a0ff;
+}
+.st-name { font-size: 15px; text-align: left; }
+.st-steps { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.st-step { position: relative; display: inline-flex; align-items: center; }
+.st-mono {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #f2ecff;
+  background: linear-gradient(158deg, hsl(var(--h, 265) 90% 62% / 0.34), hsl(var(--h, 265) 90% 40% / 0.16));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+.st-glyph {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  min-width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  border-radius: var(--radius-xs);
+  background: rgba(9, 5, 20, 0.92);
+  color: var(--muted);
+}
+.st-ok .st-glyph { color: var(--cyan); box-shadow: 0 0 10px -2px rgba(0, 229, 255, 0.9); }
+.st-go .st-glyph { color: var(--violet-soft); }
+.st-wait .st-glyph { color: var(--amber); animation: live-breathe 1.4s var(--ease-soft) infinite; }
+.st-bad .st-glyph { color: var(--danger); }
+.st-off .st-glyph { color: var(--muted); }
+/* Only a run dims the steps it has not reached yet — a resting tile is whole. */
+.tile-stack.is-running .st-idle .st-mono { opacity: 0.55; }
+.st-opt .st-mono { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1), inset 0 0 0 2px rgba(255, 179, 0, 0.16); }
+.st-arrow { color: var(--muted); font-size: 13px; opacity: 0.7; }
+.st-status { font-size: 12px; color: var(--muted); }
+.tile-stack.phase-done .st-status { color: var(--cyan); }
+.tile-stack.phase-failed .st-status { color: var(--danger); }
+.tile-stack.is-running .tile-hit::before { background: var(--edge-lit); }
+.tile-stack.is-running .st-status { color: #dcc9ff; }
+.st-empty { font-size: 12px; color: var(--muted); }
+.st-tools {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.st-edit { opacity: 0; transition: opacity var(--dur) var(--ease-soft); }
+.tile-stack:hover .st-edit, .tile-stack:focus-within .st-edit { opacity: 1; }
+.tile-ghost .ghost-hit {
+  background: none;
+  box-shadow: none;
+  border: 1px dashed rgba(255, 255, 255, 0.16);
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  gap: 4px;
+}
+.tile-ghost .ghost-hit::before { display: none; }
+.tile-ghost .ghost-hit:hover { border-color: rgba(154, 60, 255, 0.5); color: var(--text); }
+.tile-ghost .st-name { text-align: center; }
+.st-plus { font-size: 22px; line-height: 1; color: var(--violet-soft); }
+
+/* ----------------------------------------------------------- stacks sheet */
+
+.stack-list { display: flex; flex-direction: column; gap: 6px; padding-top: var(--sp-1); }
+.stack-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--well);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+.stack-row:hover { border-color: rgba(255, 255, 255, 0.11); }
+.stack-row-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.stack-row-name { font-size: 13.5px; font-weight: 640; letter-spacing: -0.008em; }
+.stack-row-steps { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.chain-app { display: inline-flex; align-items: center; gap: 4px; }
+.chain-sep { color: var(--violet-soft); opacity: 0.8; }
+.step-opt {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--amber);
+  border: 1px solid rgba(255, 179, 0, 0.32);
+  border-radius: var(--radius-xs);
+  padding: 1px 4px;
+}
+.stack-row-id { font-family: var(--mono); font-size: 10.5px; color: var(--muted); opacity: 0.7; }
+.stack-empty { text-align: center; padding: var(--sp-3) var(--sp-2); display: flex; flex-direction: column; gap: 6px; }
+
+.stack-steps { display: flex; flex-direction: column; gap: var(--sp-1); margin-bottom: var(--sp-1); }
+.stack-step {
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--well);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+.step-head { display: flex; align-items: center; gap: var(--sp-1); }
+.step-n {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #dcc9ff;
+  background: rgba(119, 0, 255, 0.22);
+  border: 1px solid rgba(154, 60, 255, 0.4);
+}
+.step-head .step-app { flex: 1 1 auto; min-width: 0; }
+.step-move { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
+.step-move .step-up svg { transform: rotate(180deg); }
+.step-grid { display: flex; gap: var(--sp-1); flex-wrap: wrap; align-items: flex-end; }
+.step-cell { display: flex; flex-direction: column; flex: 1 1 150px; min-width: 130px; }
+.step-cell .lbl { margin: 11px 0 5px; }
+.step-cell .input-num { width: 100%; }
+.stack-step .check { margin-top: 11px; }
+
 /* ------------------------------------------------------- reduced motion */
 
 @media (prefers-reduced-motion: reduce) {

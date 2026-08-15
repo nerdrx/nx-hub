@@ -3,6 +3,7 @@
 
 import { isLaunchable, platformLabel } from './actions.js';
 import { isHiddenApp } from './prefs.js';
+import { captionFor } from './connector.js';
 
 /**
  * Two-letter monogram for the generated tiles.
@@ -40,13 +41,16 @@ export function tileHue(seed) {
  *   one tile per artifact otherwise, each with a platform sublabel
  * - apk-adb tiles are disabled while no adb device is connected
  * - hidden apps (per-app pref or main's localHidden) never get a tile
+ * - an app that is live on the connector bus carries its presence and the
+ *   first streamed field as a caption
  *
  * @param {Array} apps normalized apps
- * @param {{adb?:object, platform?:string, prefs?:object}} ctx
+ * @param {{adb?:object, platform?:string, prefs?:object, clients?:Map}} ctx
  */
 export function launchTiles(apps, ctx = {}) {
   const adb = ctx.adb || { connected: false, devices: [], versions: {} };
   const prefs = ctx.prefs || {};
+  const clients = ctx.clients instanceof Map ? ctx.clients : new Map();
   const list = Array.isArray(apps) ? apps : [];
   const tiles = [];
 
@@ -57,6 +61,8 @@ export function launchTiles(apps, ctx = {}) {
     const runnable = (app.artifacts || []).filter((a) => a && a.installed && isLaunchable(a));
     if (!runnable.length) continue;
     const many = runnable.length > 1;
+    const client = clients.get(app.id) || null;
+    const caption = client ? captionFor(client, app.connectorFields) : '';
 
     for (const art of runnable) {
       const needsDevice = art.kind === 'apk-adb';
@@ -77,6 +83,9 @@ export function launchTiles(apps, ctx = {}) {
         monogram: monogram(app.name),
         hue: tileHue(app.id),
         favorite: !!(pref && pref.favorite),
+        live: !!client,
+        liveCaption: caption,
+        liveTitle: client ? `${client.app}${client.version ? ` ${client.version}` : ''} is live on the bus` : '',
         updateAvailable: !!(art.updateAvailable || art.readyToInstall),
         disabled,
         disabledReason: disabled ? 'no device' : '',

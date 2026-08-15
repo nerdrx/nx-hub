@@ -3,6 +3,7 @@
 
 import { esc } from '../lib/html.js';
 import { tileMenu } from '../lib/launcher.js';
+import { renderStackTiles } from './stacktile.js';
 import * as icons from './icons.js';
 
 /** file:// URL for an icon recorded by the install manifest. */
@@ -43,19 +44,43 @@ export function renderTile(tile, ctx = {}) {
             ${tile.disabled ? 'disabled' : ''} title="${esc(tile.title)}">
       <span class="tile-art" style="--h:${Number(tile.hue) || 265}">${art}</span>
       <span class="tile-name">${esc(tile.name)}</span>
-      ${tile.sublabel ? `<span class="tile-sub">${esc(tile.sublabel)}</span>` : ''}
+      ${
+        tile.live && tile.liveCaption
+          ? `<span class="tile-cap">${esc(tile.liveCaption)}</span>`
+          : tile.sublabel
+            ? `<span class="tile-sub">${esc(tile.sublabel)}</span>`
+            : ''
+      }
+      ${tile.live && tile.liveCaption && tile.sublabel ? `<span class="tile-sub">${esc(tile.sublabel)}</span>` : ''}
       ${tile.disabled ? `<span class="tile-off">${esc(tile.disabledReason || 'unavailable')}</span>` : ''}
     </button>
+    ${tile.live ? `<span class="tile-live" title="${esc(tile.liveTitle || 'live on the bus')}" aria-label="live"></span>` : ''}
     ${tile.updateAvailable ? '<span class="tile-dot" title="update available"></span>' : ''}
     ${tile.favorite ? `<span class="tile-star" title="favorite">${icons.starFilled}</span>` : ''}
     ${menuMarkup(tile, open, ctx.caps)}
   </div>`;
 }
 
+/**
+ * The Launch view: stack tiles first (wide, lit edge), then the app tiles.
+ *
+ * @param {Array} tiles  launchTiles() output
+ * @param {{stacks?:Array, canEditStacks?:boolean, openMenu?:string, filter?:string, caps?:object}} ctx
+ */
 export function renderLaunchGrid(tiles, ctx = {}) {
   const list = Array.isArray(tiles) ? tiles : [];
-  if (!list.length) return renderLaunchEmpty(ctx.filter);
-  return `<div class="tiles-grid">${list.map((t) => renderTile(t, ctx)).join('')}</div>`;
+  // Stacks are not filtered — while the user is searching for an app, they only
+  // get in the way.
+  const stacks = ctx.filter ? [] : Array.isArray(ctx.stacks) ? ctx.stacks : [];
+  const showStacks = !ctx.filter && (ctx.canEditStacks !== false || stacks.length);
+  // A build whose bridge lacks the stack methods gets neither tiles nor ghost.
+  const stackMarkup = showStacks
+    ? renderStackTiles(stacks, { canEdit: ctx.canEditStacks !== false, canCreate: ctx.canEditStacks !== false })
+    : '';
+  if (!list.length && !stacks.length) {
+    return `${stackMarkup ? `<div class="tiles-grid">${stackMarkup}</div>` : ''}${renderLaunchEmpty(ctx.filter)}`;
+  }
+  return `<div class="tiles-grid">${stackMarkup}${list.map((t) => renderTile(t, ctx)).join('')}</div>`;
 }
 
 export function renderSkeletonTiles(n = 6) {

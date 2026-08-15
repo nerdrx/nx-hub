@@ -82,6 +82,9 @@ function baseApps() {
       order: 1,
       unpublished: false,
       latest: { tag: 'v1.9.2', version: '1.9.2', publishedAt: iso(3), notes: NOTES_WIVRN, prerelease: false },
+      // The overlay describes one of the two fields this app streams — the
+      // other one has to render generically, which is the interesting case.
+      connectorFields: [{ key: 'bitrate', label: 'Bitrate', unit: 'Mbit/s', kind: 'number' }],
       artifacts: [
         artifact({
           id: 'apk-adb-android',
@@ -138,6 +141,10 @@ function baseApps() {
       order: 3,
       unpublished: false,
       latest: { tag: 'v2.3.0', version: '2.3.0', publishedAt: iso(11), notes: NOTES_PULSE, prerelease: false },
+      connectorFields: [
+        { key: 'hr', label: 'Heart rate', unit: 'bpm', kind: 'number' },
+        { key: 'connected', label: 'Watch', kind: 'bool' },
+      ],
       artifacts: [
         artifact({
           id: 'apk-adb-android',
@@ -466,6 +473,28 @@ export function createMock() {
       versions: { 'org.meumeu.wivrn.nx': '1.8.0' },
     },
     hubVersion: '0.1.0',
+    // v0.5 — the connector bus roster. Two apps are announced from the start so
+    // the live strip, the tile dot and the tray line all have something to say.
+    connector: {
+      clients: [
+        {
+          app: 'pulsenx',
+          version: '2.2.0',
+          pid: 40211,
+          since: new Date(Date.now() - 26 * 60000).toISOString(),
+          lastSeen: new Date().toISOString(),
+          fields: { hr: 72, connected: true },
+        },
+        {
+          app: 'wivrn-nx',
+          version: '1.9.2',
+          pid: 40877,
+          since: new Date(Date.now() - 8 * 60000).toISOString(),
+          lastSeen: new Date().toISOString(),
+          fields: { bitrate: 98, latency_ms: 43 },
+        },
+      ],
+    },
     refreshing: false,
     platform: 'linux',
     tokenSource: 'gh',
@@ -600,6 +629,163 @@ export function createMock() {
     };
     later(tick, 120);
     return jobId;
+  }
+
+  /* ------------------------------------------------------ connector + stacks */
+
+  const busChanged = () => emit({ type: 'connector-changed' });
+
+  function clientIndex(appId) {
+    return state.connector.clients.findIndex((c) => c.app === appId);
+  }
+
+  function fieldsFor(appId) {
+    if (appId === 'pulsenx') return { hr: 72, connected: true };
+    if (appId === 'wivrn-nx') return { bitrate: 98, latency_ms: 43 };
+    if (appId === 'oscgoesbrrr-nx-patches') return { receivers: 14, smoothing: true };
+    return { state: 'running' };
+  }
+
+  function addClient(appId) {
+    if (!appId || clientIndex(appId) >= 0) return false;
+    const app = state.apps.find((a) => a.id === appId);
+    const art = app && app.artifacts.find((a) => a.installed);
+    state.connector.clients.push({
+      app: appId,
+      version: (art && art.installed.version) || (app && app.latest && app.latest.version) || '',
+      pid: 40000 + Math.floor(Math.random() * 9000),
+      since: new Date().toISOString(),
+      lastSeen: new Date().toISOString(),
+      fields: fieldsFor(appId),
+    });
+    busChanged();
+    return true;
+  }
+
+  function dropClient(appId) {
+    const i = clientIndex(appId);
+    if (i < 0) return false;
+    state.connector.clients.splice(i, 1);
+    busChanged();
+    return true;
+  }
+
+  // Live values drift the way a real app's status would.
+  const jitter = (v, lo, hi, spread) =>
+    Math.max(lo, Math.min(hi, Math.round(v + (Math.random() - 0.5) * spread)));
+
+  // Started by installMock(), never by createMock(): a self-rescheduling timer
+  // would keep a `node --test` process alive forever.
+  let ticking = false;
+  function tickFields() {
+    for (const client of state.connector.clients) {
+      const f = client.fields;
+      if (typeof f.hr === 'number') f.hr = jitter(f.hr, 52, 148, 9);
+      if (typeof f.bitrate === 'number') f.bitrate = jitter(f.bitrate, 12, 150, 22);
+      if (typeof f.latency_ms === 'number') f.latency_ms = jitter(f.latency_ms, 14, 120, 12);
+      if (typeof f.receivers === 'number') f.receivers = jitter(f.receivers, 0, 40, 3);
+      client.lastSeen = new Date().toISOString();
+    }
+    if (state.connector.clients.length) busChanged();
+    if (ticking) later(tickFields, 2400);
+  }
+
+  let stacks = [
+    {
+      id: 'vr-night',
+      name: 'VR Night',
+      steps: [
+        {
+          appId: 'wivrn-nx',
+          artifactId: 'tarball-prefix-linux',
+          health: { type: 'connector', timeoutMs: 30000 },
+        },
+        {
+          appId: 'oscgoesbrrr-nx-patches',
+          artifactId: 'appimage-linux',
+          health: { type: 'delay', timeoutMs: 1500 },
+          optional: true,
+        },
+        { appId: 'pulsenx', artifactId: 'appimage-linux', health: { type: 'connector', timeoutMs: 20000 } },
+      ],
+    },
+  ];
+
+  // Every run walks a different path so the UI can reach all of its states:
+  // 0 = everything comes up · 1 = the optional step times out and the run
+  // carries on · 2 = a required step times out and the run stops there.
+  let runMode = 0;
+  const runs = new Map(); // stackId → token
+
+  function progress(stackId, stepIndex, appId, phase) {
+    emit({ type: 'stack-progress', stackId, stepIndex, appId, phase });
+  }
+
+  function runStackSim(stackId) {
+    const stack = stacks.find((s) => s.id === stackId);
+    if (!stack || !stack.steps.length || runs.has(stackId)) return false;
+    const token = { stopped: false, index: 0, mode: runMode % 3, added: [] };
+    runMode += 1;
+    runs.set(stackId, token);
+
+    const step = () => {
+      if (token.stopped) return;
+      if (token.index >= stack.steps.length) {
+        progress(stackId, stack.steps.length - 1, '', 'done');
+        runs.delete(stackId);
+        emit({ type: 'toast', level: 'info', message: `${stack.name} is up` });
+        return;
+      }
+      const i = token.index;
+      const s = stack.steps[i];
+      const fails =
+        (token.mode === 1 && !!s.optional) || (token.mode === 2 && i === stack.steps.length - 1);
+
+      progress(stackId, i, s.appId, 'launching');
+      later(() => {
+        if (token.stopped) return;
+        progress(stackId, i, s.appId, 'waiting');
+        later(() => {
+          if (token.stopped) return;
+          if (fails) {
+            progress(stackId, i, s.appId, 'failed');
+            if (!s.optional) {
+              runs.delete(stackId);
+              emit({
+                type: 'toast',
+                level: 'error',
+                message: `${stack.name}: ${s.appId} never came up — the run stopped`,
+              });
+              return;
+            }
+          } else {
+            if (s.health.type === 'connector' && addClient(s.appId)) token.added.push(s.appId);
+            progress(stackId, i, s.appId, 'healthy');
+          }
+          token.index = i + 1;
+          later(step, 160);
+        }, 300);
+      }, 220);
+    };
+    later(step, 120);
+    return true;
+  }
+
+  function stopStackSim(stackId) {
+    const stack = stacks.find((s) => s.id === stackId);
+    if (!stack) return false;
+    const token = runs.get(stackId) || null;
+    if (token) token.stopped = true;
+    const at = token ? Math.min(token.index, stack.steps.length - 1) : stack.steps.length - 1;
+    progress(stackId, at, stack.steps[at] ? stack.steps[at].appId : '', 'stopping');
+    later(() => {
+      // Reverse order, the way main takes a stack down: every app in the stack
+      // gets a shutdown-request, not just the ones this run happened to start.
+      for (const step of [...stack.steps].reverse()) dropClient(step.appId);
+      progress(stackId, 0, stack.steps[0] ? stack.steps[0].appId : '', 'stopped');
+      runs.delete(stackId);
+    }, 380);
+    return true;
   }
 
   // ?slow=1 delays the very first getState so the loading skeletons are
@@ -815,6 +1001,36 @@ export function createMock() {
         return { ok: false, error: `Could not parse the file: ${(err && err.message) || err}` };
       }
     },
+
+    /* --------------------------------------------------------- v0.5 surface */
+
+    async getConnector() {
+      return JSON.parse(JSON.stringify(state.connector));
+    },
+    async getStacks() {
+      return JSON.parse(JSON.stringify(stacks));
+    },
+    async saveStack(stack) {
+      if (!stack || !stack.id) return false;
+      const copy = JSON.parse(JSON.stringify(stack));
+      const i = stacks.findIndex((s) => s.id === copy.id);
+      if (i >= 0) stacks[i] = copy;
+      else stacks.push(copy);
+      changed();
+      return true;
+    },
+    async deleteStack(id) {
+      const before = stacks.length;
+      stacks = stacks.filter((s) => s.id !== id);
+      changed();
+      return stacks.length !== before;
+    },
+    async runStack(id) {
+      return runStackSim(id);
+    },
+    async stopStack(id) {
+      return stopStackSim(id);
+    },
   };
 
   // ------------------------------------------------------------ dev helpers
@@ -941,9 +1157,48 @@ export function createMock() {
       emit({ type: 'toast', level: 'info', message: `${n} update${n === 1 ? '' : 's'} downloaded and ready` });
       return n;
     },
+    /* -------------------------------------------------------- v0.5 helpers */
+
+    /** Drop an app off the bus, or bring it back — the live strip appears and
+     *  disappears with it. */
+    toggleBusClient(appId = 'pulsenx') {
+      const wasOn = clientIndex(appId) >= 0;
+      if (wasOn) dropClient(appId);
+      else addClient(appId);
+      emit({
+        type: 'toast',
+        level: wasOn ? 'warn' : 'info',
+        message: wasOn ? `${appId} left the bus` : `${appId} announced itself on the bus`,
+      });
+      return !wasOn;
+    },
+    /** Run the prebuilt stack. Successive runs walk every failure path. */
+    runMockStack(stackId = 'vr-night') {
+      return runStackSim(stackId);
+    },
+    stopMockStack(stackId = 'vr-night') {
+      return stopStackSim(stackId);
+    },
+    stacks() {
+      return JSON.parse(JSON.stringify(stacks));
+    },
+    /** Begin drifting the live values (page mode only — see tickFields). */
+    startTicking() {
+      if (ticking) return;
+      ticking = true;
+      later(tickFields, 2400);
+    },
+    /** One field update on demand, for tests and screenshots. */
+    tickBus() {
+      tickFields();
+      return JSON.parse(JSON.stringify(state.connector));
+    },
     stop() {
+      ticking = false;
       for (const t of timers) host.clearTimeout(t);
       timers.clear();
+      for (const token of runs.values()) token.stopped = true;
+      runs.clear();
     },
   };
 
@@ -962,7 +1217,9 @@ function toolbar(dev) {
     <button class="btn btn-ghost btn-sm" data-mock="error">simulate error toast</button>
     <button class="btn btn-ghost btn-sm" data-mock="adb">toggle adb device</button>
     <button class="btn btn-ghost btn-sm" data-mock="device">fake device info</button>
-    <button class="btn btn-ghost btn-sm" data-mock="disk">populate disk usage</button>`;
+    <button class="btn btn-ghost btn-sm" data-mock="disk">populate disk usage</button>
+    <button class="btn btn-ghost btn-sm" data-mock="bus">toggle bus client</button>
+    <button class="btn btn-ghost btn-sm" data-mock="stack">run mock stack</button>`;
   bar.addEventListener('click', (ev) => {
     const el = ev.target instanceof Element ? ev.target.closest('[data-mock]') : null;
     if (!el) return;
@@ -975,6 +1232,8 @@ function toolbar(dev) {
     else if (what === 'adb') dev.toggleAdb();
     else if (what === 'device') dev.fakeDeviceInfo();
     else if (what === 'disk') dev.populateDisk();
+    else if (what === 'bus') dev.toggleBusClient();
+    else if (what === 'stack') dev.runMockStack();
   });
   document.body.appendChild(bar);
 }
@@ -985,6 +1244,7 @@ export function installMock() {
   const { nxhub, dev } = createMock();
   window.nxhub = nxhub;
   window.__nxhubMock = dev;
+  dev.startTicking();
   if (typeof document !== 'undefined' && document.body) toolbar(dev);
   return dev;
 }

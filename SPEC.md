@@ -297,6 +297,37 @@ Launch view renders stack tiles (wide, distinct edge treatment) before app
 tiles; a Stacks editor sheet creates/edits (ordered app picker + health rule
 per step). CLI: `nx status` (bus clients), `nx stack ls|run|stop <id>`.
 
+`runStack(id)` returns `{started:true, stackId}` as soon as the run BEGINS (a
+gate alone may wait 30s — the renderer follows `stack-progress`, like it
+follows job progress); `saveStack`/`deleteStack` answer `{ok, stack?, stacks}`.
+Per-step events carry a numeric `stepIndex`; the run's own verdict
+(`done`|`failed`|`stopped`) carries `stepIndex: null` (plus `failedStep` when
+it failed). A step whose `health` is missing or unrecognized becomes
+`{type:"delay", timeoutMs:0}` — launch it and move on, never a silent 30s
+wait — and a `port` rule with no usable port drops the step.
+
+### CLI notes (v0.5)
+
+`nx status` runs OUT-OF-PROCESS from the GUI hub, and the wire protocol has no
+query message, so it never joins the bus to ask who else is there. Instead the
+hub mirrors the client list to `<dataDir>/connector-clients.json`
+(`{ts, clients}`, atomic write, debounced 1s, re-stamped every 60s by
+`ipc.setConnector`); the CLI reads that file and cross-checks it by trying to
+BIND `NX_CONNECTOR_PORT` — bindable means nothing is listening, i.e. no hub. A
+snapshot older than 120s counts as stale. `status` is therefore no longer an
+alias for `doctor` (the environment report keeps its own name); `stacks` is an
+alias for `stack`.
+
+`nx stack run` drives the stack in the CLI's OWN process (jobs and the install
+engines work CLI-side already), so the launched pids belong to that `nx`
+process: a later `stop` from the GUI can still reach those apps over the bus,
+but not by signal. The reverse holds too — a run record lives in the memory of
+the process that started it, so `nx stack stop` only knows about a run that
+this same `nx` invocation started; stopping a GUI-started stack is the GUI's
+job. A step that names no `artifactId` is resolved against the discovery model
+when it launches (the single installed, launchable artifact of that app), which
+is why `nx stack run` loads the catalogue before the first step.
+
 ## Future (not v1 — do not build, do not preclude)
 
 ## Verification
@@ -329,10 +360,12 @@ electron API (only `ELECTRON_RUN_AS_NODE`), no system node, and no dependencies
 | `nx versions <app>` | `[--json]` | `discovery.getReleases`, marking latest / installed / prerelease. |
 | `nx refresh` | `[--force] [--json]` | `discovery.refresh`; `--force` bypasses the ETag cache. |
 | `nx doctor` | `[--offline] [--json]` | hub version, runtime, data dir, install root, token source (settings / `gh` / anonymous), sources, rate-limit state, install-engine availability, adb + devices, shim state, install count. Runs one discovery pass unless `--offline`. |
+| `nx status` | `[--json]` | v0.5: the NX Connector bus — online/offline, and every live client (app, version, uptime, pid, overlay-formatted fields). See "CLI notes (v0.5)". |
+| `nx stack` | `ls \| run <id> \| stop <id>` | v0.5: list stacks, run one (phases stream to stderr; exit 0 done / 2 failed), stop one. |
 | `nx help` | | command list. `nx --version` prints the hub version. |
 
 Aliases: `ls`, `i`/`add`, `rm`/`remove`, `up`/`upgrade`, `run`/`start`, `sync`,
-`status`. **App matching**: exact id → exact name/repo → unambiguous prefix →
+`stacks`. **App matching**: exact id → exact name/repo → unambiguous prefix →
 unambiguous substring (all case-insensitive, ordinal — never `localeCompare`);
 ambiguous prints the candidates and exits 1. **Artifact matching**: optional
 when exactly one artifact fits the command (installable on this platform —

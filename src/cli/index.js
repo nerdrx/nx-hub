@@ -11,7 +11,7 @@ const readline = require("readline");
 
 const { parseArgv } = require("./args");
 const { styleFor } = require("./ansi");
-const { matchApp, pickArtifact, hostPlatform } = require("./match");
+const { matchApp, matchStack, pickArtifact, hostPlatform } = require("./match");
 const { createProgress } = require("./progress");
 const render = require("./render");
 const shim = require("./shim");
@@ -33,7 +33,10 @@ const ALIASES = {
   run: "launch",
   start: "launch",
   sync: "refresh",
-  status: "doctor",
+  // v0.5: `status` is the connector view now (SPEC "NX Connector → IPC
+  // additions": `nx status` = bus clients). The environment report kept its
+  // own name, `nx doctor`, which is what every doc and every script used.
+  stacks: "stack",
   "--help": "help",
   "-h": "help",
 };
@@ -121,6 +124,8 @@ async function run(argv, opts = {}) {
     versions: cmdVersions,
     refresh: cmdRefresh,
     doctor: cmdDoctor,
+    status: cmdStatus,
+    stack: cmdStack,
     shim: cmdShim,
   };
 
@@ -423,6 +428,105 @@ async function cmdDoctor(ctx) {
   }
   ctx.out(render.renderDoctor(info, { style: ctx.st }));
   return EXIT_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/* v0.5: the NX Connector bus and stacks                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * `nx status` — who is live on the bus.
+ *
+ * The CLI is a SEPARATE PROCESS from the GUI hub and the wire protocol has no
+ * query message, so this never joins the bus as a client. It reads the hub's
+ * own snapshot (`<dataDir>/connector-clients.json`) and cross-checks it by
+ * trying to bind the port: bindable = nothing is listening = no hub.
+ */
+async function cmdStatus(ctx) {
+  const info = await withStatus(ctx, "asking the bus…", () => ctx.runtime.connectorStatus());
+  if (ctx.json) {
+    ctx.out(JSON.stringify(render.statusJson(info), null, 2));
+    return EXIT_OK;
+  }
+  ctx.out(render.renderStatus(info, { style: ctx.st }));
+  return EXIT_OK;
+}
+
+const STACK_SUBS = ["ls", "list", "run", "stop"];
+
+/**
+ * `nx stack ls | run <id> | stop <id>`.
+ *
+ * A run driven from here happens IN THIS PROCESS: the apps become children of
+ * the `nx` process, so their pids are unknown to the GUI hub (its `stop` can
+ * still reach them over the bus, but not by signal). Documented in SPEC.
+ */
+async function cmdStack(ctx) {
+  const sub = String(ctx.args[0] || "ls").toLowerCase();
+  if (!STACK_SUBS.includes(sub)) {
+    throw new UserError(`unknown stack command "${ctx.args[0]}"`, { hint: "nx stack ls | run <id> | stop <id>" });
+  }
+  const stacks = ctx.runtime.stackList();
+
+  if (sub === "ls" || sub === "list") {
+    if (ctx.json) {
+      ctx.out(JSON.stringify(render.stacksJson(stacks), null, 2));
+      return EXIT_OK;
+    }
+    ctx.out(render.renderStacks(stacks, { style: ctx.st }));
+    return EXIT_OK;
+  }
+
+  const { stack, candidates, error } = matchStack(stacks, ctx.args[1]);
+  if (!stack) {
+    throw new UserError(error, {
+      hint: candidates.length ? `did you mean: ${candidates.map((s) => s.id).join(", ")}` : "nx stack ls",
+    });
+  }
+
+  if (sub === "stop") {
+    const result = await ctx.runtime.stopStack(stack.id);
+    if (ctx.json) {
+      ctx.out(JSON.stringify(result, null, 2));
+      return result.ok ? EXIT_OK : EXIT_FAIL;
+    }
+    if (!result.ok) {
+      ctx.err(`${ctx.stErr.muted(result.reason || "nothing to stop")}`);
+      return EXIT_OK;
+    }
+    for (const entry of result.stopped) {
+      ctx.out(render.renderStackPhase({ stepIndex: entry.stepIndex, appId: entry.appId, phase: "stopped", how: entry.how }, { style: ctx.st }));
+    }
+    ctx.out(`${ctx.st.cyan("✓")} Stopped ${stack.name} ${ctx.st.dim(`(${result.stopped.length} step(s))`)}`);
+    return EXIT_OK;
+  }
+
+  // A step may name no artifact, and that is resolved against the discovery
+  // model at run time — a CLI process starts with an empty one, so fill it
+  // before the first launch rather than failing on "Unknown artifact".
+  await loadApps(ctx);
+
+  // run — phases stream out as they happen, on stderr so stdout stays pipeable
+  const events = [];
+  const off = ctx.runtime.on((evt) => {
+    if (!evt || evt.type !== "stack-progress" || evt.stackId !== stack.id) return;
+    events.push(evt);
+    if (!ctx.json) ctx.err(render.renderStackPhase(evt, { style: ctx.stErr }));
+  });
+  try {
+    ctx.err(`${ctx.stErr.violet("running")} ${ctx.stErr.text(stack.name)} ${ctx.stErr.dim(`${stack.steps.length} steps`)}`);
+    const result = await ctx.runtime.runStack(stack.id);
+    if (ctx.json) {
+      ctx.out(JSON.stringify(Object.assign({}, result, { phases: events }), null, 2));
+    } else if (result.ok) {
+      ctx.out(`${ctx.st.cyan("✓")} ${stack.name} is up`);
+    } else {
+      ctx.out(`${ctx.st.danger("✗")} ${stack.name} ${ctx.st.dim(result.failed ? `— ${result.failed.message}` : "stopped")}`);
+    }
+    return result.ok ? EXIT_OK : EXIT_FAIL;
+  } finally {
+    off();
+  }
 }
 
 /** Hidden helper: `nx shim` reports (and with --force rewrites) ~/.local/bin/nx. */

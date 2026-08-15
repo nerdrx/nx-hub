@@ -426,6 +426,187 @@ function renderDoctor(info, { style } = {}) {
 }
 
 /* ------------------------------------------------------------------ */
+/* nx status — the NX Connector bus (v0.5)                             */
+/* ------------------------------------------------------------------ */
+
+/** ms → "42s" / "12m" / "3h 04m" / "2d 3h". Locale-independent by design. */
+function fmtDuration(ms) {
+  if (ms == null || ms === "") return DASH; // "unknown" is not "zero"
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n < 0) return DASH;
+  const s = Math.floor(n / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${String(m % 60).padStart(2, "0")}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+function sinceMs(iso, now = Date.now()) {
+  const at = Date.parse(String(iso || ""));
+  return Number.isFinite(at) ? Math.max(0, now - at) : null;
+}
+
+/** The connector fields of one client, formatted the way the tray formats them. */
+function clientFields(client, fieldDefs) {
+  // One implementation, shared with the tray and the cards (src/main/ipc.js).
+  // eslint-disable-next-line global-require
+  const { formatFields } = require("../main/ipc");
+  const defs = (fieldDefs && (fieldDefs[String(client.app).toLowerCase()] || fieldDefs[client.app])) || [];
+  return formatFields(defs, client.fields);
+}
+
+function statusJson(info, { now = Date.now() } = {}) {
+  const i = info || {};
+  return {
+    ok: Boolean(i.online),
+    bus: {
+      host: i.host || "127.0.0.1",
+      port: i.port || null,
+      listening: Boolean(i.listening),
+      online: Boolean(i.online),
+      stale: Boolean(i.stale),
+      snapshot: i.snapshotPath || null,
+      snapshotAgeMs: i.ageMs == null ? null : i.ageMs,
+      ts: i.ts || null,
+    },
+    clients: (i.clients || []).map((c) => ({
+      app: c.app,
+      version: c.version || null,
+      pid: c.pid == null ? null : c.pid,
+      since: c.since || null,
+      uptimeMs: sinceMs(c.since, now),
+      lastSeen: c.lastSeen || null,
+      fields: c.fields && typeof c.fields === "object" ? c.fields : {},
+    })),
+  };
+}
+
+function renderStatus(info, { style, now = Date.now() } = {}) {
+  const st = style || createStyle(false);
+  const i = info || {};
+  const lines = ["", st.section("Connector"), ""];
+  const where = `${i.host || "127.0.0.1"}:${i.port || DASH}`;
+
+  const busText = !i.listening
+    ? "offline — no hub is running"
+    : i.stale
+      ? "listening, but the hub published no fresh client list"
+      : "online";
+  lines.push(
+    ...kv(
+      [
+        ["bus", `${where}  ${busText}`, i.online ? st.cyan : i.listening ? st.amber : st.muted],
+        ["snapshot", i.snapshotExists ? `${i.snapshotPath}  ${fmtDuration(i.ageMs)} old` : `${i.snapshotPath} (not written yet)`, st.dim],
+      ],
+      st
+    )
+  );
+
+  const clients = i.clients || [];
+  lines.push("", `  ${st.section("Clients")}`, "");
+  if (!i.listening) {
+    lines.push(`  ${st.muted("Start NX Hub to bring the bus up.")}`);
+  } else if (!clients.length) {
+    lines.push(`  ${st.muted("No NX app is connected right now.")}`);
+  } else {
+    const rows = clients.map((c) => {
+      const fields = clientFields(c, i.fieldDefs);
+      return [
+        T("·", st.cyan),
+        T(c.app, st.text),
+        T(c.version || DASH, st.muted),
+        T(fmtDuration(sinceMs(c.since, now)), st.dim),
+        T(c.pid == null ? DASH : String(c.pid), st.dim),
+        T(fields || DASH, fields ? st.value : st.dim),
+      ];
+    });
+    lines.push(...table(["", "app", "version", "uptime", "pid", "status"], rows, st));
+    if (i.stale) lines.push("", `  ${st.amber("this list is stale — the hub may have gone away")}`);
+  }
+
+  lines.push("");
+  return lines.join("\n");
+}
+
+/* ------------------------------------------------------------------ */
+/* nx stack (v0.5)                                                     */
+/* ------------------------------------------------------------------ */
+
+function healthText(health) {
+  const h = health || {};
+  if (h.type === "port") return `port ${h.port}`;
+  if (h.type === "delay") return h.timeoutMs ? `wait ${Math.round(h.timeoutMs / 1000)}s` : "no wait";
+  return "connector";
+}
+
+function stackFlow(stack) {
+  return ((stack && stack.steps) || [])
+    .map((s) => `${s.appId}${s.optional ? "?" : ""}`)
+    .join(" → ");
+}
+
+function stacksJson(stacks) {
+  return { stacks: (Array.isArray(stacks) ? stacks : []).map((s) => ({ id: s.id, name: s.name, steps: s.steps || [] })) };
+}
+
+function renderStacks(stacks, { style, running = null } = {}) {
+  const st = style || createStyle(false);
+  const list = Array.isArray(stacks) ? stacks : [];
+  const lines = ["", st.section("Stacks"), ""];
+  if (!list.length) {
+    lines.push(`  ${st.muted("No stacks yet — build one in the hub's Launch view.")}`, "");
+    return lines.join("\n");
+  }
+  const rows = list.map((s) => [
+    T(running && running.stackId === s.id ? "▸" : "·", running && running.stackId === s.id ? st.cyan : st.muted),
+    T(s.id, st.text),
+    T(s.name, st.muted),
+    T(String((s.steps || []).length), st.dim),
+    T(stackFlow(s), st.muted),
+  ]);
+  lines.push(...table(["", "id", "name", "steps", "flow"], rows, st));
+  for (const s of list) {
+    lines.push("", `  ${st.text(s.name)} ${st.dim(`(${s.id})`)}`);
+    (s.steps || []).forEach((step, idx) => {
+      lines.push(
+        `    ${st.dim(String(idx + 1).padStart(2))} ${st.text(step.appId)}${step.artifactId ? st.dim(` / ${step.artifactId}`) : ""} ${st.muted(
+          healthText(step.health)
+        )}${step.optional ? st.dim(" optional") : ""}`
+      );
+    });
+  }
+  lines.push("", `  ${st.dim("run one with: nx stack run <id>")}`, "");
+  return lines.join("\n");
+}
+
+const PHASE_PAINT = {
+  launching: "violet",
+  waiting: "muted",
+  healthy: "cyan",
+  failed: "danger",
+  done: "cyan",
+  stopping: "muted",
+  stopped: "amber",
+};
+
+/**
+ * One `stack-progress` event as a terminal line. The run's own terminal events
+ * carry stepIndex null — those get the wide glyph, steps get their number.
+ */
+function renderStackPhase(evt, { style } = {}) {
+  const st = style || createStyle(false);
+  const e = evt || {};
+  const paint = st[PHASE_PAINT[e.phase] || "muted"] || st.muted;
+  const isRun = e.stepIndex == null;
+  const mark = isRun ? (e.phase === "failed" ? st.danger("✗") : st.cyan("✓")) : st.dim(String(e.stepIndex + 1).padStart(2));
+  const target = e.appId ? st.text(e.appId) : st.muted(e.phase === "done" ? "stack up" : "stack");
+  const extra = e.message ? st.dim(` — ${e.message}`) : e.health ? st.dim(` (${e.health})`) : e.how ? st.dim(` (${e.how})`) : "";
+  return `  ${mark} ${paint(String(e.phase).padEnd(9))} ${target}${extra}`;
+}
+
+/* ------------------------------------------------------------------ */
 /* nx help                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -440,6 +621,8 @@ const COMMANDS = [
   ["versions", "<app> [--json]", "every published release"],
   ["refresh", "[--json]", "re-run discovery (--force bypasses the ETag cache)"],
   ["doctor", "[--offline] [--json]", "environment: adb, token, paths, rate limit"],
+  ["status", "[--json]", "the NX Connector bus: who is live right now"],
+  ["stack", "ls | run <id> | stop <id>", "multi-app stacks"],
   ["help", "", "this text"],
 ];
 
@@ -481,6 +664,18 @@ module.exports = {
   renderVersions,
   renderDoctor,
   renderHelp,
+  // v0.5
+  renderStatus,
+  statusJson,
+  renderStacks,
+  stacksJson,
+  renderStackPhase,
+  stackFlow,
+  healthText,
+  clientFields,
+  fmtDuration,
+  sinceMs,
+  PHASE_PAINT,
   listJson,
   appJson,
   artifactJson,

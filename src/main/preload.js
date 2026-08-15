@@ -30,6 +30,15 @@ const api = {
   exportSettings: () => ipcRenderer.invoke("nxhub:exportSettings"),
   importSettings: (json) => ipcRenderer.invoke("nxhub:importSettings", json),
   runPostInstallCmd: (appId, artifactId) => ipcRenderer.invoke("nxhub:runPostInstallCmd", appId, artifactId),
+
+  // ---- v0.5 (SPEC "NX Connector → IPC additions") ----
+  getConnector: () => ipcRenderer.invoke("nxhub:getConnector"),
+  getStacks: () => ipcRenderer.invoke("nxhub:getStacks"),
+  saveStack: (stack) => ipcRenderer.invoke("nxhub:saveStack", stack),
+  deleteStack: (id) => ipcRenderer.invoke("nxhub:deleteStack", id),
+  runStack: (id) => ipcRenderer.invoke("nxhub:runStack", id),
+  stopStack: (id) => ipcRenderer.invoke("nxhub:stopStack", id),
+
   onEvent: (cb) => {
     if (typeof cb !== "function") return () => {};
     const handler = (_event, payload) => {

@@ -10,6 +10,7 @@ const github = require("./github");
 const discovery = require("./discovery");
 const jobs = require("./jobs");
 const ipc = require("./ipc");
+const stacks = require("./stacks");
 const e2e = require("./e2e");
 const cliShim = require("../cli/shim");
 
@@ -22,6 +23,8 @@ let mainWindow = null;
 let tray = null;
 let refreshTimer = null;
 let quitting = false;
+let connectorHandle = null; // {close} from the bus's init(), when it started
+let trayRefreshTimer = null;
 
 /* ------------------------------------------------------------------ */
 /* v0.2: autostart + start-minimized                                   */
@@ -186,8 +189,12 @@ function buildTrayMenu() {
 
   if (entries.length) {
     for (const entry of entries) {
+      // v0.5: an app that is live on the connector bus says so right here —
+      // "PulseNX · 72 bpm" when the overlay declares fields, a bare presence
+      // marker otherwise. `live` is "" for everything that is not connected.
+      const base = entries.filter((x) => x.appId === entry.appId).length > 1 ? `${entry.appName} — ${entry.label}` : entry.appName;
       items.push({
-        label: entries.filter((x) => x.appId === entry.appId).length > 1 ? `${entry.appName} — ${entry.label}` : entry.appName,
+        label: `${base}${entry.live || ""}`,
         click: () =>
           jobs.launch(entry.appId, entry.artifactId).catch((err) => {
             config.log(`tray launch failed: ${err.message}`);
@@ -221,6 +228,20 @@ function updateTray() {
   } catch (e) {
     config.log(`tray menu update failed: ${e.message}`);
   }
+}
+
+/**
+ * Bus traffic is chatty (status frames up to 4/s per client); rebuilding a tray
+ * menu that often would be silly, so connector/stack events coalesce into one
+ * rebuild every couple of seconds.
+ */
+function updateTraySoon(delayMs = 2000) {
+  if (trayRefreshTimer) return;
+  trayRefreshTimer = setTimeout(() => {
+    trayRefreshTimer = null;
+    updateTray();
+  }, delayMs);
+  if (trayRefreshTimer.unref) trayRefreshTimer.unref();
 }
 
 function createTray() {
@@ -261,10 +282,58 @@ function scheduleRefresh(settings) {
 /* bootstrap                                                           */
 /* ------------------------------------------------------------------ */
 
+/**
+ * v0.5: start the NX Connector bus, if this build has one.
+ *
+ * The bus module is required LAZILY and defensively: a hub whose connector
+ * failed to bind (another instance, a locked-down box) — or a build that
+ * simply does not ship `src/main/connector/` — must still run everything
+ * else. Stacks then fall back to pid-based stop and `connector` health gates
+ * fail fast instead of hanging.
+ */
+function startConnector(emit) {
+  let mod = null;
+  try {
+    // eslint-disable-next-line global-require
+    mod = require("./connector/server");
+  } catch (e) {
+    config.log(`connector: no bus in this build — ${e.message}`);
+    return null;
+  }
+  try {
+    connectorHandle = mod.init({
+      port: config.NX_CONNECTOR_PORT,
+      dataDir: config.dataDir(),
+      emit,
+      log: (m) => config.log(`[connector] ${m}`),
+      hubVersion: ipc.hubVersion(),
+    });
+    ipc.setConnector(mod);
+    config.log(`connector listening on 127.0.0.1:${config.NX_CONNECTOR_PORT}`);
+    return mod;
+  } catch (e) {
+    config.log(`connector: could not start — ${e.message}`);
+    connectorHandle = null;
+    return null;
+  }
+}
+
+function stopConnector() {
+  try {
+    if (connectorHandle && typeof connectorHandle.close === "function") connectorHandle.close();
+  } catch (e) {
+    config.log(`connector close failed: ${e.message}`);
+  }
+  connectorHandle = null;
+}
+
 function wire() {
   const emit = (evt) => {
     ipc.emit(evt);
-    if (evt && evt.type === "state-changed") updateTray();
+    if (!evt) return;
+    if (evt.type === "state-changed") updateTray();
+    // v0.5: live status and stack phases both change what the tray should say
+    if (evt.type === "connector-changed" || evt.type === "stack-progress") updateTraySoon();
   };
 
   github.init({ getToken: () => config.resolveToken(), cacheDir: config.cacheDir() });
@@ -301,6 +370,11 @@ function wire() {
       syncCliShim(settings); // v0.3: ~/.local/bin/nx follows the setting
     },
   });
+
+  // v0.5: the bus first (so the very first getState() already knows about it),
+  // then the stacks orchestrator on top of the same jobs/emit the GUI uses.
+  startConnector(emit);
+  stacks.init({ jobs, connector: () => ipc.getConnectorModule(), config, emit });
 }
 
 function main() {
@@ -321,6 +395,7 @@ function main() {
   app.on("before-quit", () => {
     quitting = true;
     e2e.stop();
+    stopConnector();
   });
 
   // Closing the last window must not quit — we live in the tray.

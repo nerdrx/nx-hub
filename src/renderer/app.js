@@ -43,6 +43,22 @@ import {
   validateEnvKey,
 } from './lib/prefs.js';
 import { normalizeReleases, isDowngrade, downgradeConfirmText, rollbackConfirmText, rollbackTargets } from './lib/releases.js';
+import { clientsByApp } from './lib/connector.js';
+import {
+  normalizeStacks,
+  stackTiles,
+  applyStackProgress,
+  isFinished,
+  blankDraft,
+  blankStep,
+  draftFromStack,
+  validateDraft,
+  moveStep,
+  newRun,
+  HEALTH_TYPES,
+  CLEAR_AFTER_MS,
+} from './lib/stacks.js';
+import { renderStacksSheet } from './views/stacks.js';
 import { parseHostPort } from './lib/devices.js';
 import { freedLabel, normalizeImportResult } from './lib/storage.js';
 import { esc } from './lib/html.js';
@@ -67,6 +83,9 @@ const V02_METHODS = [
   'importSettings',
   'runPostInstallCmd',
 ];
+
+/** Optional v0.5 (connector + stacks) bridge methods — same probe, same rule. */
+const V05_METHODS = ['getConnector', 'getStacks', 'saveStack', 'deleteStack', 'runStack', 'stopStack'];
 
 const ui = {
   loaded: false,
@@ -106,6 +125,13 @@ const ui = {
   importResult: null,
   recents: [],
   showHidden: false,
+  // v0.5 — the connector bus and stacks
+  stacks: [],
+  runs: {}, // stackId → run state folded from stack-progress events
+  runTimers: new Map(), // stackId → the timer that clears a finished run
+  stackDraft: null,
+  stackErrors: {},
+  stackBusy: false,
 };
 
 let state = normalizeState(null);
@@ -166,7 +192,7 @@ function api() {
 function detectCaps() {
   const nx = api();
   const caps = {};
-  for (const m of V02_METHODS) caps[m] = !!(nx && typeof nx[m] === 'function');
+  for (const m of [...V02_METHODS, ...V05_METHODS]) caps[m] = !!(nx && typeof nx[m] === 'function');
   return caps;
 }
 
@@ -281,14 +307,25 @@ function prefsMap() {
   return (state.settings && state.settings.appPrefs) || {};
 }
 
+/** Apps currently announced on the connector bus, keyed by app id. */
+function busClients() {
+  return clientsByApp(state.connector);
+}
+
 /** Tiles for the launcher view, honouring the filter, prefs and recents. */
 function currentTiles() {
   const tiles = launchTiles(filterApps(state.apps, ui.filter), {
     adb: state.adb,
     platform: state.platform || ui.platform,
     prefs: prefsMap(),
+    clients: busClients(),
   });
   return orderTiles(tiles, { recents: ui.recents });
+}
+
+/** Wide stack tiles, with whatever a live run has reported so far. */
+function currentStackTiles() {
+  return stackTiles(ui.stacks, { apps: state.apps, runs: ui.runs });
 }
 
 function renderTabs() {
@@ -322,6 +359,17 @@ function renderSheet() {
   const sheet = ui.sheet;
   if (!sheet) {
     host.innerHTML = '';
+    return;
+  }
+  if (sheet.kind === 'stacks') {
+    host.innerHTML = renderStacksSheet({
+      stacks: ui.stacks,
+      apps: state.apps,
+      draft: ui.stackDraft,
+      errors: ui.stackErrors,
+      runs: ui.runs,
+      saving: ui.stackBusy,
+    });
     return;
   }
   if (sheet.kind === 'devices') {
@@ -390,6 +438,7 @@ function render() {
     expandedNotes: ui.expandedNotes,
     dismissedNotes: ui.dismissedNotes,
     openMenu: ui.openMenu,
+    clients: busClients(),
     now: Date.now(),
   };
 
@@ -426,6 +475,8 @@ function render() {
       openMenu: ui.openMenu,
       filter: ui.filter,
       caps: ui.caps,
+      stacks: currentStackTiles(),
+      canEditStacks: !!ui.caps.saveStack,
     });
   }
 
@@ -630,6 +681,178 @@ async function openVersions(appId) {
       error: `Could not read releases: ${(err && err.message) || err}`,
       releases: [],
     });
+  }
+  schedule();
+}
+
+/* ----------------------------------------------------------------- stacks */
+
+async function loadStacks() {
+  if (!ui.caps.getStacks) return;
+  try {
+    ui.stacks = normalizeStacks(await maybeCall('getStacks'));
+  } catch (err) {
+    ui.stacks = [];
+    toast('error', `Could not read the stacks: ${(err && err.message) || err}`);
+  }
+  schedule();
+}
+
+function openStacks() {
+  ui.sheet = { kind: 'stacks' };
+  ui.stackDraft = null;
+  ui.stackErrors = {};
+  ui.openMenu = '';
+  schedule();
+  return loadStacks();
+}
+
+function editStack(stackId) {
+  const stack = ui.stacks.find((s) => s.id === stackId);
+  ui.sheet = { kind: 'stacks' };
+  ui.stackDraft = stack ? draftFromStack(stack) : blankDraft();
+  ui.stackErrors = {};
+  ui.openMenu = '';
+  schedule();
+}
+
+/**
+ * Read the editor inputs back into the draft. Same contract as readPrefDraft():
+ * the DOM is the source of truth between renders so nothing a user typed is
+ * lost when a step is added, moved or removed.
+ */
+function readStackDraft() {
+  const root = document.getElementById('sheet-root');
+  if (!root || !ui.stackDraft) return;
+  const nameEl = root.querySelector('[data-stack-field="name"]');
+  if (nameEl) ui.stackDraft.name = nameEl.value;
+
+  const steps = (ui.stackDraft.steps || []).map((s) => ({ ...s }));
+  const wasApp = steps.map((s) => s.appId);
+  for (const el of root.querySelectorAll('[data-step-field]')) {
+    const i = Number(el.getAttribute('data-index'));
+    const field = el.getAttribute('data-step-field');
+    if (!Number.isInteger(i) || !steps[i] || !field) continue;
+    if (field === 'optional') steps[i].optional = !!el.checked;
+    else if (field === 'healthType') steps[i].healthType = HEALTH_TYPES.includes(el.value) ? el.value : 'connector';
+    else steps[i][field] = el.value;
+  }
+  // A step that now points at another app cannot keep the old app's artifact.
+  steps.forEach((s, i) => {
+    if (s.appId !== wasApp[i]) s.artifactId = '';
+  });
+  ui.stackDraft.steps = steps;
+}
+
+function patchSteps(fn) {
+  readStackDraft();
+  if (!ui.stackDraft) return;
+  ui.stackDraft.steps = fn((ui.stackDraft.steps || []).map((s) => ({ ...s })));
+  schedule();
+}
+
+async function saveStackDraft() {
+  readStackDraft();
+  const draft = ui.stackDraft;
+  if (!draft) return;
+  const { ok, errors, stack } = validateDraft(draft, ui.stacks);
+  ui.stackErrors = errors;
+  if (!ok) {
+    schedule();
+    return;
+  }
+  // The id is slugified from the name, so a rename mints a new id — the old
+  // entry has to go or the same stack would show up twice.
+  const renamedFrom = draft.originalId && draft.originalId !== stack.id ? draft.originalId : '';
+  ui.stackBusy = true;
+  schedule();
+  const res = await call('saveStack', stack);
+  ui.stackBusy = false;
+  if (res === null) {
+    schedule();
+    return;
+  }
+  if (renamedFrom && ui.caps.deleteStack) {
+    try {
+      await maybeCall('deleteStack', renamedFrom);
+    } catch {
+      /* the rename still saved — a stale entry is not worth a scary toast */
+    }
+  }
+  ui.stackDraft = null;
+  ui.stackErrors = {};
+  toast('info', `Stack “${stack.name}” saved`);
+  await loadStacks();
+}
+
+async function deleteStack(stackId) {
+  const stack = ui.stacks.find((s) => s.id === stackId);
+  if (!stack) return;
+  if (!window.confirm(`Delete the stack “${stack.name}”? The apps in it stay installed.`)) return;
+  const res = await call('deleteStack', stackId);
+  if (res === null) return;
+  toast('info', `Stack “${stack.name}” deleted`);
+  await loadStacks();
+}
+
+function clearRunTimer(stackId) {
+  const timer = ui.runTimers.get(stackId);
+  if (timer) {
+    window.clearTimeout(timer);
+    ui.runTimers.delete(stackId);
+  }
+}
+
+function setRun(stackId, run) {
+  const next = { ...ui.runs };
+  if (run) next[stackId] = run;
+  else delete next[stackId];
+  ui.runs = next;
+}
+
+async function startStack(stackId) {
+  if (!stackId) return;
+  clearRunTimer(stackId);
+  // Optimistic: the tile reads as running before the first event arrives.
+  setRun(stackId, newRun(stackId));
+  schedule();
+  const res = await call('runStack', stackId);
+  // null = the method is missing or threw; false = main refused (already
+  // running). Either way the optimistic run has to go, or the tile would sit
+  // there claiming to run with no events ever arriving.
+  if (res === null || res === false) {
+    setRun(stackId, null);
+    if (res === false) toast('warn', 'That stack is already running');
+    schedule();
+  }
+}
+
+async function stopStackRun(stackId) {
+  if (!stackId) return;
+  const run = ui.runs[stackId];
+  if (run) setRun(stackId, { ...run, phase: 'stopping' });
+  schedule();
+  await call('stopStack', stackId);
+}
+
+/** Fold one stack-progress event in; a finished run fades off the tile. */
+function onStackProgress(ev) {
+  const stackId = String((ev && ev.stackId) || '');
+  if (!stackId) return;
+  const stack = ui.stacks.find((s) => s.id === stackId) || null;
+  const next = applyStackProgress(ui.runs[stackId] || null, ev, { stack });
+  if (!next) return;
+  clearRunTimer(stackId);
+  setRun(stackId, next);
+  if (isFinished(next)) {
+    const timer = window.setTimeout(() => {
+      ui.runTimers.delete(stackId);
+      if (isFinished(ui.runs[stackId])) {
+        setRun(stackId, null);
+        schedule();
+      }
+    }, CLEAR_AFTER_MS);
+    ui.runTimers.set(stackId, timer);
   }
   schedule();
 }
@@ -1068,10 +1291,7 @@ async function onAction(act, el, ev) {
       openOptions(appId);
       break;
     case 'close-sheet':
-      ui.sheet = null;
-      ui.prefDraft = null;
-      ui.prefError = '';
-      schedule();
+      closeSheet();
       break;
     case 'save-app-prefs':
       await saveAppPrefs(appId);
@@ -1211,6 +1431,56 @@ async function onAction(act, el, ev) {
       if (input && typeof input.click === 'function') input.click();
       break;
     }
+    /* ------------------------------------------------------------- v0.5 */
+
+    case 'stacks':
+      await openStacks();
+      break;
+    case 'stack-new':
+      ui.sheet = { kind: 'stacks' };
+      ui.stackDraft = blankDraft();
+      ui.stackErrors = {};
+      schedule();
+      break;
+    case 'stack-edit':
+      editStack(el.getAttribute('data-stack') || '');
+      break;
+    case 'stack-cancel':
+      ui.stackDraft = null;
+      ui.stackErrors = {};
+      schedule();
+      break;
+    case 'stack-save':
+      await saveStackDraft();
+      break;
+    case 'stack-delete':
+      await deleteStack(el.getAttribute('data-stack') || '');
+      break;
+    case 'stack-run':
+      await startStack(el.getAttribute('data-stack') || '');
+      break;
+    case 'stack-stop':
+      await stopStackRun(el.getAttribute('data-stack') || '');
+      break;
+    case 'stack-step-add':
+      patchSteps((steps) => [...steps, blankStep()]);
+      break;
+    case 'stack-step-remove': {
+      const i = Number(el.getAttribute('data-index'));
+      patchSteps((steps) => (steps.length > 1 ? steps.filter((_, n) => n !== i) : [blankStep()]));
+      break;
+    }
+    case 'stack-step-up': {
+      const i = Number(el.getAttribute('data-index'));
+      patchSteps((steps) => moveStep(steps, i, i - 1));
+      break;
+    }
+    case 'stack-step-down': {
+      const i = Number(el.getAttribute('data-index'));
+      patchSteps((steps) => moveStep(steps, i, i + 1));
+      break;
+    }
+
     case 'update-app': {
       ui.toasts = ui.toasts.filter((t) => t.id !== el.getAttribute('data-id'));
       renderToasts();
@@ -1228,6 +1498,15 @@ async function onAction(act, el, ev) {
     default:
       break;
   }
+}
+
+function closeSheet() {
+  ui.sheet = null;
+  ui.prefDraft = null;
+  ui.prefError = '';
+  ui.stackDraft = null;
+  ui.stackErrors = {};
+  schedule();
 }
 
 /** Tiny stand-in element so one action can delegate to another. */
@@ -1278,6 +1557,13 @@ function onHubEvent(ev) {
       break;
     case 'toast':
       toast(ev.level || 'info', ev.message || '');
+      break;
+    case 'connector-changed':
+      // The bus roster lives in getState(); the event is only the nudge.
+      pullState();
+      break;
+    case 'stack-progress':
+      onStackProgress(ev);
       break;
     case 'update-available': {
       const app = (state.apps || []).find((a) => a.id === ev.appId);
@@ -1369,6 +1655,14 @@ function wireDom() {
   document.addEventListener('change', (ev) => {
     const el = ev.target;
     if (!el) return;
+    // Switching a step's app or health rule swaps the inputs under it
+    // (the artifact picker, port ⇄ wait).
+    const stepField = el.getAttribute ? el.getAttribute('data-step-field') : '';
+    if ((stepField === 'healthType' || stepField === 'appId') && ui.stackDraft) {
+      readStackDraft();
+      schedule();
+      return;
+    }
     if (el.id === 'import-file') {
       const file = el.files && el.files[0];
       if (!file) return;
@@ -1407,10 +1701,14 @@ function wireDom() {
     }
     if (ev.key === 'Escape') {
       if (ui.sheet) {
-        ui.sheet = null;
-        ui.prefDraft = null;
-        ui.prefError = '';
-        schedule();
+        // Inside the stacks editor, Escape backs out to the list first.
+        if (ui.stackDraft) {
+          ui.stackDraft = null;
+          ui.stackErrors = {};
+          schedule();
+        } else {
+          closeSheet();
+        }
       } else if (ui.settingsOpen) {
         ui.settingsOpen = false;
         schedule();
@@ -1548,6 +1846,11 @@ async function boot() {
   if (refreshBtn) refreshBtn.innerHTML = icons.refresh;
   const gearBtn = document.getElementById('settings-btn');
   if (gearBtn) gearBtn.innerHTML = icons.gear;
+  const stacksBtn = document.getElementById('stacks-btn');
+  if (stacksBtn) {
+    stacksBtn.innerHTML = icons.stack;
+    stacksBtn.hidden = true; // until the caps probe says the bridge has stacks
+  }
   const searchIcon = document.getElementById('filter-icon');
   if (searchIcon) searchIcon.innerHTML = icons.search;
 
@@ -1566,6 +1869,7 @@ async function boot() {
   }
 
   ui.caps = detectCaps();
+  if (stacksBtn) stacksBtn.hidden = !ui.caps.getStacks;
 
   const nx = api();
   if (nx && typeof nx.onEvent === 'function') {
@@ -1576,9 +1880,10 @@ async function boot() {
     }
   }
   await pullState();
+  await loadStacks();
   // First run: open the launcher when there is anything to launch.
   if (!ui.viewRemembered) {
-    ui.view = defaultView(currentTiles());
+    ui.view = ui.stacks.length ? 'launch' : defaultView(currentTiles());
     schedule();
   }
   if (ui.caps.getDeviceInfo && state.adb && state.adb.connected) refreshDeviceInfo();

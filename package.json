@@ -11,7 +11,7 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/core test/install test/ui test/cli",
+    "test": "node --test test/core test/install test/ui test/cli test/connector",
     "nx": "node src/cli/index.js",
     "e2e": "node test/e2e.js",
     "dist:linux": "electron-builder --linux --publish never",

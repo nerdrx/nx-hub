@@ -17,5 +17,8 @@ import './releases.test.js';
 import './devices.test.js';
 import './storage.test.js';
 import './sheets.test.js';
+// v0.5 — the connector bus and stacks
+import './connector.test.js';
+import './stacks.test.js';
 // Last on purpose: this one installs a stub DOM on globalThis and boots app.js.
 import './smoke.test.js';

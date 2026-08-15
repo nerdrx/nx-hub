@@ -228,6 +228,7 @@ const IDS = [
   'device-chip',
   'refresh',
   'settings-btn',
+  'stacks-btn',
   'main',
   'banner',
   'launch',

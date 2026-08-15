@@ -14,6 +14,7 @@ import { artifactActions, platformLabel } from '../lib/actions.js';
 import { showOwnerBadge, ownerOf, githubUrl, releaseUrl } from '../lib/model.js';
 import { normalizeAppPref, isSkipped } from '../lib/prefs.js';
 import { renderDeviceLine } from './devices.js';
+import { renderStatusStrip } from './status.js';
 import * as icons from './icons.js';
 
 const HUB_ID = 'nx-hub';
@@ -228,6 +229,8 @@ export function renderAppCard(app, ctx = {}) {
   const pref = normalizeAppPref((ctx.prefs || {})[app.id]);
   const latestVersion = (app.latest && app.latest.version) || '';
   const skipped = isSkipped(pref, latestVersion);
+  // The live strip only exists while this app id is announced on the bus.
+  const client = (ctx.clients instanceof Map && ctx.clients.get(app.id)) || null;
 
   const pinNotes = (app.artifacts || [])
     .filter(
@@ -278,6 +281,7 @@ export function renderAppCard(app, ctx = {}) {
         }
         <a class="repo-link" href="#" data-act="open" data-url="${esc(githubUrl(app.repo))}" title="${esc(app.repo)}">${icons.external}<span>${esc(app.repo)}</span></a>
       </div>
+      ${renderStatusStrip(client, app.connectorFields, { now: ctx.now })}
     </div>
 
     ${

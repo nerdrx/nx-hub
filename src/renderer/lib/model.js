@@ -6,6 +6,7 @@
 
 import { artifactHasUpdate } from './version.js';
 import { normalizeAppPrefs, normalizeAppPref, isHiddenApp, isSkipped, GLOBAL_POLICIES } from './prefs.js';
+import { normalizeConnector, normalizeFieldDefs } from './connector.js';
 
 export const DEFAULT_SETTINGS = {
   owners: ['nerdrx'],
@@ -118,6 +119,9 @@ export function normalizeApp(app) {
     overlayHidden: !!a.overlayHidden,
     installableHere: a.installableHere !== false,
     hasAnyRelease: !!a.hasAnyRelease,
+    // v0.5 — the overlay MAY describe the fields this app streams over the
+    // connector bus. Absent means "render whatever arrives, generically".
+    connectorFields: normalizeFieldDefs(a.connectorFields || (a.connector && a.connector.fields)),
   };
 }
 
@@ -180,6 +184,8 @@ export function normalizeState(state) {
     rateLimit: s.rateLimit && typeof s.rateLimit === 'object' ? s.rateLimit : null,
     tokenSource: s.tokenSource || '',
     hasToken: !!(s.hasToken || s.tokenSource || (s.settings && s.settings.token)),
+    // v0.5 — the bus roster. An older main process simply has none.
+    connector: normalizeConnector(s.connector),
   };
 }
 
