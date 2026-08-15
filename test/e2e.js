@@ -283,6 +283,13 @@ async function main() {
       { label: "app cards rendered", timeout: 30000 }
     ).catch(() => null);
     check(Boolean(painted), "renderer painted real .card elements (ESM loaded under file://)");
+    const contentOk = Boolean(painted) && /LIMBO PROTOCOL/i.test(painted) && !/card-skel/.test(painted);
+    if (!contentOk && painted) {
+      const dumpPath = path.join(SCRATCH, "nx-hub-e2e-dom.html");
+      fs.mkdirSync(SCRATCH, { recursive: true });
+      fs.writeFileSync(dumpPath, painted);
+      console.log(`  (dom dumped → ${dumpPath})`);
+    }
     check(Boolean(painted) && /LIMBO PROTOCOL/i.test(painted), "card content comes from discovery");
     check(Boolean(painted) && !/card-skel/.test(painted), "skeleton replaced by real cards");
 
