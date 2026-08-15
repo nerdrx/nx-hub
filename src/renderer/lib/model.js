@@ -75,6 +75,7 @@ export function normalizeArtifact(artifact, latestVersion) {
     size: Number(a.size) || 0,
     packageId: a.packageId || '',
     postInstallNote: a.postInstallNote || '',
+    postInstallCmd: a.postInstallCmd || '',
     installed: a.installed && typeof a.installed === 'object' ? a.installed : null,
     // A release may only ship some platforms; an artifact then survives from the
     // newest release that carried it, with its OWN version. sourceVersion is the

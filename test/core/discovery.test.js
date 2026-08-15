@@ -370,7 +370,7 @@ test("refresh() discovers owners + extraRepos and applies the live overlay", asy
   const ids = apps.map((a) => a.id);
 
   assert.ok(ids.includes("wivrn-nx"));
-  assert.ok(ids.includes("cool-tool"), "extraRepos entry is discovered");
+  assert.ok(ids.includes("someone-else--cool-tool"), "extraRepos entry is discovered under its owner-scoped id");
   assert.ok(ids.includes("petri"), "hidden repo is listed for the bottom section");
   assert.strictEqual(apps.find((a) => a.id === "petri").overlayHidden, true, "…flagged overlayHidden");
   assert.ok(ids.includes("oscgoesbrrr-nx-patches"), "private repo listed via /user/repos when authed");
@@ -530,4 +530,47 @@ test("device versionName with a tag prefix does not produce a phantom update (nx
   const apk = app.artifacts.find((x) => x.kind === "apk-adb");
   assert.ok(apk.installed, "device version counts as installed");
   assert.strictEqual(apk.updateAvailable, false, "nx-1.3 and 1.3 are the same version");
+});
+
+test("owner-scoped ids: same-named repos from two sources never collide", () => {
+  const rel = (owner) => helpers.release("v1", [{ name: `${owner}-app-linux.zip`, id: owner.length, size: 1, url: "u" }]);
+  const apps = discovery.buildApps({
+    repos: [helpers.repo("nerdrx", "vrcx-modschnitstelle"), helpers.repo("Arikazei", "vrcx-modschnitstelle")],
+    releases: {
+      "nerdrx/vrcx-modschnitstelle": rel("nerdrx"),
+      "arikazei/vrcx-modschnitstelle": rel("arikazei"),
+    },
+    overlay: { hidden: [], apps: {} },
+    installedState: { installed: {} },
+    adb: {},
+    primaryOwner: "nerdrx",
+  });
+  const ids = apps.map((a) => a.id).sort();
+  assert.deepStrictEqual(ids, ["arikazei--vrcx-modschnitstelle", "vrcx-modschnitstelle"]);
+  assert.strictEqual(new Set(ids).size, 2, "state/prefs/jobs can never cross wires");
+});
+
+test("postInstallCmd passes through from the overlay to the artifact", () => {
+  const app = buildOne(
+    repoFor("nx-nebula"),
+    helpers.release("v1.0.0", [{ name: "nx-nebula-1.0.0-linux.tar.gz", id: 77, size: 1, url: "u" }]),
+    {
+      overlay: {
+        hidden: [],
+        apps: {
+          "nx-nebula": {
+            artifacts: [
+              {
+                assetPattern: "nx-nebula-*-linux.tar.gz", kind: "tarball-prefix", platform: "linux",
+                prefix: "~/.local", stripPrefix: "",
+                postInstallNote: "Restart Plasma to reload the QML.",
+                postInstallCmd: "systemctl --user restart plasma-plasmashell.service",
+              },
+            ],
+          },
+        },
+      },
+    }
+  );
+  assert.strictEqual(app.artifacts[0].postInstallCmd, "systemctl --user restart plasma-plasmashell.service");
 });

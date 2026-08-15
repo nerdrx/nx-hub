@@ -41,15 +41,20 @@ export function sourceLabel(artifact) {
   return artifact.sourceVersion ? `v${artifact.sourceVersion}` : '';
 }
 
-/** Pull the runnable command out of a postInstallNote for the copy button. */
+/**
+ * Pull the runnable command out of a postInstallNote for the copy button.
+ * Backticks win, then an explicit "run:" prefix. When nothing matches there
+ * IS no command — return '' so no copy box renders (dumping the whole prose
+ * note into a code box was worse than nothing).
+ */
 export function extractCommand(note) {
   if (!note) return '';
   const text = String(note);
   const tick = /`([^`]+)`/.exec(text);
   if (tick) return tick[1].trim();
-  const run = /(?:re-?run|run|execute)\s*:?\s*(.+?)(?:\s*\((?:required|needed|note)[^)]*\)\s*)?$/i.exec(text);
+  const run = /(?:re-?run|run|execute)\s*:\s*(.+?)(?:\s*\((?:required|needed|note)[^)]*\)\s*)?$/i.exec(text);
   if (run && run[1]) return run[1].trim();
-  return text.trim();
+  return '';
 }
 
 function badge(cls, text, title) {
@@ -129,7 +134,8 @@ export function renderJobBar(job, opts = {}) {
 }
 
 export function renderPostInstallNote(app, artifact) {
-  const cmd = extractCommand(artifact.postInstallNote);
+  // Overlay-declared command wins; the heuristic is only a fallback.
+  const cmd = artifact.postInstallCmd || extractCommand(artifact.postInstallNote);
   return `
     <div class="pin-note" data-note="${esc(artifactKey(app.id, artifact.id))}">
       <div class="pin-head">

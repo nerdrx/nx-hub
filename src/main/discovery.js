@@ -203,6 +203,20 @@ function mk(kind, platform) {
   return { kind, platform, label: DEFAULT_LABELS[kind] || kind };
 }
 
+/**
+ * Stable app id. The primary owner's repos keep the bare name (existing
+ * installs/prefs stay keyed as before); any other source's repo is
+ * owner-prefixed so two same-named repos can never collide in state,
+ * preferences, jobs, or the release cache.
+ */
+function appIdFor(repo, primaryOwner) {
+  const name = String(repo.name || repo).toLowerCase();
+  const owner = String((repo.owner && repo.owner.login) || String(repo.full_name || "").split("/")[0] || "").toLowerCase();
+  const primary = String(primaryOwner || "").toLowerCase();
+  if (!owner || !primary || owner === primary) return name;
+  return `${owner}--${name}`;
+}
+
 /* ------------------------------------------------------------------ */
 /* overlay                                                             */
 /* ------------------------------------------------------------------ */
@@ -328,7 +342,7 @@ function buildArtifacts(release, ovl) {
       artifact.checksumId = sidecar.id != null ? sidecar.id : null;
     }
     // overlay pass-through consumed by the install engines
-    for (const key of ["packageId", "stripPrefix", "prefix", "binHint", "addonsDir", "launchCmd", "args"]) {
+    for (const key of ["packageId", "stripPrefix", "prefix", "binHint", "addonsDir", "launchCmd", "postInstallCmd", "args"]) {
       if (entry && entry[key] != null) artifact[key] = entry[key];
     }
     rows.push({ artifact, ovlIndex: ovlIndex >= 0 ? ovlIndex : Number.MAX_SAFE_INTEGER, assetIndex, asset });
@@ -359,7 +373,7 @@ function buildApp({ repo, release, overlay, installedState, adb, primaryOwner, s
   const repoName = repo.name;
   const owner = (repo.owner && repo.owner.login) || String(repo.full_name || "").split("/")[0] || primaryOwner;
   const ovl = overlayFor(overlay, repoName);
-  const id = String(repoName).toLowerCase();
+  const id = appIdFor(repo, primaryOwner);
 
   const s = settings || config.load();
   const prefs = config.getAppPref(s, id);
@@ -720,7 +734,7 @@ async function refresh({ force = false, signal } = {}) {
           }
           if (list.length) {
             releases[key] = list;
-            releasesByApp[String(repo.name).toLowerCase()] = list;
+            releasesByApp[appIdFor(repo, (settings.owners || [])[0])] = list;
           }
         } catch (e) {
           errors.push({ source: repo.full_name, message: e.message, rateLimited: Boolean(e.rateLimited), resetAt: e.resetAt || null });

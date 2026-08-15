@@ -58,7 +58,9 @@ Agents own ONLY their bracketed areas. package.json deps: additions allowed via
 
 ```js
 {
-  id,            // repo name, lowercased
+  id,            // repo name, lowercased; a non-primary source's repo is
+                 // owner-prefixed ("owner--name") so same-named repos from two
+                 // sources can never collide in state, prefs, or jobs
   repo,          // "nerdrx/wivrn-nx"
   name, tagline, // overlay, fallback repo name + description
   private,       // bool (GitHub)
@@ -177,7 +179,8 @@ UI language: English. Subtle starfield in the header only — no heavy animation
       "artifacts": [{ "assetPattern",       // glob, matches assetName
                       "label", "kind", "platform", "packageId",
                       "stripPrefix", "prefix", "binHint", "addonsDir",
-                      "postInstallNote", "skip": true|false }] } } }
+                      "postInstallNote", "postInstallCmd",   // cmd = the copy-button command; the note is prose
+                      "skip": true|false }] } } }
 ```
 
 Live overlay URL: `https://raw.githubusercontent.com/nerdrx/nx-hub/main/registry/overrides.json`

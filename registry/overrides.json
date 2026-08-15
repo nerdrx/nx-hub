@@ -25,7 +25,8 @@
           "stripPrefix": "usr/",
           "prefix": "~/.local",
           "launchCmd": "~/.local/bin/wivrn-dashboard",
-          "postInstallNote": "Re-run: sudo setcap cap_sys_nice+ep ~/.local/bin/wivrn-server (required after every update)"
+          "postInstallNote": "Re-run: sudo setcap cap_sys_nice+ep ~/.local/bin/wivrn-server (required after every update)",
+          "postInstallCmd": "sudo setcap cap_sys_nice+ep ~/.local/bin/wivrn-server"
         }
       ]
     },
@@ -196,7 +197,8 @@
           "platform": "linux",
           "stripPrefix": "",
           "prefix": "~/.local",
-          "postInstallNote": "Right-click the desktop \u2192 Desktop and Wallpaper \u2192 type 'NX Nebula (Live)'. After an update, restart Plasma to reload the QML: systemctl --user restart plasma-plasmashell.service"
+          "postInstallNote": "Right-click the desktop \u2192 Desktop and Wallpaper \u2192 type 'NX Nebula (Live)'. After an update, restart Plasma to reload the QML: systemctl --user restart plasma-plasmashell.service",
+          "postInstallCmd": "systemctl --user restart plasma-plasmashell.service"
         }
       ]
     }

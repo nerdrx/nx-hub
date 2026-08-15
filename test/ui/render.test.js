@@ -174,7 +174,7 @@ test('extractCommand pulls the runnable part out of a note', () => {
     'sudo setcap cap_sys_nice+ep ~/.local/bin/wivrn-server'
   );
   assert.equal(extractCommand('Run `adb devices` first'), 'adb devices');
-  assert.equal(extractCommand('nothing to do here'), 'nothing to do here');
+  assert.equal(extractCommand('nothing to do here'), '', 'prose without a command gets NO copy box');
   assert.equal(extractCommand(''), '');
 });
 
