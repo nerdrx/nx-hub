@@ -17,15 +17,17 @@ const BOOL_FLAGS = new Set([
   "yes",
   "help",
   "version",
+  "follow", // v0.8: `nx log --follow` (tail the flight recorder)
 ]);
 
 // v0.6: `--port` lets `nx fleet pair` reach a hub that is not on :9023.
 // There is deliberately no `--code`: a pairing code is a shared-secret seed
 // and command-line arguments land in shell history and in `ps` output.
 // v0.7 [dev-tools]: `nx dev link <path> [--app <id>] [--cmd <c>] [--name <n>]`.
-const VALUE_FLAGS = new Set(["tag", "port", "app", "cmd", "name"]);
+// v0.8 [recorder]: `nx log [--since 24h] [--type a,b] [--app x] [--limit n]`.
+const VALUE_FLAGS = new Set(["tag", "port", "app", "cmd", "name", "since", "type", "limit"]);
 
-const SHORT = { h: "help", y: "yes", v: "verbose" };
+const SHORT = { h: "help", y: "yes", v: "verbose", f: "follow" };
 
 /**
  * @param {string[]} argv arguments AFTER the program name

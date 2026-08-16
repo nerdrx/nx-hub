@@ -55,7 +55,17 @@ const APP_PREF_KEYS = [
   "hidden",
   "releaseFallback",
   "autoRunCmd",
+  // ---- v0.8 ----
+  "keepAlive", // supervisor: relaunch this app when it dies unexpectedly
+  "sandbox", // per-app override of the overlay's sandbox profile
 ];
+
+/**
+ * SPEC v0.8: the sandbox profiles an app may be launched under. "inherit" is
+ * appPrefs-only ("use whatever the overlay says"), and is stored rather than
+ * dropped so the UI can show an explicit "inherit" choice.
+ */
+const SANDBOX_PROFILES = ["inherit", "none", "confined", "offline"];
 
 function defaults() {
   return {
@@ -82,6 +92,10 @@ function defaults() {
     autoRunPostInstallCmd: false,
     // v0.7: prefer fetching verified assets from LAN peers before GitHub
     lanSeeding: true,
+    // v0.8: refuse to install an UNSIGNED asset from an owner whose signing
+    // key is pinned (src/main/provenance.js). A signature that is present and
+    // wrong is fatal regardless of this setting.
+    requireSignatures: false,
     // v0.6: hub-to-hub on the LAN — gates the UDP beacon AND the :9023 server
     // (src/main/fleet). Off means this hub is neither discoverable nor
     // reachable; already-paired peers simply go offline.
@@ -141,6 +155,12 @@ function sanitizeAppPref(raw) {
   if (typeof raw.releaseFallback === "boolean") out.releaseFallback = raw.releaseFallback;
   // absent = inherit the global autoRunPostInstallCmd setting
   if (typeof raw.autoRunCmd === "boolean") out.autoRunCmd = raw.autoRunCmd;
+  // v0.8: absent/false = the supervisor leaves this app alone
+  if (typeof raw.keepAlive === "boolean") out.keepAlive = raw.keepAlive;
+  // v0.8: absent (or "inherit") = fall through to the overlay's profile
+  if (typeof raw.sandbox === "string" && SANDBOX_PROFILES.includes(raw.sandbox.trim().toLowerCase())) {
+    out.sandbox = raw.sandbox.trim().toLowerCase();
+  }
 
   if (typeof raw.skippedVersion === "string" && raw.skippedVersion.trim()) {
     out.skippedVersion = raw.skippedVersion.trim();
@@ -237,6 +257,7 @@ function sanitize(raw) {
   s.cliShim = bool(s.cliShim, true);
   s.autoRunPostInstallCmd = bool(s.autoRunPostInstallCmd, false);
   s.lanSeeding = bool(s.lanSeeding, true);
+  s.requireSignatures = bool(s.requireSignatures, false); // v0.8
   s.fleet = bool(s.fleet, true); // v0.6
   const maxDl = Math.floor(Number(s.maxConcurrentDownloads));
   s.maxConcurrentDownloads = Number.isFinite(maxDl) && maxDl >= 1 ? Math.min(maxDl, 8) : defaults().maxConcurrentDownloads;
@@ -505,6 +526,7 @@ module.exports = {
   APP_NAME,
   UPDATE_POLICIES,
   APP_PREF_KEYS,
+  SANDBOX_PROFILES,
   defaults,
   expandHome,
   dataDir,

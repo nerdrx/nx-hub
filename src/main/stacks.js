@@ -852,7 +852,12 @@ function sigterm(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     // SPEC: never SIGKILL — a stack stop is polite by definition.
-    process.kill(pid, "SIGTERM");
+    try {
+      // v0.8: tell the watchdog this exit is ours, then stop the whole group
+      // (the sandbox supervisor alone dying would leave the app running).
+      if (deps.jobs && typeof deps.jobs.noteHubStop === "function") deps.jobs.noteHubStop({ pid });
+    } catch (_) {}
+    require("./install/util").killTree(pid, "SIGTERM");
     return true;
   } catch (e) {
     return false; // already gone, or not ours

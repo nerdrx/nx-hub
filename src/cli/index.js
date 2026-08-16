@@ -19,6 +19,11 @@ const shim = require("./shim");
 // src/main/devlinks.js and src/main/bisect.js.
 const dev = require("./dev");
 const bisect = require("./bisect");
+// v0.8 [recorder]: `nx log` reads the flight recorder's journal off disk — it
+// needs neither a running hub nor a discovery pass.
+const logCmd = require("./log");
+// v0.8 [timemachine]: `nx snapshots` / `nx restore` over src/main/snapshots.js.
+const snapshotsCli = require("./snapshots");
 
 const EXIT_OK = 0;
 const EXIT_USER = 1;
@@ -37,11 +42,16 @@ const ALIASES = {
   run: "launch",
   start: "launch",
   sync: "refresh",
+  logs: "log", // v0.8: the flight recorder
+  activity: "log",
   // v0.5: `status` is the connector view now (SPEC "NX Connector → IPC
   // additions": `nx status` = bus clients). The environment report kept its
   // own name, `nx doctor`, which is what every doc and every script used.
   stacks: "stack",
   peers: "fleet", // v0.6
+  // v0.8 [timemachine]
+  snapshot: "snapshots",
+  snaps: "snapshots",
   "--help": "help",
   "-h": "help",
 };
@@ -121,6 +131,11 @@ async function run(argv, opts = {}) {
     // runtime rather than the hub-shaped one. Injectable for tests.
     fleet: opts.fleet || null,
     prompt: opts.prompt || defaultPrompt,
+    // v0.8 [recorder]: the journal module (real one unless a test injects one)
+    // and `--follow`'s knobs — {intervalMs, signal, unref} — so a test can
+    // drive the tail without waiting on wall-clock seconds.
+    recorder: opts.recorder || null,
+    follow: opts.follow || null,
   };
 
   // v0.7 [dev-tools]: the shared helpers, reachable from ./dev.js and
@@ -148,6 +163,11 @@ async function run(argv, opts = {}) {
     // v0.7 [dev-tools]
     dev: dev.cmdDev,
     bisect: bisect.cmdBisect,
+    // v0.8 [recorder]
+    log: logCmd.cmdLog,
+    // v0.8 [timemachine]
+    snapshots: snapshotsCli.cmdSnapshots,
+    restore: snapshotsCli.cmdRestore,
     shim: cmdShim,
   };
 

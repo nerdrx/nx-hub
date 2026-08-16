@@ -732,6 +732,11 @@ const COMMANDS = [
   // v0.7 [dev-tools]
   ["dev", "ls | link <path> | unlink <id> | run <id>", "working trees you are hacking on"],
   ["bisect", "<app> [artifact] | good | bad | skip | status | reset", "binary-search releases for the first bad one"],
+  // v0.8 [timemachine]
+  ["snapshots", "<app> | rm <app> <file>", "config snapshots taken before updates"],
+  ["restore", "<app> [file] [-y]", "put a config snapshot back (newest by default)"],
+  // v0.8 [recorder]
+  ["log", "[--since 24h] [--type x] [--app y] [--follow]", "what the hub has been doing (the flight recorder)"],
   ["help", "", "this text"],
 ];
 

@@ -4,7 +4,8 @@
 #   scripts/release.sh [--skip-win] [--dry-run] [--delta]
 #
 #   --skip-win   Linux AppImage only (no wine needed).
-#   --dry-run    Build and checksum everything, but do not publish to GitHub.
+#   --dry-run    Build, checksum and SIGN everything, but do not publish to
+#                GitHub (the .sig files land in dist/ like the checksums).
 #   --delta      Also emit `<asset>.from-<prevVersion>.zpatch` next to every
 #                full asset (zstd --patch-from against the previous release),
 #                which the hub downloads instead of the full file. Needs zstd
@@ -25,7 +26,7 @@ while [[ $# -gt 0 ]]; do
         --skip-win) SKIP_WIN=1; shift ;;
         --dry-run)  DRY_RUN=1; shift ;;
         --delta)    DELTA=1; shift ;;
-        -h|--help)  sed -n '2,15p' "$0"; exit 0 ;;
+        -h|--help)  sed -n '2,17p' "$0"; exit 0 ;;
         *) echo "unknown option: $1"; exit 1 ;;
     esac
 done
@@ -93,6 +94,39 @@ for a in "${ASSETS[@]}"; do
     CHECKSUMS+=("dist/$base.sha256")
     echo "    $base.sha256  $(cut -d' ' -f1 < "dist/$base.sha256")"
 done
+
+# ---------------------------------------------------------------- signatures
+
+# SPEC v0.8: every asset gets an `<asset>.sig` sibling holding one line of hex,
+#   sig = ed25519(privkey, sha256(asset))
+# which NX Hub verifies against the public key pinned in src/main/provenance.js
+# before it installs anything. The private key lives OUTSIDE every repo (see
+# scripts/gen-signing-key.sh); a machine without it still cuts a release, just
+# an unsigned one.
+#
+# Only the installable assets are signed. The .sha256 files need no signature
+# of their own - a signature over the asset's digest already vouches for the
+# digest - and .zpatch files are verified by reconstructing the full asset and
+# checking THAT against its checksum and signature.
+SIGNING_DIR="${NX_SIGNING_DIR:-/run/media/nerdrx/Lex/claude/tools/nx-signing}"
+SIGNING_KEY="$SIGNING_DIR/nx-release.key"
+SIGNATURES=()
+if [[ -f "$SIGNING_KEY" ]]; then
+    echo "==> signing assets (ed25519)"
+    for a in "${ASSETS[@]}"; do
+        base=$(basename "$a")
+        node -e '
+const fs = require("fs"), crypto = require("crypto");
+const digest = crypto.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest();
+const key = crypto.createPrivateKey(fs.readFileSync(process.argv[2], "utf8"));
+process.stdout.write(crypto.sign(null, digest, key).toString("hex") + "\n");
+' "$a" "$SIGNING_KEY" > "dist/$base.sig"
+        SIGNATURES+=("dist/$base.sig")
+        echo "    $base.sig  $(cut -c1-24 < "dist/$base.sig")..."
+    done
+else
+    echo "==> no signing key at $SIGNING_KEY - unsigned release"
+fi
 
 # ---------------------------------------------------------------- delta patches
 
@@ -179,6 +213,12 @@ CLEANUP+=("$NOTES")
     echo "sha256sum -c $LINUX_ASSET.sha256"
     echo '```'
     echo
+    if [[ ${#SIGNATURES[@]} -gt 0 ]]; then
+        echo "Each download also has a \`.sig\` sibling: an ed25519 signature over the"
+        echo "asset's sha256, which NX Hub checks against a pinned key before it"
+        echo "installs anything. Nothing to do by hand - it verifies itself."
+        echo
+    fi
     if [[ ${#PATCHES[@]} -gt 0 ]]; then
         echo "The \`.zpatch\` files are delta updates NX Hub uses to update itself"
         echo "with a fraction of the download; they are not meant to be used by hand."
@@ -191,7 +231,7 @@ CLEANUP+=("$NOTES")
 
 if [[ $DRY_RUN -eq 1 ]]; then
     echo "==> dry run complete. Artifacts:"
-    for a in "${ASSETS[@]}" "${CHECKSUMS[@]}" ${PATCHES[@]+"${PATCHES[@]}"}; do echo "    $a"; done
+    for a in "${ASSETS[@]}" "${CHECKSUMS[@]}" ${SIGNATURES[@]+"${SIGNATURES[@]}"} ${PATCHES[@]+"${PATCHES[@]}"}; do echo "    $a"; done
     echo "==> release notes preview:"
     sed 's/^/    /' "$NOTES"
     exit 0
@@ -204,6 +244,6 @@ gh release create "$TAG" \
     --repo "$REPO" \
     --title "NX Hub $VERSION" \
     --notes-file "$NOTES" \
-    "${ASSETS[@]}" "${CHECKSUMS[@]}" ${PATCHES[@]+"${PATCHES[@]}"}
+    "${ASSETS[@]}" "${CHECKSUMS[@]}" ${SIGNATURES[@]+"${SIGNATURES[@]}"} ${PATCHES[@]+"${PATCHES[@]}"}
 
 echo "==> published: https://github.com/$REPO/releases/tag/$TAG"

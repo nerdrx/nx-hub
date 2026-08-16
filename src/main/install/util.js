@@ -38,6 +38,11 @@ function normCtx(ctx = {}) {
     // v0.2: this app's user preferences ({launchArgs, launchEnv, …}); core
     // threads them through so launch() can honour them.
     appPrefs: ctx.appPrefs && typeof ctx.appPrefs === "object" ? ctx.appPrefs : {},
+    // v0.8: the sandbox profile jobs.launch resolved (appPrefs → overlay) and
+    // the overlay's configPaths. Only launch() reads them, and only the kinds
+    // that start a plain binary act on them (see install/sandbox.js).
+    sandboxProfile: typeof ctx.sandboxProfile === "string" ? ctx.sandboxProfile : "none",
+    sandboxConfigPaths: Array.isArray(ctx.sandboxConfigPaths) ? ctx.sandboxConfigPaths : [],
     raw: ctx,
   };
 }
@@ -585,7 +590,30 @@ async function copyEntry(src, dst) {
   await fsp.chmod(dst, st.mode & 0o7777).catch(() => {});
 }
 
+/**
+ * Stop a launched app: every spawnDetached child leads its own process group,
+ * so the NEGATIVE pid reaches the app plus everything it spawned — including
+ * the app inside a bwrap sandbox, whose supervisor would otherwise die alone.
+ * Falls back to the plain pid when the group is already gone.
+ */
+function killTree(pid, signal = "SIGTERM") {
+  const n = Number(pid);
+  if (!Number.isFinite(n) || n <= 1) return false;
+  try {
+    process.kill(-n, signal);
+    return true;
+  } catch (_) {
+    try {
+      process.kill(n, signal);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+}
+
 module.exports = {
+  killTree,
   MANIFEST_NAME,
   AbortError,
   expandUser,

@@ -31,6 +31,9 @@ const DEFAULT_LABELS = {
 // apk-adb lives on the device — neither can be rolled back locally.
 const ROLLBACK_KINDS = new Set(["appimage", "archive-dir", "windows-portable", "windows-zip"]);
 
+// v0.8: the sandbox profiles an OVERLAY may name ("inherit" is appPrefs-only).
+const SANDBOX_PROFILE_VALUES = ["none", "confined", "offline"];
+
 let deps = { github: null, emit: () => {} };
 let cached = {
   apps: [],
@@ -341,6 +344,17 @@ function buildArtifacts(release, ovl) {
       artifact.checksumUrl = sidecar.url || sidecar.browser_download_url || null;
       artifact.checksumId = sidecar.id != null ? sidecar.id : null;
     }
+    // v0.8: sibling ed25519 signature, verified in the download path against
+    // the owner's pinned key (src/main/provenance.js). Captured exactly like
+    // the checksum trio above; `.sig` is classifier-ignored, so it can never
+    // show up as an installable artifact of its own.
+    const sig = assets.find((a) => a && a.name === `${name}.sig`);
+    artifact.hasSignature = Boolean(sig);
+    if (sig) {
+      artifact.signatureName = sig.name;
+      artifact.signatureUrl = sig.url || sig.browser_download_url || null;
+      artifact.signatureId = sig.id != null ? sig.id : null;
+    }
     // v0.6 delta updates: sibling `<assetName>.from-<version>.zpatch` assets.
     // The classifier ignores them (they are not installable on their own); the
     // download path in jobs.js picks the one matching the INSTALLED version.
@@ -361,7 +375,9 @@ function buildArtifacts(release, ovl) {
     }
     if (patches.length) artifact.deltaPatches = patches;
     // overlay pass-through consumed by the install engines
-    for (const key of ["packageId", "stripPrefix", "prefix", "binHint", "addonsDir", "launchCmd", "postInstallCmd", "args"]) {
+    // v0.8: `sandbox` (bwrap profile) and `configPaths` may also be pinned per
+    // artifact; the app-level values below are the fallback.
+    for (const key of ["packageId", "stripPrefix", "prefix", "binHint", "addonsDir", "launchCmd", "postInstallCmd", "args", "sandbox", "configPaths"]) {
       if (entry && entry[key] != null) artifact[key] = entry[key];
     }
     rows.push({ artifact, ovlIndex: ovlIndex >= 0 ? ovlIndex : Number.MAX_SAFE_INTEGER, assetIndex, asset });
@@ -470,6 +486,18 @@ function buildApp({ repo, release, overlay, installedState, adb, primaryOwner, s
       .map((f) => ({ key: f.key, label: f.label || f.key, unit: f.unit || "", kind: f.kind || "text" }));
   }
 
+  // ---- v0.8 overlay pass-through: sandbox profile + config locations ----
+  // Both are plain MODEL fields: discovery neither sandboxes nor snapshots
+  // anything. `sandbox` is read by jobs.launch ([guardian]) and `configPaths`
+  // by the sandbox binds AND by src/main/snapshots.js ([timemachine]).
+  if (typeof ovl.sandbox === "string" && SANDBOX_PROFILE_VALUES.includes(ovl.sandbox.trim().toLowerCase())) {
+    app.sandbox = ovl.sandbox.trim().toLowerCase();
+  }
+  if (Array.isArray(ovl.configPaths)) {
+    const paths = ovl.configPaths.filter((p) => typeof p === "string" && p.trim()).map((p) => p.trim());
+    if (paths.length) app.configPaths = paths;
+  }
+
   // ---- v0.2 per-app preferences (the app is still discovered when hidden) ----
   app.localHidden = prefs.hidden === true;
   app.favorite = prefs.favorite === true;
@@ -478,6 +506,10 @@ function buildApp({ repo, release, overlay, installedState, adb, primaryOwner, s
   app.skippedVersion = prefs.skippedVersion || null;
   app.launchArgs = Array.isArray(prefs.launchArgs) ? prefs.launchArgs : [];
   app.launchEnv = prefs.launchEnv && typeof prefs.launchEnv === "object" ? prefs.launchEnv : {};
+  // v0.8 [guardian]: what the options sheet shows — the watchdog toggle and the
+  // user's sandbox choice ("inherit" / absent means app.sandbox above wins).
+  app.keepAlive = prefs.keepAlive === true;
+  app.sandboxPref = typeof prefs.sandbox === "string" ? prefs.sandbox : null;
 
   // ---- v0.7 [dev-tools]: a working tree linked to this id (SPEC "nx dev") ----
   // A MODEL FLAG and nothing more: discovery never reads, builds or launches

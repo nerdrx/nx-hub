@@ -18,6 +18,7 @@ const {
 } = require("./util");
 const { writeDesktopEntry, findIcon, updateDesktopDatabase, execArg } = require("./desktop");
 const { standardUninstall, nameHints } = require("./common");
+const sandbox = require("./sandbox"); // v0.8 sandbox profiles (launch only)
 
 const APPRUN = "AppRun";
 
@@ -146,8 +147,11 @@ async function launch({ app, artifact, installedPath, ctx }) {
   // v0.2: appPrefs.launchArgs are appended, launchEnv layered on top
   const { args, env } = launchExtras(ctx, { env: baseEnv });
   ctx.log(`launching ${appRun}${args.length ? ` ${args.join(" ")}` : ""}${sandboxed ? " (sandbox disabled)" : ""}`);
-  const child = spawnDetached(appRun, args, { cwd: installDir, env });
-  return { pid: child.pid, command: appRun, args };
+  // v0.8: bubblewrap wrapper, LAST — ELECTRON_DISABLE_SANDBOX, launchArgs and
+  // launchEnv are already baked into env/args, so they apply inside the sandbox.
+  const run = sandbox.wrapLaunch(ctx, { cmd: appRun, args, installDir, cwd: installDir, env });
+  const child = spawnDetached(run.cmd, run.args, { cwd: installDir, env });
+  return { pid: child.pid, command: appRun, args, sandbox: run.wrapped ? run.profile : null };
 }
 
 /** SPEC v0.2: restore <installDir>.prev. */

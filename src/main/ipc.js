@@ -12,6 +12,9 @@ const stateStore = require("./state");
 const housekeeping = require("./housekeeping");
 const stacks = require("./stacks");
 const fleet = require("./fleet");
+// v0.8 [recorder]: the flight recorder taps `emit` below. Requiring it here is
+// free — it opens no file until something is actually worth remembering.
+const recorder = require("./recorder");
 
 /**
  * v0.5: the NX Connector bus module, once index.js managed to start it — or
@@ -51,6 +54,9 @@ function init(d = {}) {
     // with "the fleet is not available" instead of an unknown-peer error.
     fleet: () => (fleet.isRunning && fleet.isRunning() ? fleet : null),
   });
+  // v0.8 [recorder]: the journal lives beside the rest of the hub's data and
+  // logs through the hub's own logger. Everything else about it is default.
+  recorder.init({ dataDir: config.dataDir(), log: (m) => config.log(m) });
   register();
   return module.exports;
 }
@@ -78,9 +84,31 @@ function notifyUpdate(evt) {
   }
 }
 
+/**
+ * v0.8 [recorder]: the flight-recorder tap.
+ *
+ * Runs BEFORE the fan-out (an event nobody is listening to is still history)
+ * and is wrapped twice over: recorder.record() never throws by contract, and
+ * this swallows anything that gets through anyway. A broken journal must never
+ * cost the user a toast, a progress bar or a job.
+ *
+ * `connector-changed` says only "something moved" — the bus sends no roster —
+ * so the CURRENT client list rides along and the recorder diffs it into
+ * join/leave entries. clients() is itself empty-safe and never throws.
+ */
+function recordEvent(evt) {
+  try {
+    if (evt.type === "connector-changed") recorder.record(Object.assign({}, evt, { clients: clients() }));
+    else recorder.record(evt);
+  } catch (e) {
+    config.log(`recorder tap failed: ${e.message}`);
+  }
+}
+
 /** Fan-out to every renderer. Also used by discovery/jobs via init({emit}). */
 function emit(evt) {
   if (!evt || !evt.type) return;
+  recordEvent(evt); // v0.8: the flight recorder, before anyone else sees it
   if (evt.type === "update-available") notifyUpdate(evt);
   const BW = deps.BrowserWindow;
   if (!BW) return;
@@ -332,6 +360,38 @@ function getFleet() {
     };
   }
   return Object.assign({ enabled, running: true }, snap);
+}
+
+/* ------------------------------------------------------------------ */
+/* v0.8: the flight recorder, as seen from the renderer                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * SPEC v0.8 `getEvents(q)` — the Activity sheet's data source.
+ *
+ * Everything about the query is validated here, because it arrives from the
+ * renderer: the limit is clamped to 1000 (a sheet that asks for a million
+ * lines gets a thousand), `since`/`until` accept epoch ms or the same strings
+ * the CLI takes ("24h", "2026-08-15"), and a junk query degrades to the
+ * default window rather than throwing.
+ *
+ * @returns {object[]} entries, NEWEST FIRST:
+ *   {ts, type, appId?, artifactId?, peerId?, stackId?, summary, data?}
+ */
+function getEvents(q) {
+  const query = q && typeof q === "object" ? q : {};
+  try {
+    return recorder.query({
+      since: query.since,
+      until: query.until,
+      type: query.type,
+      appId: query.appId,
+      limit: recorder.clampLimit(query.limit),
+    });
+  } catch (e) {
+    config.log(`getEvents failed: ${e.message}`);
+    return [];
+  }
 }
 
 /** SPEC: getState() → { apps, settings, jobs, adb, hubVersion, refreshing } */
@@ -644,6 +704,11 @@ function register() {
     return { ok: sent, sent, peerId, name: peer ? peer.name : null, mac: peer ? peer.mac : null };
   });
 
+  /* ---- v0.8 [recorder]: the flight recorder (SPEC "Flight recorder") ---- */
+  //
+  // getEvents({since, until, type, appId, limit}) → newest-first entries.
+  handle("nxhub:getEvents", (q) => getEvents(q));
+
   /* ---- v0.7 [dev-tools]: dev links (SPEC "nx dev") ---- */
   //
   // getDevLinks() → [{appId, name, path, launchCmd, exists, appName, known}]
@@ -681,6 +746,36 @@ function register() {
     if (!p) return false;
     if (deps.shell) deps.shell.showItemInFolder(String(p));
     return true;
+  });
+
+  /* ---- v0.8 [timemachine]: config time machine (SPEC "Config time machine") ----
+   *
+   * getSnapshots(appId)          → [{file, ts, version, reason, bytes}] newest first
+   * restoreSnapshot(appId, file) → {ok, file, restored:[…], preRestore}
+   * deleteSnapshot(appId, file)  → {ok, file}
+   *
+   * `file` is always a bare archive name from getSnapshots — snapshots.js
+   * rejects anything else (a path, a traversal) rather than touching it.
+   * Failures reach the user through the wrapper's error toast above; the
+   * success toast is the only one worth adding here.
+   */
+  handle("nxhub:getSnapshots", (appId) => require("./snapshots").list(appId));
+
+  handle("nxhub:restoreSnapshot", async (appId, file) => {
+    const snapshots = require("./snapshots");
+    const app = discovery.findApp(appId);
+    const meta = snapshots.get(appId, file);
+    const result = await snapshots.restore(appId, file, { app: app || null });
+    const name = (app && app.name) || appId;
+    const when = meta && meta.ts ? ` from ${meta.ts.slice(0, 16).replace("T", " ")}` : "";
+    emit({ type: "toast", level: "info", message: `Restored ${name}'s config${when}` });
+    return result;
+  });
+
+  handle("nxhub:deleteSnapshot", (appId, file) => {
+    const snapshots = require("./snapshots");
+    const result = snapshots.remove(appId, file);
+    return Object.assign({}, result, { snapshots: snapshots.list(appId) });
   });
 }
 
@@ -757,4 +852,7 @@ module.exports = {
   getEngineModule,
   // v0.7: dev links
   devLinks,
+  // v0.8: the flight recorder
+  getEvents,
+  recordEvent,
 };

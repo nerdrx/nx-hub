@@ -11,6 +11,7 @@ const {
 } = require("./util");
 const { writeDesktopEntry, findIcon, updateDesktopDatabase, execArg } = require("./desktop");
 const { standardUninstall, nameHints } = require("./common");
+const sandbox = require("./sandbox"); // v0.8 sandbox profiles (launch only)
 
 /**
  * Archives that wrap everything in a single top-level folder are flattened one
@@ -107,8 +108,11 @@ async function launch({ app, artifact, installedPath, ctx }) {
   const { args, env } = launchExtras(ctx);
   ctx.log(`launching ${abs}${args.length ? ` ${args.join(" ")}` : ""}`);
   // cwd = the binary's own dir: game builds expect their assets relative to it
-  const child = spawnDetached(abs, args, { cwd: path.dirname(abs), env });
-  return { pid: child.pid, command: abs, args };
+  const cwd = path.dirname(abs);
+  // v0.8: bubblewrap wrapper, applied last so launchArgs/launchEnv land inside
+  const run = sandbox.wrapLaunch(ctx, { cmd: abs, args, installDir, cwd, env });
+  const child = spawnDetached(run.cmd, run.args, { cwd, env });
+  return { pid: child.pid, command: abs, args, sandbox: run.wrapped ? run.profile : null };
 }
 
 /** SPEC v0.2: restore <installDir>.prev. */

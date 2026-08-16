@@ -58,11 +58,29 @@ const api = {
   // watch the peer's `online` in the next getFleet() for that.
   fleetWake: (peerId) => ipcRenderer.invoke("nxhub:fleetWake", peerId),
 
+  // ---- v0.8 [recorder] (SPEC "Flight recorder") ----
+  // getEvents({since, until, type, appId, limit}) → the Activity timeline,
+  // NEWEST FIRST: [{ts, type, appId?, artifactId?, peerId?, stackId?, summary,
+  // data?}]. `since`/`until` take epoch ms or the CLI's own strings ("24h",
+  // "2d", "2026-08-15"); `type` takes one type, a comma list or an array;
+  // `limit` defaults to 200 and is clamped to 1000 in the main process.
+  getEvents: (q) => ipcRenderer.invoke("nxhub:getEvents", q || {}),
+
   // ---- v0.7 [dev-tools] (SPEC "nx dev") ----
   // getDevLinks() → [{appId, name, path, launchCmd, exists, known, appName}]
   getDevLinks: () => ipcRenderer.invoke("nxhub:getDevLinks"),
   devRun: (appId) => ipcRenderer.invoke("nxhub:devRun", appId),
   devUnlink: (appId) => ipcRenderer.invoke("nxhub:devUnlink", appId),
+
+  // ---- v0.8 [timemachine] (SPEC "Config time machine") ----
+  // getSnapshots(appId) → [{file, ts, version, reason, bytes}], newest first.
+  // `file` is a bare archive name and the only thing the other two accept.
+  // restoreSnapshot unpacks it over $HOME after snapshotting the current
+  // config as "pre-restore" → {ok, file, restored:[paths], preRestore}.
+  // deleteSnapshot → {ok, file, snapshots} (the fresh list, no round trip).
+  getSnapshots: (appId) => ipcRenderer.invoke("nxhub:getSnapshots", appId),
+  restoreSnapshot: (appId, file) => ipcRenderer.invoke("nxhub:restoreSnapshot", appId, file),
+  deleteSnapshot: (appId, file) => ipcRenderer.invoke("nxhub:deleteSnapshot", appId, file),
 
   onEvent: (cb) => {
     if (typeof cb !== "function") return () => {};

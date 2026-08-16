@@ -44,6 +44,13 @@ function createRuntime() {
 
   function emit(evt) {
     if (!evt || !evt.type) return;
+    try {
+      // v0.8: CLI-driven installs/stacks belong in the flight recorder too.
+      // eslint-disable-next-line global-require
+      require("../main/recorder").record(evt);
+    } catch (_) {
+      /* the journal must never break a CLI command */
+    }
     for (const fn of [...listeners]) {
       try {
         fn(evt);

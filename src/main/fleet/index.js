@@ -134,7 +134,16 @@ function createFleet(o = {}) {
     return connectorMod;
   }
   /** process.kill, injectable — a test must never SIGTERM a real pid. */
-  const kill = typeof o.kill === "function" ? o.kill : (pid, sig) => process.kill(pid, sig);
+  const kill =
+    typeof o.kill === "function"
+      ? o.kill
+      : (pid, sig) => {
+          try {
+            if (jobs && typeof jobs.noteHubStop === "function") jobs.noteHubStop({ pid });
+          } catch (_) {}
+          // eslint-disable-next-line global-require
+          require("../install/util").killTree(pid, sig);
+        };
 
   /** peerId -> Session (at most one, by construction) */
   const sessions = new Map();

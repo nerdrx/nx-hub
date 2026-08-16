@@ -461,6 +461,13 @@ function wire() {
   // v0.5: the bus first (so the very first getState() already knows about it),
   // then the stacks orchestrator on top of the same jobs/emit the GUI uses.
   startConnector(emit);
+  // v0.8: the watchdog rides the launch-exit stream; keepAlive is per-app.
+  try {
+    // eslint-disable-next-line global-require
+    require("./supervisor").init({ jobs, connector: () => ipc.getConnectorModule(), config, emit });
+  } catch (e) {
+    config.log(`supervisor unavailable: ${e.message}`);
+  }
   stacks.init({
     jobs,
     connector: () => ipc.getConnectorModule(),
@@ -493,6 +500,10 @@ function main() {
   app.on("before-quit", () => {
     quitting = true;
     e2e.stop();
+    try {
+      // eslint-disable-next-line global-require
+      require("./supervisor").stop(); // v0.8: no restarts after we are gone
+    } catch (_) {}
     stopConnector();
     stopFleet(); // v0.6
   });

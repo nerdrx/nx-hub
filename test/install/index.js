@@ -21,3 +21,5 @@ require("./kinds.test.js");
 require("./rollback.test.js");
 require("./launch-prefs.test.js");
 require("./adb-v02.test.js");
+// ---- v0.8 ----
+require("./sandbox.test.js");

@@ -11,6 +11,7 @@ const config = require("./config");
 const githubMod = require("./github");
 const stateStore = require("./state");
 const discovery = require("./discovery");
+const provenance = require("./provenance");
 
 const KEEP_FINISHED = 20;
 
@@ -371,6 +372,11 @@ function retargetArtifact(app, artifact, tag) {
     checksumName: match.checksumName || null,
     checksumUrl: match.checksumUrl || null,
     checksumId: match.checksumId || null,
+    // v0.8: the signature belongs to the asset, so it retargets with it
+    hasSignature: Boolean(match.hasSignature),
+    signatureName: match.signatureName || null,
+    signatureUrl: match.signatureUrl || null,
+    signatureId: match.signatureId != null ? match.signatureId : null,
     // v0.6: the delta patches belong to the TARGET release's asset, not to the
     // live one — carry them across with the rest of the asset fields.
     deltaPatches: match.deltaPatches || null,
@@ -634,6 +640,94 @@ async function sidecarHash(job, artifact) {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* v0.8: signature verification                                        */
+/* ------------------------------------------------------------------ */
+
+/** The `<asset>.sig` sibling as a fetchable asset, or null. */
+function signatureFromArtifact(artifact) {
+  if (!artifact.signatureUrl && artifact.signatureId == null) return null;
+  return {
+    name: artifact.signatureName || `${artifact.assetName}.sig`,
+    url: artifact.signatureUrl,
+    id: artifact.signatureId,
+  };
+}
+
+/**
+ * SPEC v0.8: the last gate before an asset is handed to an install engine.
+ *
+ * Runs on whatever ended up at `filePath` — a full download, a LAN-seeded
+ * copy, a delta reconstruction or a cached pre-download — because all four
+ * converge on the same bytes and all four are equally worth refusing. By this
+ * point the bytes have already been checked against the `.sha256` sidecar;
+ * this asks the harder question of WHO produced them.
+ *
+ * Fatal cases throw (the job fails, nothing is installed):
+ *   - a signature that does not verify against the owner's pinned key
+ *   - a pinned owner with no signature while `requireSignatures` is on
+ *
+ * Everything else logs and returns: an unpinned owner's signature is not
+ * something this hub can judge, and an unsigned asset is the pre-v0.8 status
+ * quo, which stays installable by default.
+ *
+ * @param {string|null} sha256  the asset's hash when the download path already
+ *                              computed it — saves re-reading the file
+ */
+async function verifySignature(job, { app, artifact, filePath, settings, sha256 }) {
+  const sigAsset = signatureFromArtifact(artifact);
+  // app.owner is always set by discovery; the repo full_name is the fallback
+  // for hand-built app models (provenance.decide splits "owner/repo" itself).
+  const owner = app.owner || app.repo || "";
+  const decision = provenance.decide({
+    owner,
+    hasSignature: Boolean(sigAsset),
+    requireSignatures: Boolean(settings && settings.requireSignatures),
+  });
+
+  if (decision.action === "refuse") {
+    throw new Error(`${artifact.assetName}: unsigned asset from a pinned owner — refusing to install`);
+  }
+  if (decision.action === "skip") {
+    config.log(`provenance: ${artifact.assetName} — ${decision.reason}`);
+    return false;
+  }
+
+  progress(job, "verify", 0, "verifying signature");
+  let text = null;
+  try {
+    text = await gh().fetchAssetText(sigAsset, { signal: job.controller.signal });
+  } catch (e) {
+    if (job.cancelRequested || e.name === "AbortError") throw e;
+    // The signature exists but we could not read it. That is not a mismatch,
+    // so it follows the same rule as an absent one: fatal only when the user
+    // asked for signatures to be mandatory.
+    if (settings && settings.requireSignatures) {
+      throw new Error(`${artifact.assetName}: signature unavailable (${e.message}) — refusing to install`);
+    }
+    config.log(`provenance: ${artifact.assetName} — signature unavailable (${e.message})`);
+    progress(job, "verify", 100, "signature unavailable");
+    return false;
+  }
+
+  const ok = await provenance.verifyAsset(owner, filePath, text, { sha256: sha256 || undefined });
+  if (!ok) {
+    // No fallback, by design: a wrong signature is the one failure that cannot
+    // be a transient. Delete the bytes so no later run can reuse them.
+    safeUnlink(filePath);
+    try {
+      stateStore.removeDownload(app.id, artifact.id);
+    } catch (_) {
+      /* the file is gone either way */
+    }
+    config.log(`provenance: ${artifact.assetName} FAILED verification against ${owner}'s pinned key`);
+    throw new Error(`${artifact.assetName}: signature verification failed — refusing to install`);
+  }
+  config.log(`provenance: ${artifact.assetName} verified against ${owner}'s pinned key`);
+  progress(job, "verify", 100, "signature verified");
+  return true;
+}
+
 /**
  * SPEC v0.7: before going to GitHub, ask the LAN.
  *
@@ -756,10 +850,20 @@ async function runInstall(job) {
     }
   }
   if (job.cancelRequested) throw new Error("aborted");
+
+  // v0.8: whatever route those bytes took, they have now been hash-checked —
+  // ask who signed them before anything unpacks or executes them. Throws (and
+  // fails the job) on a bad signature; see verifySignature for the full table.
+  await verifySignature(job, { app, artifact, filePath, settings, sha256: seed.hash });
+
   if (seed.verified) noteAsset(filePath, seed.hash); // v0.7: offer it to the fleet
 
   // SPEC: core sets artifact.version before handing off to the engine
   artifact.version = version;
+
+  // v0.8 [timemachine]: snapshot the config when this install REPLACES another
+  // version of the same artifact (the module decides; it never throws).
+  await require("./snapshots").maybeSnapshotForUpdate(app, liveArtifact.id, version, settings);
 
   // 2. install
   let result;
@@ -921,6 +1025,9 @@ async function runUninstall(job) {
   const rec = stateStore.getInstall(job.appId, job.artifactId);
   const installedPath = (rec && rec.path) || (artifact.installed && artifact.installed.path) || null;
 
+  // v0.8 [timemachine]: the last config snapshot before the app goes away.
+  await require("./snapshots").maybeSnapshot(app, settings, "pre-uninstall");
+
   progress(job, "install", 10, `removing ${artifact.label}`);
   let engine = null;
   try {
@@ -1004,6 +1111,93 @@ const CRASH_DEFAULTS = { crashMs: 30000, healthyMs: 120000, pollMs: 5000, max: 1
 let crashCfg = Object.assign({}, CRASH_DEFAULTS);
 const tracked = new Map(); // pid → {appId, artifactId, version, startedAt, timer, mode}
 
+/* ------------------------------------------------------------------ */
+/* v0.8: the launch-exit stream (src/main/supervisor.js, [recorder])   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Every watched process that ends is announced here, crash or not:
+ *   {appId, appName, artifactId, version, pid, code, signal, uptimeMs,
+ *    stoppedByHub, crashCount, crashLoop, unknownExit}
+ * Subscribers must never throw; one that does is logged and ignored.
+ */
+const exitListeners = new Set();
+
+/** Subscribe to launch exits. @returns {function} unsubscribe */
+function onLaunchExit(fn) {
+  if (typeof fn !== "function") return () => {};
+  exitListeners.add(fn);
+  return () => exitListeners.delete(fn);
+}
+
+/**
+ * Deliberate stops the HUB itself performed, remembered just long enough to
+ * colour the next exit (SPEC v0.8: the watchdog must not fight a stack stop).
+ * Keyed by pid AND by app/artifact, because a polite `shutdown-request` over
+ * the bus never mentions a pid.
+ */
+const HUB_STOP_MS = 10000;
+const hubStops = new Map(); // "pid:1234" | "app:foo::bar" | "app:foo" → epoch ms
+
+/**
+ * Record "the hub asked this to stop". Called by every hub-side stop path
+ * (stacks.stop, fleet's remote stop, an IPC stop button); harmless to call
+ * more than once. Any of {pid} / {appId[,artifactId]} identifies the target.
+ */
+function noteHubStop(o = {}) {
+  const now = Date.now();
+  const pid = Number(o.pid);
+  if (Number.isFinite(pid) && pid > 0) hubStops.set(`pid:${pid}`, now);
+  if (o.appId) {
+    hubStops.set(`app:${o.appId}`, now);
+    if (o.artifactId) hubStops.set(`app:${o.appId}::${o.artifactId}`, now);
+  }
+  // Cheap sweep: this map is only ever a handful of keys.
+  for (const [key, at] of hubStops) if (now - at > HUB_STOP_MS * 3) hubStops.delete(key);
+  return now;
+}
+
+/**
+ * Signals that mean "something asked this process to go away" rather than
+ * "it fell over". A crash worth restarting is a bad exit CODE or a fault
+ * signal (SIGSEGV/SIGABRT/SIGBUS/…), never one of these. Being generous here
+ * is the conservative direction: the watchdog stays out of the way of stack
+ * stops, `pkill`, and session teardown even when those paths never called
+ * noteHubStop().
+ */
+const STOP_SIGNALS = new Set(["SIGTERM", "SIGINT", "SIGQUIT", "SIGHUP", "SIGKILL"]);
+
+/** Was this exit somebody's decision rather than a crash? */
+function wasStopped(entry, { signal } = {}) {
+  if (signal && STOP_SIGNALS.has(String(signal))) return true;
+  const now = Date.now();
+  const keys = [`pid:${entry.pid}`, `app:${entry.appId}::${entry.artifactId}`, `app:${entry.appId}`];
+  return keys.some((k) => {
+    const at = hubStops.get(k);
+    return at != null && now - at <= HUB_STOP_MS;
+  });
+}
+
+function fireLaunchExit(evt) {
+  for (const fn of [...exitListeners]) {
+    try {
+      fn(evt);
+    } catch (e) {
+      config.log(`launch-exit listener failed: ${e.message}`);
+    }
+  }
+}
+
+/** Is a launch of this app/artifact still being watched? (supervisor guard) */
+function isTracked(appId, artifactId) {
+  for (const entry of tracked.values()) {
+    if (entry.appId !== appId) continue;
+    if (artifactId && entry.artifactId !== artifactId) continue;
+    return true;
+  }
+  return false;
+}
+
 function untrack(pid) {
   const entry = tracked.get(pid);
   if (!entry) return null;
@@ -1025,7 +1219,7 @@ function alive(pid) {
  * Start watching one launched process.
  * @returns {object|null} the tracking entry (tests read it)
  */
-function trackLaunch({ appId, artifactId, version, pid, child }) {
+function trackLaunch({ appId, appName, artifactId, version, pid, child }) {
   const id = Number(pid);
   if (!Number.isFinite(id) || id <= 0) return null;
   untrack(id); // a recycled pid always starts fresh
@@ -1040,6 +1234,7 @@ function trackLaunch({ appId, artifactId, version, pid, child }) {
 
   const entry = {
     appId,
+    appName: appName || appId,
     artifactId,
     version: version == null ? null : String(version),
     pid: id,
@@ -1072,6 +1267,9 @@ function onWatchedExit(entry, { code, signal, unknownExit } = {}) {
   untrack(entry.pid);
   const uptime = Date.now() - entry.startedAt;
   const label = `${entry.appId}/${entry.artifactId}`;
+  // v0.8: decided BEFORE the crash bookkeeping below, while the hub-stop
+  // window is still fresh.
+  const stoppedByHub = wasStopped(entry, { signal });
   let changed = false;
 
   if (uptime >= crashCfg.healthyMs) {
@@ -1097,6 +1295,35 @@ function onWatchedExit(entry, { code, signal, unknownExit } = {}) {
     }
   }
 
+  // v0.8: the supervisor (and the flight recorder) see EVERY exit, healthy
+  // ones included — the crash counter above only speaks about the bad ones.
+  if (exitListeners.size) {
+    let crash = null;
+    try {
+      crash = stateStore.getCrashes(entry.appId, entry.artifactId);
+    } catch (_) {
+      crash = null;
+    }
+    const sameVersion =
+      crash && crash.version != null && entry.version != null && String(crash.version) === String(entry.version);
+    fireLaunchExit({
+      appId: entry.appId,
+      appName: entry.appName || entry.appId,
+      artifactId: entry.artifactId,
+      version: entry.version,
+      pid: entry.pid,
+      code: code == null ? null : code,
+      signal: signal || null,
+      uptimeMs: uptime,
+      stoppedByHub,
+      unknownExit: Boolean(unknownExit),
+      crashCount: sameVersion ? Number(crash.count || 0) : 0,
+      // SPEC v0.6 banner threshold, reused here: three crashes at the version
+      // that is installed suspends keepAlive for it.
+      crashLoop: Boolean(sameVersion && Number(crash.count || 0) >= 3),
+    });
+  }
+
   if (!changed) return;
   try {
     discovery.remerge();
@@ -1104,6 +1331,17 @@ function onWatchedExit(entry, { code, signal, unknownExit } = {}) {
     /* cache may be empty (CLI, tests) */
   }
   emit({ type: "state-changed" });
+}
+
+/** v0.8: the sandbox helper, lazily required like the engine (never fatal). */
+function sandbox() {
+  if (deps.sandbox) return deps.sandbox; // test hook
+  try {
+    // eslint-disable-next-line global-require
+    return require("./install/sandbox");
+  } catch (_) {
+    return null;
+  }
 }
 
 /** Engines announce their detached children here; require lazily like the engine. */
@@ -1136,7 +1374,25 @@ async function launch(appId, artifactId) {
     emitProgress: () => {},
     signal: undefined,
   };
-  config.log(`launch ${app.id}/${artifact.id}`);
+  // v0.8 sandbox profiles: appPrefs.sandbox → artifact overlay → app overlay →
+  // "none", and never for a kind that cannot be wrapped. The engines that can
+  // honour it (appimage, archive-dir) read these two fields; the rest ignore
+  // them, which is why nothing else has to change.
+  const sandboxMod = sandbox();
+  if (sandboxMod) {
+    try {
+      ctx.sandboxProfile = sandboxMod.resolveProfile({ appPrefs: ctx.appPrefs, app, artifact });
+      ctx.sandboxConfigPaths = sandboxMod.resolveConfigPaths({ app, artifact });
+    } catch (e) {
+      config.log(`sandbox profile resolution failed for ${app.id}/${artifact.id}: ${e.message}`);
+      ctx.sandboxProfile = "none";
+      ctx.sandboxConfigPaths = [];
+    }
+  }
+  config.log(
+    `launch ${app.id}/${artifact.id}` +
+      (ctx.sandboxProfile && ctx.sandboxProfile !== "none" ? ` (sandbox: ${ctx.sandboxProfile})` : "")
+  );
 
   // v0.6: collect whatever the engine spawns while it is launching, so the
   // watchdog below can attach to the real ChildProcess (exit code + uptime).
@@ -1158,6 +1414,7 @@ async function launch(appId, artifactId) {
     const child = spawned.find((c) => c && c.pid === pid) || null;
     trackLaunch({
       appId: app.id,
+      appName: app.name || app.id,
       artifactId: artifact.id,
       // the version we are watching is the INSTALLED one, which is what the
       // crash counter is keyed on
@@ -1318,6 +1575,8 @@ function _reset() {
   downloads.waiters.length = 0;
   for (const pid of [...tracked.keys()]) untrack(pid);
   crashCfg = Object.assign({}, CRASH_DEFAULTS);
+  exitListeners.clear();
+  hubStops.clear();
 }
 
 /** test hook: shrink the 30s/120s/5s windows so the suite stays fast. */
@@ -1343,6 +1602,9 @@ module.exports = {
   downloadStats,
   withDownloadSlot,
   trackLaunch,
+  onLaunchExit,
+  noteHubStop,
+  isTracked,
   findZstd,
   _reset,
   _setCrashConfig,
