@@ -328,6 +328,72 @@ job. A step that names no `artifactId` is resolved against the discovery model
 when it launches (the single installed, launchable artifact of that app), which
 is why `nx stack run` loads the catalogue before the first step.
 
+## v0.6 (frozen 2026-08-16): Fleet · Triggers · Crash-aware rollback · Delta updates
+
+### Fleet (`src/main/fleet/` — [fleet])
+
+Hub-to-hub on the LAN. Discovery: UDP broadcast beacon on :9022 every 5s
+(`{nx:"fleet-beacon", id, name: hostname, hubVersion, port: 9023}`), listener
+dedupes by id (id = random 16-hex minted once, stored dataDir/fleet.json).
+Channel: WS server on 0.0.0.0:9023 (reuse the connector's hand-rolled RFC6455
+codec — require src/main/connector/frame.js). Pairing: `fleetPair(host, code)`
+— target hub shows a 6-digit code (event `fleet-pair-code`) valid 120s;
+initiator sends `{type:"pair", code}`; on match both derive
+secret = sha256(code + idA + idB) and persist the peer {id, name, host,
+secret} in fleet.json. Auth for every later session: HMAC challenge-response,
+then EVERY message carries {seq, mac: hmac-sha256(secret, seq + payload)} —
+replay/injection-proof; payloads plaintext (LAN threat model, documented).
+Messages: `summary` (apps: id, name, installed versions, updates — pushed on
+state-change, throttled 1/s) · `install {appId, artifactId}` /
+`launch {appId, artifactId}` / `update-all` → enqueue on the REMOTE's job
+queue, ack {jobId} · `job-progress` relay (remote job events for jobs this
+peer requested). Module API: init({config, jobs, discovery, emit, log}) →
+{close}; getPeers() → [{id, name, host, online, lastSeen, summary}];
+pair(host, code); unpair(id); remoteInstall/remoteLaunch/remoteUpdateAll(peerId,
+…). IPC ([fleet] owns ipc.js/preload edits this wave): getFleet, fleetPair,
+fleetUnpair, fleetShowCode (arms pairing window + returns the code),
+fleetInstall, fleetLaunch, fleetUpdateAll; events fleet-changed,
+fleet-pair-code, fleet-progress. Setting `fleet` (default true) gates beacon +
+server. CLI: `nx fleet ls|pair <host>|install <peer> <app>|update <peer>`.
+
+### Trigger-driven stacks (stacks.js — [triggers])
+
+Stack model gains optional `trigger: { type: "adb-device" | "connector-app",
+serial?, appId?, stopOnLeave?: bool, cooldownMs?: 60000 }`. Watcher inside
+stacks.js (started by init when any stack has a trigger): adb-device → poll
+engine.getAdbStatus every 10s (serial match, or any device when serial
+absent); connector-app → connector.onChange presence of appId. Arrival →
+run(stack) unless already running or within cooldown; departure + stopOnLeave
+→ stop(stack). Emits stack-progress phase "triggered" (stepIndex null) before
+launching. stacks.init signature becomes init({jobs, connector, config, emit,
+engine}) — engine lazy-injectable like connector.
+
+### Crash-aware rollback ([resilience])
+
+jobs.launch keeps the child attached (no unref) and records
+{appId, artifactId, version, pid, startedAt}; on exit: crash = code≠0 &&
+uptime<30s. state.json gains crashes: { "<app>::<artifact>": {version, count,
+lastAt} } — count increments on crash AT the installed version, resets on
+version change or a run ≥120s. Discovery mergeInstalled surfaces
+artifact.crashLoop = count≥3 (+ crashCount). UI shows an amber banner on the
+card with a one-click Roll back (existing rollback IPC). Launch-time env/args
+unchanged.
+
+### Delta updates ([resilience])
+
+Release side (scripts/release.sh, opt-in flag --delta): for each full asset,
+if the previous release has the same-named asset, emit
+`<assetName>.from-<prevVersion>.zpatch` via `zstd --patch-from` + upload.
+Classifier: `.zpatch` joins the ignore list, but jobs' download path checks:
+when updating an `appimage` artifact from installed version A, look for
+`<assetName>.from-A.zpatch` in the target release; if present AND `zstd` is on
+PATH AND the kept original .AppImage exists in the install dir: download the
+patch, `zstd -d --patch-from=<kept> <patch> -o <full>`, verify against the
+full asset's .sha256 sidecar (mandatory for delta — no sidecar, no delta),
+then continue the normal pipeline with the reconstructed file. ANY failure →
+silent fallback to the full download. Linux-only v1. Progress phase message
+notes "delta" so the UI can show the savings.
+
 ## Future (not v1 — do not build, do not preclude)
 
 ## Verification
