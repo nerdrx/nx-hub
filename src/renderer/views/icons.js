@@ -151,6 +151,21 @@ export const bolt = `
   <path d="M13.4 2 5 13.2h5.2L9.8 22 19 10.4h-5.4z"/>
 </svg>`;
 
+/* ------------------------------------------------------------------ v0.7 */
+
+/** Chain link — this step runs on another hub. Tiny: it sits on a 30px tile. */
+export const link = `
+<svg viewBox="0 0 24 24" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+  <path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.2 1.2"/>
+  <path d="M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.2-1.2"/>
+</svg>`;
+
+/** Power — a wake step, and the Wake button on an offline peer. */
+export const power = `
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+  <path d="M12 3.5v8"/><path d="M7.1 6.6a7.2 7.2 0 1 0 9.8 0"/>
+</svg>`;
+
 /** Warning triangle — the crash-loop banner. */
 export const warn = `
 <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">

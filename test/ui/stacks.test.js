@@ -101,10 +101,14 @@ test('the stack model round-trips through the editor draft', () => {
   assert.deepEqual(draft.steps[0], {
     appId: 'wivrn-nx',
     artifactId: 'tarball-prefix-linux',
+    // v0.7 — every draft step carries where it runs and what it does; a local
+    // launch is the empty/default pair, and never reaches the saved model.
+    peer: '',
+    action: 'launch',
     healthType: 'connector',
     port: '',
     timeoutMs: '30000',
-  optional: false,
+    optional: false,
   });
   assert.equal(draft.steps[1].optional, true);
   assert.equal(draft.steps[2].port, '9000');
@@ -481,14 +485,18 @@ test('the mock ships a prebuilt stack and saves round-trips', async () => {
   const saved = normalizeStacks(await nxhub.getStacks()).find((s) => s.id === 'studio');
   assert.deepEqual(saved, stack, 'what went in is what comes back');
 
-  // saving the same id again edits in place (the roster ships two: VR Night and
-  // the v0.6 triggered "Headset arrives")
+  // saving the same id again edits in place (the roster ships three: VR Night,
+  // the v0.6 triggered "Headset arrives" and the v0.7 cross-hub variant)
   await nxhub.saveStack({ ...stack, name: 'Studio' });
-  assert.equal(normalizeStacks(await nxhub.getStacks()).length, 3);
+  assert.equal(normalizeStacks(await nxhub.getStacks()).length, 4);
 
   assert.equal(await nxhub.deleteStack('studio'), true);
   assert.equal(await nxhub.deleteStack('studio'), false);
-  assert.deepEqual(normalizeStacks(await nxhub.getStacks()).map((s) => s.id), ['vr-night', 'headset-arrives']);
+  assert.deepEqual(normalizeStacks(await nxhub.getStacks()).map((s) => s.id), [
+    'vr-night',
+    'headset-arrives',
+    'vr-night-both-machines',
+  ]);
   assert.equal(await nxhub.saveStack(null), false);
 });
 

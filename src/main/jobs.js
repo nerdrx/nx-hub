@@ -545,6 +545,156 @@ async function tryDelta(job, { app, artifact, liveArtifact, version, filePath })
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* v0.7: LAN asset seeding                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The fleet, lazily and defensively.
+ *
+ * jobs.js must keep working in a build with no fleet at all (and in every unit
+ * test that never starts one), so this is a require-in-a-try that returns null
+ * rather than a hard dependency at the top of the file.
+ */
+function fleetMod() {
+  try {
+    // eslint-disable-next-line global-require
+    return require("./fleet");
+  } catch (_) {
+    return null;
+  }
+}
+
+/** The seeding index — maintained even when the fleet itself is switched off. */
+function assetIndex() {
+  const fleet = fleetMod();
+  try {
+    return fleet ? fleet.assetIndex() : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Remember that `filePath` hashes to `sha256`, so paired hubs can pull it.
+ *
+ * Fire-and-forget in every sense: an unknown hash is computed off the critical
+ * path, and any failure is silence. Nothing about an install may hinge on the
+ * seeding index being writable.
+ */
+function noteAsset(filePath, sha256) {
+  const index = assetIndex();
+  if (!index || !filePath) return;
+  try {
+    if (sha256) {
+      index.record(sha256, filePath);
+      return;
+    }
+    // No hash to hand (a reused download, a delta rebuild) — hash it later so
+    // the install is not waiting on a 200 MB read.
+    setImmediate(() => {
+      index.recordFile(filePath).catch(() => {});
+    });
+  } catch (_) {
+    /* the index is a convenience, never a requirement */
+  }
+}
+
+/**
+ * After an appimage install, the engine keeps the original .AppImage inside
+ * the install dir. That copy is the DURABLE one — downloads/ is cleaned up at
+ * the end of every job — so it is what the index should point at.
+ */
+function noteKeptAsset(result, sha256) {
+  const index = assetIndex();
+  if (!index || !result || !result.path) return;
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(result.path, ".nx-manifest.json"), "utf8"));
+    const keptName = manifest && (manifest.appImageFile || (manifest.extra && manifest.extra.appImageFile));
+    if (!keptName) return;
+    const kept = path.join(result.path, keptName);
+    if (!fs.existsSync(kept)) return;
+    if (sha256) index.record(sha256, kept);
+    else setImmediate(() => index.recordFile(kept).catch(() => {}));
+  } catch (_) {
+    /* no manifest, no kept file, nothing to seed */
+  }
+}
+
+/** The expected sha256 from the artifact's sidecar, or null. */
+async function sidecarHash(job, artifact) {
+  const sidecars = siblingsFromArtifact(artifact);
+  if (!sidecars.length) return null;
+  try {
+    const text = await gh().fetchAssetText(sidecars[0], { signal: job.controller.signal });
+    const m = String(text).match(/\b[a-fA-F0-9]{64}\b/);
+    return m ? m[0].toLowerCase() : null;
+  } catch (_) {
+    return null; // no sidecar, no seeding — GitHub it is
+  }
+}
+
+/**
+ * SPEC v0.7: before going to GitHub, ask the LAN.
+ *
+ * The .sha256 sidecar is what makes this safe AND possible: it names the exact
+ * bytes we want, so a peer either has them or does not, and whatever comes
+ * back is verified against that same hash before it is allowed anywhere near
+ * the install pipeline. A peer that lies, stalls, or hangs up costs one failed
+ * attempt and the ordinary download proceeds untouched.
+ *
+ * @returns {Promise<string|null>} the verified sha256 when the file came from a
+ *          peer, null when the caller should download it from GitHub
+ */
+async function trySeed(job, { app, artifact, filePath, settings }) {
+  if (settings && settings.lanSeeding === false) return null;
+  const fleet = fleetMod();
+  // Three cheap gates before a single byte moves: a running fleet, a connected
+  // peer, and an artifact whose hash we can actually know in advance.
+  if (!fleet || typeof fleet.isRunning !== "function" || !fleet.isRunning()) return null;
+  if (!fleet.hasOnlinePeers()) return null;
+  if (!artifact.checksumUrl && artifact.checksumId == null) return null;
+
+  const expected = await sidecarHash(job, artifact);
+  if (!expected) return null;
+  if (job.cancelRequested) throw new Error("aborted");
+
+  let found = null;
+  try {
+    found = await fleet.findAsset(expected);
+  } catch (_) {
+    found = null;
+  }
+  if (!found) return null;
+
+  const who = found.peerName || found.peerId;
+  const fmt = githubMod.fmtBytes;
+  try {
+    progress(job, "download", 0, `fetching from ${who} (LAN)`);
+    await withDownloadSlot(() =>
+      fleet.fetchAsset(expected, filePath, {
+        peer: found,
+        signal: job.controller.signal,
+        onProgress: (p) =>
+          progress(
+            job,
+            "download",
+            p.pct,
+            `fetching from ${who} (LAN) — ${fmt(p.transferred)}${p.total ? ` / ${fmt(p.total)}` : ""}`
+          ),
+      })
+    );
+    progress(job, "verify", 100, `checksum ok — fetched from ${who} (LAN)`);
+    config.log(`seeding: ${artifact.assetName} came from ${who} over the LAN (${expected.slice(0, 12)}…)`);
+    return expected;
+  } catch (e) {
+    safeUnlink(filePath);
+    if (job.cancelRequested || e.name === "AbortError") throw e; // a cancel is not a fallback
+    config.log(`seeding: ${who} could not serve ${artifact.assetName} — ${e.message}; falling back to GitHub`);
+    return null;
+  }
+}
+
 async function runInstall(job) {
   const { app, artifact: liveArtifact } = resolve(job.appId, job.artifactId);
   if (!app || !liveArtifact) throw new Error("App or artifact disappeared — refresh and try again");
@@ -573,21 +723,40 @@ async function runInstall(job) {
   const reusable =
     cached && cached.path === filePath && String(cached.version) === String(version) && fs.existsSync(filePath);
 
+  // v0.7 seeding: `hash` is the sha256 of what ends up at filePath when we
+  // already know it; `verified` says those bytes were checked against a
+  // sidecar. Only verified bytes are ever offered to the fleet — seeding an
+  // unvouched-for download would turn this hub into a bad mirror.
+  const seed = { hash: null, verified: false };
+
   if (reusable) {
     progress(job, "download", 100, `using the downloaded ${artifact.assetName}`);
+    // Nothing to add: the "download" update policy indexed this file the
+    // moment it verified it (see predownload), and the record on disk carries
+    // no hash for us to re-assert here.
   } else if (await tryDelta(job, { app, artifact, liveArtifact, version, filePath })) {
     // reconstructed from a patch — filePath now holds the verified full asset
+    // (tryDelta only returns true after checking it against the full sidecar)
+    seed.verified = true;
+  } else if ((seed.hash = await trySeed(job, { app, artifact, filePath, settings }))) {
+    // a paired hub on this LAN already had these exact bytes
+    seed.verified = true;
   } else {
     progress(job, "download", 0, `downloading ${artifact.assetName}`);
-    await withDownloadSlot(() =>
+    const downloaded = await withDownloadSlot(() =>
       gh().downloadAsset(assetFromArtifact(artifact), filePath, {
         signal: job.controller.signal,
         siblings: siblingsFromArtifact(artifact),
         onProgress: (p) => progress(job, p.phase || "download", p.pct, p.message),
       })
     );
+    if (downloaded && downloaded.verified) {
+      seed.verified = true;
+      seed.hash = downloaded.sha256 || null;
+    }
   }
   if (job.cancelRequested) throw new Error("aborted");
+  if (seed.verified) noteAsset(filePath, seed.hash); // v0.7: offer it to the fleet
 
   // SPEC: core sets artifact.version before handing off to the engine
   artifact.version = version;
@@ -624,6 +793,9 @@ async function runInstall(job) {
   });
   // v0.6: a fresh install (or reinstall) is a clean slate for crash counting
   stateStore.resetCrashes(app.id, artifact.id);
+  // v0.7: an appimage install keeps the original alongside the extracted tree.
+  // That copy outlives downloads/, so it is the one worth seeding from.
+  if (seed.verified) noteKeptAsset(result, seed.hash);
 
   // 4. cleanup
   progress(job, "cleanup", 100, "cleaning up");
@@ -1010,13 +1182,16 @@ async function predownload(app, artifact, version) {
   if (already && already.path === filePath && String(already.version) === String(version) && fs.existsSync(filePath)) {
     return { path: filePath, cached: true };
   }
-  await withDownloadSlot(() =>
+  const downloaded = await withDownloadSlot(() =>
     gh().downloadAsset(assetFromArtifact(artifact), filePath, {
       siblings: siblingsFromArtifact(artifact),
       onProgress: () => {},
     })
   );
   stateStore.recordDownload(app.id, artifact.id, { version, path: filePath, assetName: artifact.assetName });
+  // v0.7: a pre-downloaded asset sits in downloads/ until the user installs it
+  // — the longest-lived, most seedable thing this hub owns.
+  if (downloaded && downloaded.verified) noteAsset(filePath, downloaded.sha256);
   return { path: filePath, cached: false };
 }
 

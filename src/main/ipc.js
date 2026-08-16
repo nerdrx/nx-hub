@@ -41,7 +41,16 @@ function init(d = {}) {
   // v0.6: `engine` joins it on the same terms — the install engine is another
   // agent's module, so it is resolved lazily and a build without one simply
   // gets null (adb-device triggers then stay quiet instead of crashing).
-  stacks.init({ jobs, connector: getConnectorModule, config, emit, engine: getEngineModule });
+  stacks.init({
+    jobs,
+    connector: getConnectorModule,
+    config,
+    emit,
+    engine: getEngineModule,
+    // v0.7: peered/wake steps — null while the fabric is off, so they fail
+    // with "the fleet is not available" instead of an unknown-peer error.
+    fleet: () => (fleet.isRunning && fleet.isRunning() ? fleet : null),
+  });
   register();
   return module.exports;
 }
@@ -622,6 +631,45 @@ function register() {
 
   handle("nxhub:fleetUpdateAll", (peerId) => fleet.remoteUpdateAll(peerId));
 
+  // v0.7: wake a sleeping peer (SPEC "WOL + peer MAC"). Resolves to whether
+  // the magic packets LEFT this machine — never to "the peer woke up", which
+  // nothing on this side can know. The UI should follow it with the peer's
+  // online state, not treat `true` as success.
+  handle("nxhub:fleetWake", async (peerId) => {
+    const sent = await fleet.wake(peerId);
+    const peer = (getFleet().peers || []).find((p) => p && p.id === peerId) || null;
+    if (!sent && peer && !peer.mac) {
+      return { ok: false, sent: false, reason: "no-mac", peerId, name: peer.name || null };
+    }
+    return { ok: sent, sent, peerId, name: peer ? peer.name : null, mac: peer ? peer.mac : null };
+  });
+
+  /* ---- v0.7 [dev-tools]: dev links (SPEC "nx dev") ---- */
+  //
+  // getDevLinks() → [{appId, name, path, launchCmd, exists, appName, known}]
+  //   `appName`/`known` say whether discovery has an app under that id, so the
+  //   launcher can badge a real app's tile instead of inventing a name.
+  // devRun(id)    → {ok, pid, cmd, args, cwd, source}
+  // devUnlink(id) → {ok, links} (the fresh list, so no second round trip)
+  handle("nxhub:getDevLinks", () => devLinks());
+
+  handle("nxhub:devRun", async (appId) => {
+    const devlinks = require("./devlinks");
+    const link = devlinks.get(appId);
+    if (!link) throw new Error(`No dev link called "${appId}"`);
+    const app = discovery.findApp(link.appId);
+    const result = devlinks.run(link.appId, { names: app ? [app.name, app.repo] : [] });
+    emit({ type: "toast", level: "info", message: `Launching ${link.name || (app && app.name) || link.appId} (dev)…` });
+    return Object.assign({ ok: true }, result);
+  });
+
+  handle("nxhub:devUnlink", (appId) => {
+    const devlinks = require("./devlinks");
+    const ok = devlinks.unlink(appId);
+    if (ok) emit({ type: "state-changed" }); // the app model loses its devLink flag
+    return { ok, links: devLinks() };
+  });
+
   handle("nxhub:openExternal", async (url) => {
     const safe = safeExternal(url);
     if (!safe) throw new Error("Refusing to open a non-web URL");
@@ -634,6 +682,31 @@ function register() {
     if (deps.shell) deps.shell.showItemInFolder(String(p));
     return true;
   });
+}
+
+/**
+ * v0.7 [dev-tools]: the dev-link tiles the launcher renders.
+ * Never throws — a missing/broken dev.json reads as "no links".
+ */
+function devLinks() {
+  try {
+    // eslint-disable-next-line global-require
+    const devlinks = require("./devlinks");
+    return devlinks.list().map((link) => {
+      const app = discovery.findApp(link.appId);
+      return {
+        appId: link.appId,
+        name: link.name || (app && app.name) || link.appId,
+        path: link.path,
+        launchCmd: link.launchCmd || null,
+        exists: devlinks.isDir(link.path),
+        known: Boolean(app),
+        appName: (app && app.name) || null,
+      };
+    });
+  } catch (_) {
+    return [];
+  }
 }
 
 /** Installed + launchable artifacts, for the tray menu. */
@@ -682,4 +755,6 @@ module.exports = {
   // v0.6: fleet
   getFleet,
   getEngineModule,
+  // v0.7: dev links
+  devLinks,
 };

@@ -2540,6 +2540,163 @@ select.input option {
 .fleet-job .job-row { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
 .fleet-job .job-target { margin-left: auto; color: var(--muted); font-size: 11px; }
 
+/* ================================================================== v0.7 */
+
+/* ----------------------------------------------- v0.7: cross-hub steps */
+
+/* The link glyph on a step monogram: this one runs somewhere else. Violet,
+   because it is an identity (WHERE), not a warning — same reasoning as the
+   automation bolt. It sits top-LEFT so it never fights the phase glyph. */
+.st-link {
+  position: absolute;
+  left: -4px;
+  top: -4px;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  background: rgba(9, 5, 20, 0.92);
+  color: var(--violet-soft);
+}
+/* A wake step is a machine: the power glyph replaces the monogram entirely. */
+.st-mono-wake { color: #dcc9ff; }
+.st-peered .st-mono { box-shadow: inset 0 0 0 1px rgba(154, 60, 255, 0.45); }
+/* The peer went away under a saved stack — the run will fail here. Amber:
+   this one genuinely wants attention before the tile is pressed. */
+.st-unpaired .st-mono { box-shadow: inset 0 0 0 1px rgba(255, 179, 0, 0.6); }
+.st-unpaired .st-link { color: var(--amber); }
+
+.chain-power { display: inline-flex; align-items: center; color: var(--violet-soft); }
+.step-peer-tag,
+.step-peer,
+.step-unpaired {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--radius-xs);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.step-peer-tag {
+  padding: 1px 4px;
+  border: 1px solid rgba(154, 60, 255, 0.34);
+  color: var(--violet-soft);
+}
+/* In the editor the peer chip is a full control-height marker next to the
+   step number, so the row reads "step 2, on NX-WIN" at a glance. */
+.step-peer {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border: 1px solid rgba(154, 60, 255, 0.34);
+  background: var(--glass-chip);
+  color: var(--violet-soft);
+  letter-spacing: 0.08em;
+  text-transform: none;
+  font-size: 11px;
+}
+.step-peer.is-unpaired { border-color: rgba(255, 179, 0, 0.44); color: #ffdc9a; }
+.step-unpaired {
+  margin-left: 2px;
+  padding: 0 4px;
+  border: 1px solid rgba(255, 179, 0, 0.44);
+  color: var(--amber);
+  font-size: 9px;
+}
+.step-wake-label {
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--well-deep);
+  color: #dcc9ff;
+  font-size: 13px;
+}
+/* A gate with exactly one legal value is a statement, not a control. */
+.step-fixed {
+  margin: 0;
+  padding: 8px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--well-deep);
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.step-note { margin-top: 9px; }
+.stack-step.step-peered { border-color: rgba(154, 60, 255, 0.26); }
+.stack-step.step-wake {
+  background: linear-gradient(180deg, rgba(119, 0, 255, 0.1), rgba(7, 4, 16, 0.4));
+}
+
+/* ------------------------------------------------------- v0.7: dev tiles */
+
+/* Amber outline, no fill: a standing caveat about what "installed" means for
+   this app, which is exactly what amber is reserved for. */
+.dev-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  border: 1px solid rgba(255, 179, 0, 0.5);
+  color: var(--amber);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  line-height: 1.55;
+}
+.tile-dev .dev-chip { margin-top: 3px; }
+.tile-dev .tile-hit {
+  background: linear-gradient(158deg, rgba(255, 179, 0, 0.07) 0%, rgba(255, 255, 255, 0.02) 34%, rgba(23, 16, 40, 0.36) 100%);
+}
+.tile-dev .tile-hit::before {
+  background: linear-gradient(147deg, rgba(255, 214, 130, 0.44) 0%, rgba(255, 179, 0, 0.16) 30%,
+      rgba(255, 255, 255, 0.015) 58%, rgba(0, 0, 0, 0.32) 100%);
+}
+/* On a card the mark rides the title line, so it aligns to the text baseline
+   rather than the tile's stacked layout. */
+.dev-mark { margin-left: 2px; vertical-align: 1px; }
+
+/* The folder is gone. The tile stays so the user can find out and clean up,
+   but it reads as inert: no amber invitation, no lit edge, just muted glass. */
+.tile-dev-broken .tile-hit {
+  background: var(--glass-1);
+}
+.tile-dev-broken .tile-hit::before { background: var(--edge); }
+.tile-dev-broken .tile-mono { filter: saturate(0.25); }
+.tile-dev-broken .tile-name { color: var(--muted); }
+.tile-dev-broken .dev-chip { border-color: rgba(255, 255, 255, 0.2); color: var(--muted); }
+
+/* ------------------------------------------------------- v0.7: LAN chip */
+
+/* Violet: these bytes came off this fleet's own network. Cyan already means
+   "a live property of the transfer" (the Δ chip), and this is about WHERE. */
+.lan-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: var(--radius-xs);
+  border: 1px solid rgba(154, 60, 255, 0.44);
+  background: rgba(119, 0, 255, 0.16);
+  color: #c3a0ff;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  line-height: 1.7;
+}
+
+/* ---------------------------------------------------------- v0.7: wake */
+
+.peer-wake { gap: 5px; }
+.peer-wake svg { width: 13px; height: 13px; }
+
 /* ------------------------------------------------------- reduced motion */
 
 @media (prefers-reduced-motion: reduce) {

@@ -8,13 +8,23 @@
 //   config     — the hub's config module (dataDir + atomic writes)
 //   emit       — the event fan-out; every phase change goes through it
 //   engine     — v0.6: the install engine, for engine.getAdbStatus() (triggers)
+//   fleet      — v0.7: the cross-hub fabric, for peered steps (remoteLaunch,
+//                probePeerPort, remoteStop, wake, getPeers)
 //
 // The connector is deliberately OPTIONAL: the hub has to work with no bus at
 // all (the module may not even exist), so a `connector` health gate simply
-// fails fast instead of hanging for its whole timeout. `engine` is optional in
-// exactly the same way (object OR lazy factory): without it, adb-device
-// triggers say "adb unavailable" once and stay dormant — everything else,
-// including running the same stack by hand, keeps working.
+// fails fast instead of hanging for its whole timeout. `engine` and `fleet` are
+// optional in exactly the same way (object OR lazy factory): without the engine,
+// adb-device triggers say "adb unavailable" once and stay dormant; without the
+// fleet, a peered step fails fast with "the fleet is not available" instead of
+// hanging — everything else, including running local stacks by hand, keeps
+// working.
+//
+// SPEC v0.7 "Cross-hub stacks": a step may name a `peer`, and then EVERYTHING
+// about it happens over there — jobs.launch becomes fleet.remoteLaunch, a port
+// gate is probed on the remote loopback, and the stop is the remote's own
+// polite dance. `action: "wake"` is the one step that starts nothing: it sends
+// the peer a magic packet and waits for it to come online.
 
 const net = require("net");
 const path = require("path");
@@ -26,7 +36,17 @@ const SHUTDOWN_WAIT_MS = 5000;
 /** SPEC v0.6: adb-device triggers poll engine.getAdbStatus every 10s. */
 const ADB_POLL_MS = 10000;
 
-const HEALTH_TYPES = ["connector", "port", "delay"];
+const HEALTH_TYPES = ["connector", "port", "delay", "peer-online"];
+/** SPEC v0.7: gates that can only mean something on a step that names a peer. */
+const PEER_ONLY_HEALTH_TYPES = ["peer-online"];
+/** SPEC v0.7: a step either starts something, or wakes the machine that will. */
+const STEP_ACTIONS = ["launch", "wake"];
+/** SPEC v0.7: a wake gates peer-online for two minutes — a cold boot is slow. */
+const WAKE_TIMEOUT_MS = 120000;
+/** How long ONE remote port probe may take before it counts as "not yet". */
+const PROBE_TIMEOUT_MS = 1000;
+/** The one sentence every peered step says when there is no fabric to talk to. */
+const FLEET_MISSING = "the fleet is not available";
 /** SPEC v0.6: a stack may arm itself on a device/app arriving. */
 const TRIGGER_TYPES = ["adb-device", "connector-app"];
 const TRIGGER_COOLDOWN_MS = 60000;
@@ -45,6 +65,8 @@ let deps = {
   discovery: null,
   // optional: the install engine — only the trigger watcher needs it
   engine: null,
+  // optional (v0.7): the fleet — only peered/wake steps need it
+  fleet: null,
   timing: null,
 };
 
@@ -68,6 +90,7 @@ function init(d = {}) {
 function _reset() {
   stopWatcher();
   cooldowns.clear();
+  warned.clear();
   watchEnabled = false;
   current = null;
   last = null;
@@ -84,6 +107,20 @@ function log(msg) {
   } catch (_) {
     /* logging must never break a run */
   }
+}
+
+/**
+ * Sentences that are TRUE for as long as the hub runs — "this gate cannot work",
+ * "that probe keeps failing". Said once: sanitizing happens on every read of the
+ * store, and a gate polls four times a second, so plain log() would drown the
+ * file in the same line. Cleared by _reset()/init(), exactly like the watcher.
+ */
+const warned = new Set();
+function warnOnce(msg) {
+  if (warned.has(msg)) return;
+  if (warned.size > 200) warned.clear(); // never a leak, just a rate limit
+  warned.add(msg);
+  log(msg);
 }
 
 /**
@@ -141,6 +178,75 @@ function engineMod() {
   return e;
 }
 
+/**
+ * The fleet module, or null. Object OR lazy factory, like the connector: the
+ * fabric may be switched off in settings, and index.js only has it once the
+ * fleet server booted.
+ */
+function fleetMod() {
+  const f = deps.fleet;
+  if (!f) return null;
+  if (typeof f === "function") {
+    try {
+      return f() || null;
+    } catch (_) {
+      return null;
+    }
+  }
+  return f;
+}
+
+/** The fleet, or the one error every peered step raises without it. */
+function requireFleet() {
+  const f = fleetMod();
+  if (!f) throw new Error(FLEET_MISSING);
+  return f;
+}
+
+/** The stored peer record for an id, or null. Never throws at the caller. */
+function peerRecord(peerId) {
+  const f = fleetMod();
+  if (!f || typeof f.getPeers !== "function" || !peerId) return null;
+  let peers = [];
+  try {
+    peers = f.getPeers() || [];
+  } catch (e) {
+    warnOnce(`fleet.getPeers failed: ${e.message}`);
+    return null;
+  }
+  if (!Array.isArray(peers)) return null;
+  return peers.find((p) => p && String(p.id) === String(peerId)) || null;
+}
+
+/**
+ * SPEC v0.7: a step's peer is resolved at RUN time, never at save time — pairing
+ * (and un-pairing) happens under a stored stack, exactly like installs do.
+ */
+function requirePeer(peerId) {
+  const peer = peerRecord(peerId);
+  if (!peer) throw new Error(`Unknown fleet peer "${peerId}"`);
+  return peer;
+}
+
+/** What a human calls that peer: its name while we know it, else the raw id. */
+function peerLabel(peerId) {
+  const peer = peerRecord(peerId);
+  return (peer && String(peer.name || "").trim()) || String(peerId || "the peer");
+}
+
+/** Is that peer's session/beacon alive right now? */
+function isPeerOnline(peerId) {
+  const peer = peerRecord(peerId);
+  return Boolean(peer && peer.online);
+}
+
+/** The sentence inside a nack, whatever the remote called the field. */
+function ackError(ack) {
+  if (!ack || typeof ack !== "object") return null;
+  const msg = ack.error || ack.message || ack.reason;
+  return msg ? String(msg) : null;
+}
+
 function timing() {
   const t = deps.timing || {};
   return {
@@ -148,6 +254,8 @@ function timing() {
     shutdownWaitMs: Number(t.shutdownWaitMs) >= 0 ? Number(t.shutdownWaitMs) : SHUTDOWN_WAIT_MS,
     // v0.6: how often the adb-device watcher asks the engine who is plugged in
     adbPollMs: Number(t.adbPollMs) > 0 ? Number(t.adbPollMs) : ADB_POLL_MS,
+    // v0.7: how long ONE remote port probe may take before it counts as "not yet"
+    probeTimeoutMs: Number(t.probeTimeoutMs) > 0 ? Number(t.probeTimeoutMs) : PROBE_TIMEOUT_MS,
   };
 }
 
@@ -181,10 +289,24 @@ function sanitizePort(value) {
  * A step's health rule. Junk in → a usable rule out, or null when the rule
  * cannot mean anything (a `port` gate with no port is not a gate).
  * No rule at all → "launch it and move on" (delay 0), never a silent 30s wait.
+ *
+ * `peered` (v0.7) is what the SAME rule means on a step that runs somewhere
+ * else: `connector` becomes impossible (SPEC — the remote's bus is not visible
+ * from here) and `peer-online` becomes possible. Both mistakes drop to delay,
+ * the file's standing answer to "that gate cannot mean anything": the step still
+ * runs, it just is not waited on.
  */
-function sanitizeHealth(raw) {
+function sanitizeHealth(raw, peered = false) {
   const h = raw && typeof raw === "object" ? raw : {};
-  const type = HEALTH_TYPES.includes(String(h.type)) ? String(h.type) : null;
+  let type = HEALTH_TYPES.includes(String(h.type)) ? String(h.type) : null;
+  if (type === "connector" && peered) {
+    warnOnce("a connector gate cannot see a peer's bus — dropped to delay");
+    type = null;
+  }
+  if (PEER_ONLY_HEALTH_TYPES.includes(type) && !peered) {
+    warnOnce(`a ${type} gate needs a step with a peer — dropped to delay`);
+    type = null;
+  }
   if (!type) return { type: "delay", timeoutMs: 0 };
   const out = { type, timeoutMs: clampTimeout(h.timeoutMs, type === "delay" ? 0 : DEFAULT_TIMEOUT_MS) };
   if (type === "port") {
@@ -195,14 +317,57 @@ function sanitizeHealth(raw) {
   return out;
 }
 
+/**
+ * SPEC v0.7: a fleet peer id, trimmed and VERBATIM — peer ids are opaque
+ * identity strings, so slugifying one would quietly point the step at nothing.
+ * Objects and arrays are not ids ("[object Object]" is not a peer).
+ */
+function sanitizePeer(value) {
+  if (value == null || typeof value === "object" || typeof value === "boolean") return null;
+  const id = String(value).trim().slice(0, 128);
+  return id || null;
+}
+
+/**
+ * SPEC v0.7 steps:
+ *   local  — {appId, artifactId?, health, optional}          (unchanged)
+ *   peered — the same, plus `peer`: launched, gated and stopped over the fabric
+ *   wake   — {peer, action:"wake", health:{type:"peer-online"}, optional}
+ *
+ * A wake step starts no app, so it carries no appId and no artifact: its gate is
+ * always peer-online (whatever the caller asked for), defaulting to the two
+ * minutes a cold boot wants — an explicit timeoutMs is still honoured, because
+ * "how long do I give this machine" is exactly the knob a user needs. A wake
+ * with no peer names nothing to wake, so the step is dropped like any junk step.
+ */
 function sanitizeStep(raw) {
   const s = raw && typeof raw === "object" ? raw : {};
+  const peer = sanitizePeer(s.peer);
+  const action = String(s.action == null ? "" : s.action).trim().toLowerCase() === "wake" ? "wake" : "launch";
+
+  if (action === "wake") {
+    if (!peer) return null;
+    const h = s.health && typeof s.health === "object" ? s.health : {};
+    return {
+      appId: null,
+      artifactId: null,
+      health: { type: "peer-online", timeoutMs: clampTimeout(h.timeoutMs, WAKE_TIMEOUT_MS) },
+      optional: Boolean(s.optional),
+      peer,
+      action: "wake",
+    };
+  }
+
   const appId = slugify(s.appId);
   if (!appId) return null;
-  const health = sanitizeHealth(s.health);
+  const health = sanitizeHealth(s.health, Boolean(peer));
   if (!health) return null;
   const step = { appId, artifactId: null, health, optional: Boolean(s.optional) };
   if (s.artifactId != null && String(s.artifactId).trim()) step.artifactId = String(s.artifactId).trim();
+  // The key only exists on a step that really is peered — every reader written
+  // against v0.6 keeps seeing exactly the object it expects, and `action` only
+  // ever appears on a wake step (absent = "launch", the default).
+  if (peer) step.peer = peer;
   return step;
 }
 
@@ -416,6 +581,32 @@ function tryPort(port) {
   });
 }
 
+/** What to tell the user when a gate ran out of time. Names WHERE it looked. */
+function gateTimeoutReason(step) {
+  const health = step.health;
+  const peer = step.peer || null;
+  if (health.type === "connector") return `${step.appId} did not announce itself on the bus`;
+  if (health.type === "peer-online") return `${peerLabel(peer)} did not come online`;
+  const where = peer ? peerLabel(peer) : "127.0.0.1";
+  return `nothing is listening on ${where}:${health.port}`;
+}
+
+/**
+ * SPEC v0.7: a port gate on a peered step is probed OVER THERE — the fleet asks
+ * the remote to TCP-connect its own 127.0.0.1:port. A probe that cannot even be
+ * sent is "not open yet", never a thrown run: the deadline is what decides.
+ */
+async function probeRemotePort(peerId, port) {
+  const f = fleetMod();
+  if (!f || typeof f.probePeerPort !== "function") return false;
+  try {
+    return Boolean(await f.probePeerPort(peerId, port, { timeoutMs: timing().probeTimeoutMs }));
+  } catch (e) {
+    warnOnce(`probe ${peerLabel(peerId)}:${port} failed: ${e.message}`);
+    return false;
+  }
+}
+
 /**
  * Wait for a step to be healthy.
  * @returns {Promise<{ok:boolean, reason?:string}>}
@@ -423,6 +614,7 @@ function tryPort(port) {
 async function waitForHealth(step, signal) {
   const { pollMs } = timing();
   const health = step.health;
+  const peer = step.peer || null;
   const deadline = Date.now() + clampTimeout(health.timeoutMs, DEFAULT_TIMEOUT_MS);
 
   if (health.type === "delay") {
@@ -436,23 +628,23 @@ async function waitForHealth(step, signal) {
     return { ok: false, reason: "the connector bus is not running" };
   }
 
+  // Same courtesy for the fabric: with no fleet at all, a remote gate can only
+  // ever time out, so it says the true thing immediately.
+  if (peer && !fleetMod()) return { ok: false, reason: FLEET_MISSING };
+
   for (;;) {
     if (signal.aborted) return { ok: false, reason: "stopped" };
     if (health.type === "connector") {
       if (isPresent(step.appId)) return { ok: true };
     } else if (health.type === "port") {
       // eslint-disable-next-line no-await-in-loop
-      if (await tryPort(health.port)) return { ok: true };
+      if (peer ? await probeRemotePort(peer, health.port) : await tryPort(health.port)) return { ok: true };
+    } else if (health.type === "peer-online") {
+      if (isPeerOnline(peer)) return { ok: true };
     }
     if (signal.aborted) return { ok: false, reason: "stopped" };
     if (Date.now() >= deadline) {
-      return {
-        ok: false,
-        reason:
-          health.type === "connector"
-            ? `${step.appId} did not announce itself on the bus`
-            : `nothing is listening on 127.0.0.1:${health.port}`,
-      };
+      return { ok: false, reason: gateTimeoutReason(step) };
     }
     // eslint-disable-next-line no-await-in-loop
     await sleep(Math.min(pollMs, Math.max(0, deadline - Date.now())), signal);
@@ -501,7 +693,50 @@ function resolveArtifact(appId) {
   return { error: `${name} has ${launchable.length} launchable downloads — name one in the step` };
 }
 
+/**
+ * Everything a peered step adds to its progress events. Shape is unchanged —
+ * these are extras — so a v0.6 renderer keeps working and a v0.7 one can say
+ * "on Workshop PC" (and "waking" instead of "launching").
+ */
+function stepExtras(step) {
+  if (!step || !step.peer) return {};
+  return step.action === "wake" ? { peer: step.peer, action: "wake" } : { peer: step.peer };
+}
+
+/**
+ * SPEC v0.7: a peered step is launched over the fabric. The artifact is NOT
+ * resolved here — the remote hub validates against its own model (a stack must
+ * not assume the same downloads are installed on both machines), so an absent
+ * artifactId travels as absent and the peer picks.
+ */
+async function remoteLaunchStep(step) {
+  const f = requireFleet();
+  const peer = requirePeer(step.peer);
+  if (typeof f.remoteLaunch !== "function") throw new Error(FLEET_MISSING);
+  const label = peer.name || step.peer;
+  const ack = await f.remoteLaunch(step.peer, step.appId, step.artifactId || undefined);
+  if (!ack || !ack.ok) throw new Error(ackError(ack) || `${label} would not launch ${step.appId}`);
+  return { pid: null, result: ack };
+}
+
+/**
+ * SPEC v0.7: wake = magic packets at the peer's stored mac, then the implicit
+ * peer-online gate. `wake()` returning false means the packet could not even be
+ * sent (no mac on file, no socket) — that is a failed step, not a slow boot.
+ */
+async function wakeStep(step) {
+  const f = requireFleet();
+  const peer = requirePeer(step.peer);
+  if (typeof f.wake !== "function") throw new Error(FLEET_MISSING);
+  const label = peer.name || step.peer;
+  const ok = await f.wake(step.peer);
+  if (!ok) throw new Error(`could not send a wake packet to ${label}`);
+  return { pid: null, result: { ok: true } };
+}
+
 async function launchStep(step) {
+  if (step.action === "wake") return wakeStep(step);
+  if (step.peer) return remoteLaunchStep(step);
   const jobs = deps.jobs;
   if (!jobs || typeof jobs.launch !== "function") throw new Error("No launcher wired up");
   let artifactId = step.artifactId || null;
@@ -540,39 +775,45 @@ async function run(id) {
       const step = stack.steps[i];
       if (signal.aborted) break;
 
-      progress(stack.id, i, step.appId, "launching", { artifactId: step.artifactId || null });
+      const extras = stepExtras(step);
+      progress(stack.id, i, step.appId, "launching", Object.assign({ artifactId: step.artifactId || null }, extras));
       let launched = null;
       try {
         // eslint-disable-next-line no-await-in-loop
         launched = await launchStep(step);
-        record.started.push({
-          stepIndex: i,
-          appId: step.appId,
-          artifactId: step.artifactId || null,
-          pid: launched.pid,
-          reached: "launching",
-        });
+        record.started.push(
+          Object.assign(
+            {
+              stepIndex: i,
+              appId: step.appId,
+              artifactId: step.artifactId || null,
+              pid: launched.pid,
+              reached: "launching",
+            },
+            extras
+          )
+        );
       } catch (e) {
-        progress(stack.id, i, step.appId, "failed", { message: e.message, optional: step.optional });
+        progress(stack.id, i, step.appId, "failed", Object.assign({ message: e.message, optional: step.optional }, extras));
         if (step.optional) continue;
-        failure = { stepIndex: i, appId: step.appId, message: e.message };
+        failure = { stepIndex: i, appId: step.appId, message: e.message, peer: step.peer || null };
         break;
       }
 
       if (signal.aborted) break;
-      progress(stack.id, i, step.appId, "waiting", { health: step.health.type });
+      progress(stack.id, i, step.appId, "waiting", Object.assign({ health: step.health.type }, extras));
       // eslint-disable-next-line no-await-in-loop
       const gate = await waitForHealth(step, signal);
       const entry = record.started[record.started.length - 1];
       if (gate.ok) {
         if (entry) entry.reached = "healthy";
-        progress(stack.id, i, step.appId, "healthy");
+        progress(stack.id, i, step.appId, "healthy", extras);
         continue;
       }
       if (signal.aborted) break;
-      progress(stack.id, i, step.appId, "failed", { message: gate.reason, optional: step.optional });
+      progress(stack.id, i, step.appId, "failed", Object.assign({ message: gate.reason, optional: step.optional }, extras));
       if (step.optional) continue; // it is still running — just not waited on
-      failure = { stepIndex: i, appId: step.appId, message: gate.reason };
+      failure = { stepIndex: i, appId: step.appId, message: gate.reason, peer: step.peer || null };
       break;
     }
   } finally {
@@ -588,7 +829,13 @@ async function run(id) {
   if (failure) {
     // The run's own terminal event: stepIndex stays null (that is what marks it
     // as the RUN's verdict), the step that sank it travels as `failedStep`.
-    progress(stack.id, null, failure.appId, "failed", { message: failure.message, failedStep: failure.stepIndex });
+    progress(
+      stack.id,
+      null,
+      failure.appId,
+      "failed",
+      Object.assign({ message: failure.message, failedStep: failure.stepIndex }, failure.peer ? { peer: failure.peer } : {})
+    );
     log(`run ${stack.id} failed at step ${failure.stepIndex}: ${failure.message}`);
     return { ok: false, stackId: stack.id, failed: failure, started: record.started };
   }
@@ -625,9 +872,36 @@ async function waitForDeparture(appId, ms, signal) {
 }
 
 /**
+ * SPEC v0.7: stopping a peered step is one message — the remote hub does its own
+ * polite bus/SIGTERM dance over there. BEST EFFORT by definition: a peer that is
+ * asleep, unpaired or simply rude must not strand the rest of the reverse walk,
+ * so every failure is a log line and a `how`, never a throw.
+ */
+async function remoteStopEntry(entry) {
+  const f = fleetMod();
+  if (!f || typeof f.remoteStop !== "function") {
+    log(`stop ${entry.appId} on ${peerLabel(entry.peer)}: ${FLEET_MISSING}`);
+    return "remote-failed";
+  }
+  try {
+    const ack = await f.remoteStop(entry.peer, entry.appId);
+    if (!ack || !ack.ok) {
+      log(`stop ${entry.appId} on ${peerLabel(entry.peer)}: ${ackError(ack) || "refused"}`);
+      return "remote-failed";
+    }
+    return "remote-stop";
+  } catch (e) {
+    log(`stop ${entry.appId} on ${peerLabel(entry.peer)}: ${e.message}`);
+    return "remote-failed";
+  }
+}
+
+/**
  * Stop a stack: reverse order over the steps that actually started in the
  * current (or last) run — shutdown-request over the bus first, SIGTERM the
- * recorded launch pid as the fallback. Never SIGKILL.
+ * recorded launch pid as the fallback. Never SIGKILL. Peered steps go the one
+ * way that can reach them, fleet.remoteStop; a wake step started nothing, so
+ * there is nothing to stop (a machine is not un-woken).
  */
 async function stop(id) {
   const wanted = slugify(id);
@@ -642,19 +916,25 @@ async function stop(id) {
   // Entries are MARKED rather than dropped: a step that finished launching in
   // the same tick stop() ran stays reachable by a second stop() instead of
   // becoming an orphan.
-  const pending = [...record.started].filter((e) => !e.stopped).reverse();
+  const pending = [...record.started].filter((e) => !e.stopped && e.action !== "wake").reverse();
   for (const entry of pending) {
     entry.stopped = true;
-    progress(record.stackId, entry.stepIndex, entry.appId, "stopping");
+    const extras = entry.peer ? { peer: entry.peer } : {};
+    progress(record.stackId, entry.stepIndex, entry.appId, "stopping", extras);
     let how = null;
-    if (isPresent(entry.appId) && requestShutdown(entry.appId)) {
+    if (entry.peer) {
       // eslint-disable-next-line no-await-in-loop
-      const gone = await waitForDeparture(entry.appId, shutdownWaitMs, null);
-      how = gone ? "shutdown-request" : null;
+      how = await remoteStopEntry(entry);
+    } else {
+      if (isPresent(entry.appId) && requestShutdown(entry.appId)) {
+        // eslint-disable-next-line no-await-in-loop
+        const gone = await waitForDeparture(entry.appId, shutdownWaitMs, null);
+        how = gone ? "shutdown-request" : null;
+      }
+      if (!how) how = sigterm(entry.pid) ? "sigterm" : "gone";
     }
-    if (!how) how = sigterm(entry.pid) ? "sigterm" : "gone";
-    stopped.push({ stepIndex: entry.stepIndex, appId: entry.appId, pid: entry.pid, how });
-    progress(record.stackId, entry.stepIndex, entry.appId, "stopped", { how });
+    stopped.push(Object.assign({ stepIndex: entry.stepIndex, appId: entry.appId, pid: entry.pid, how }, extras));
+    progress(record.stackId, entry.stepIndex, entry.appId, "stopped", Object.assign({ how }, extras));
   }
 
   if (current === record) {
@@ -884,10 +1164,14 @@ module.exports = {
   sanitizeStep,
   sanitizeHealth,
   sanitizeTrigger,
+  sanitizePeer,
   slugify,
   storePath,
   PHASES,
   HEALTH_TYPES,
+  PEER_ONLY_HEALTH_TYPES,
+  STEP_ACTIONS,
+  WAKE_TIMEOUT_MS,
   TRIGGER_TYPES,
   DEFAULT_TIMEOUT_MS,
   TRIGGER_COOLDOWN_MS,

@@ -459,7 +459,8 @@ test('the header chip escapes a hostile fleet too', () => {
 test('the mock ships a full fleet surface', async () => {
   const { nxhub, dev } = createMock();
   const fleet = normalizeFleet(await nxhub.getFleet());
-  assert.equal(fleet.peers.length, 2);
+  // v0.7 added NX-WIN, the asleep-but-addressable peer the wake flows need.
+  assert.equal(fleet.peers.length, 3);
   const [online, offline] = fleet.peers;
   assert.equal(online.online, true);
   assert.equal(offline.online, false);
@@ -473,9 +474,9 @@ test('the mock ships a full fleet surface', async () => {
 
   const ok = await nxhub.fleetPair('10.0.0.9', dev.pairCode());
   assert.equal(ok.ok, true);
-  assert.equal(normalizeFleet(await nxhub.getFleet()).peers.length, 3);
+  assert.equal(normalizeFleet(await nxhub.getFleet()).peers.length, 4);
   assert.equal(await nxhub.fleetUnpair(ok.peer.id), true);
-  assert.equal(normalizeFleet(await nxhub.getFleet()).peers.length, 2);
+  assert.equal(normalizeFleet(await nxhub.getFleet()).peers.length, 3);
 
   const code = await nxhub.fleetShowCode();
   assert.equal(code.code, dev.pairCode());

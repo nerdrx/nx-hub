@@ -423,3 +423,123 @@ test("the CLI mints a hub id when this machine has never run one", () => {
   // Persisted, so the hub and the CLI can never disagree about who we are.
   assert.strictEqual(createFleetCli({ dataDir: fleet.store.dir }).identity().id, me.id);
 });
+
+/* ------------------------------------------------------------------ */
+/* v0.7: `nx fleet wake`                                               */
+/* ------------------------------------------------------------------ */
+
+test("fleet.wake sends the magic packets straight out of fleet.json", async () => {
+  const dgram = require("node:dgram");
+  const wol = require("../../src/main/fleet/wol");
+  const sink = dgram.createSocket({ type: "udp4", reuseAddr: true });
+  const packets = [];
+  sink.on("message", (m) => packets.push(Buffer.from(m)));
+  const port = await new Promise((r) => sink.bind(0, "127.0.0.1", () => r(sink.address().port)));
+
+  try {
+    const fleet = createFleetCli({ dataDir: h.tempDataDir("nxhub-fleetcli-") });
+    // Exactly what a paired-then-connected peer looks like on disk.
+    fleet.store.upsertPeer({
+      id: "abcdef0123456789",
+      name: "workshop",
+      host: "192.168.1.20",
+      port: 9023,
+      secret: "a".repeat(64),
+      mac: "AA:BB:CC:DD:EE:FF",
+    });
+    const peer = fleet.peers()[0];
+    assert.strictEqual(peer.mac, "aa:bb:cc:dd:ee:ff", "stored lowercase, whatever the ARP cache spelled");
+
+    const result = await fleet.wake(peer, { address: "127.0.0.1", ports: [port] });
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.mac, "aa:bb:cc:dd:ee:ff");
+
+    await new Promise((r) => setTimeout(r, 120));
+    assert.strictEqual(packets.length, 3);
+    assert.deepStrictEqual(packets[0], wol.magicPacket("aa:bb:cc:dd:ee:ff"));
+  } finally {
+    sink.close();
+  }
+});
+
+test("fleet.wake needs a MAC, and says which of the two things went wrong", async () => {
+  const fleet = createFleetCli({ dataDir: h.tempDataDir("nxhub-fleetcli-") });
+  fleet.store.upsertPeer({
+    id: "abcdef0123456789",
+    name: "workshop",
+    host: "192.168.1.20",
+    port: 9023,
+    secret: "a".repeat(64),
+  });
+  assert.deepStrictEqual(await fleet.wake(fleet.peers()[0]), {
+    ok: false,
+    sent: false,
+    mac: null,
+    reason: "no-mac",
+  });
+  assert.strictEqual((await fleet.wake(null)).reason, "unknown-peer");
+});
+
+/** A CLI fleet-client double: peers on disk, wake without any datagrams. */
+function wakeStub({ mac = "aa:bb:cc:dd:ee:ff", ok = true } = {}) {
+  const calls = [];
+  return {
+    calls,
+    identity: () => ({ id: "0".repeat(16), name: "here" }),
+    peers: () => [{ id: "abcdef0123456789", name: "workshop", host: "192.168.1.20", port: 9023, mac }],
+    wake(peer) {
+      calls.push(peer.id);
+      if (!mac) return Promise.resolve({ ok: false, sent: false, mac: null, reason: "no-mac" });
+      return Promise.resolve({ ok, sent: ok, mac, reason: ok ? null : "send-failed" });
+    },
+  };
+}
+
+test("`nx fleet wake <peer>` matches the peer by name and reports the MAC", async () => {
+  const fleet = wakeStub();
+  const result = await runCli(["fleet", "wake", "work"], { fleet });
+  assert.strictEqual(result.code, 0, result.err);
+  assert.deepStrictEqual(fleet.calls, ["abcdef0123456789"], "the prefix matcher found it");
+  assert.match(result.out, /Woke workshop/);
+  assert.match(result.out, /aa:bb:cc:dd:ee:ff/);
+  assert.match(result.out, /nx fleet ls/, "and it says how to check whether it worked");
+});
+
+test("`nx fleet wake --json` is the only thing on stdout", async () => {
+  const fleet = wakeStub();
+  const result = await runCli(["fleet", "wake", "workshop", "--json"], { fleet });
+  assert.strictEqual(result.code, 0, result.err);
+  const parsed = JSON.parse(result.out);
+  assert.strictEqual(parsed.ok, true);
+  assert.strictEqual(parsed.id, "abcdef0123456789");
+  assert.strictEqual(parsed.name, "workshop");
+  assert.strictEqual(parsed.mac, "aa:bb:cc:dd:ee:ff");
+});
+
+test("`nx fleet wake` on a peer with no MAC exits 2 and explains itself", async () => {
+  const fleet = wakeStub({ mac: null });
+  const result = await runCli(["fleet", "wake", "workshop"], { fleet });
+  assert.strictEqual(result.code, 2, "an operation failure, not a usage error");
+  assert.match(result.out, /No hardware address/);
+  assert.match(result.out, /while it is awake/, "and how to fix it");
+});
+
+test("`nx fleet wake` reports a send that did not go out", async () => {
+  const fleet = wakeStub({ ok: false });
+  const result = await runCli(["fleet", "wake", "workshop"], { fleet });
+  assert.strictEqual(result.code, 2);
+  assert.match(result.out, /Could not send the wake packets/);
+});
+
+test("`nx fleet wake` still needs to know WHICH peer", async () => {
+  const fleet = wakeStub();
+  const result = await runCli(["fleet", "wake", "nowhere"], { fleet });
+  assert.strictEqual(result.code, 1);
+  assert.match(result.err, /No paired hub called "nowhere"/);
+  assert.deepStrictEqual(fleet.calls, [], "nothing is woken on a guess");
+});
+
+test("`nx help` lists wake among the fleet subcommands", () => {
+  const text = render.renderHelp({ style: plain, version: "0.7.0" });
+  assert.match(text, /wake <peer>/);
+});

@@ -245,11 +245,26 @@ function dial({ host, port, resource = protocol.RESOURCE, timeoutMs = 8000, maxM
 }
 
 /**
- * An http.Server that only exists to parse GET/Upgrade. Anything else gets the
- * RFC 7231 brush-off, which is handy when a human curls the port.
+ * An http.Server for the fleet port.
+ *
+ * Upgrades are the point of it. Plain GETs used to be nothing but a 426, and
+ * v0.7 gave them one job: `GET /asset/<sha256>` (SPEC "LAN asset seeding").
+ * `onRequest` gets first refusal on every non-upgrade request and returns true
+ * when it answered; everything it declines still gets the RFC 7231 brush-off,
+ * which is what a human curling the port deserves.
  */
-function createHttpServer(onUpgrade) {
+function createHttpServer(onUpgrade, onRequest) {
   const server = http.createServer((req, res) => {
+    if (typeof onRequest === "function") {
+      let handled = false;
+      try {
+        handled = onRequest(req, res) === true;
+      } catch (_) {
+        handled = false; // a broken route must not take the listener down
+      }
+      if (handled) return;
+      if (res.headersSent || res.writableEnded) return;
+    }
     res.writeHead(426, { "Content-Type": "text/plain", Connection: "close" });
     res.end("nx-fleet: websocket upgrade required\n");
   });

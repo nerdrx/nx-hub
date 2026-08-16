@@ -80,6 +80,8 @@ function defaults() {
     // Run an artifact's overlay postInstallCmd automatically after a
     // successful install/update (privileged cmds skip on background installs)
     autoRunPostInstallCmd: false,
+    // v0.7: prefer fetching verified assets from LAN peers before GitHub
+    lanSeeding: true,
     // v0.6: hub-to-hub on the LAN — gates the UDP beacon AND the :9023 server
     // (src/main/fleet). Off means this hub is neither discoverable nor
     // reachable; already-paired peers simply go offline.
@@ -234,6 +236,7 @@ function sanitize(raw) {
   s.createDesktopEntries = bool(s.createDesktopEntries, true);
   s.cliShim = bool(s.cliShim, true);
   s.autoRunPostInstallCmd = bool(s.autoRunPostInstallCmd, false);
+  s.lanSeeding = bool(s.lanSeeding, true);
   s.fleet = bool(s.fleet, true); // v0.6
   const maxDl = Math.floor(Number(s.maxConcurrentDownloads));
   s.maxConcurrentDownloads = Number.isFinite(maxDl) && maxDl >= 1 ? Math.min(maxDl, 8) : defaults().maxConcurrentDownloads;

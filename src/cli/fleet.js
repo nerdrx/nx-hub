@@ -18,6 +18,7 @@
 const config = require("../main/config");
 const fleetProtocol = require("../main/fleet/protocol");
 const fleetClient = require("../main/fleet/client");
+const wol = require("../main/fleet/wol");
 const { createStore } = require("../main/fleet/store");
 
 const DEFAULT_TIMEOUT_MS = 6000;
@@ -259,7 +260,29 @@ function createFleetCli(opts = {}) {
     return withPeer(peer, (session) => ask(session, { type: "launch", appId, artifactId: artifactId || null }));
   }
 
-  return { store, identity, peers, connect, withPeer, list, pair, unpair, install, updateAll, launch };
+  /**
+   * v0.7: `nx fleet wake <peer>` — magic packets straight off this process.
+   *
+   * The one fleet command with NO session behind it, and necessarily so: the
+   * machine is asleep, so there is nothing to dial. Everything it needs is in
+   * fleet.json (the mac a session captured while the peer was awake), which is
+   * also why it works from a headless box with no hub running.
+   *
+   * @returns {Promise<{ok, sent, mac, reason?}>}
+   */
+  async function wake(peer, o = {}) {
+    if (!peer) return { ok: false, sent: false, mac: null, reason: "unknown-peer" };
+    if (!peer.mac) return { ok: false, sent: false, mac: null, reason: "no-mac" };
+    const sent = await wol.wake(peer.mac, {
+      address: o.address,
+      ports: o.ports,
+      dgram: o.dgram,
+      log: o.log,
+    });
+    return { ok: sent, sent, mac: peer.mac, reason: sent ? null : "send-failed" };
+  }
+
+  return { store, identity, peers, connect, withPeer, list, pair, unpair, install, updateAll, launch, wake };
 }
 
 module.exports = { createFleetCli, ask, followJobs, firstSummary, DEFAULT_TIMEOUT_MS };

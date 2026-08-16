@@ -150,6 +150,11 @@ export function normalizeApp(app) {
     // v0.5 — the overlay MAY describe the fields this app streams over the
     // connector bus. Absent means "render whatever arrives, generically".
     connectorFields: normalizeFieldDefs(a.connectorFields || (a.connector && a.connector.fields)),
+    // v0.7 — discovery tags an app whose id matches an `nx dev link`. SPEC
+    // calls it a model flag only: the tile and the run still come from
+    // getDevLinks()/devRun(), never from here.
+    devLink:
+      a.devLink && typeof a.devLink === 'object' ? { path: String(a.devLink.path || '') } : null,
   };
 }
 

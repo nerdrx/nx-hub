@@ -51,6 +51,19 @@ const api = {
   fleetLaunch: (peerId, appId, artifactId) => ipcRenderer.invoke("nxhub:fleetLaunch", peerId, appId, artifactId),
   fleetUpdateAll: (peerId) => ipcRenderer.invoke("nxhub:fleetUpdateAll", peerId),
 
+  // ---- v0.7 [fleet-fabric] (SPEC "WOL + peer MAC") ----
+  // Wake a sleeping peer over the LAN. → {ok, sent, peerId, name, mac} or
+  // {ok:false, reason:"no-mac"} when no session ever taught this hub the
+  // peer's hardware address. `ok` means "the packets went out", not "it woke":
+  // watch the peer's `online` in the next getFleet() for that.
+  fleetWake: (peerId) => ipcRenderer.invoke("nxhub:fleetWake", peerId),
+
+  // ---- v0.7 [dev-tools] (SPEC "nx dev") ----
+  // getDevLinks() → [{appId, name, path, launchCmd, exists, known, appName}]
+  getDevLinks: () => ipcRenderer.invoke("nxhub:getDevLinks"),
+  devRun: (appId) => ipcRenderer.invoke("nxhub:devRun", appId),
+  devUnlink: (appId) => ipcRenderer.invoke("nxhub:devUnlink", appId),
+
   onEvent: (cb) => {
     if (typeof cb !== "function") return () => {};
     const handler = (_event, payload) => {

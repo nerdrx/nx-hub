@@ -15,6 +15,8 @@ import {
   peerAppActions,
   peerJobs,
   peerSince,
+  canWake,
+  wakeTitle,
   codeGroups,
   codeMsLeft,
   formatCountdown,
@@ -175,6 +177,13 @@ function peerBlock(peer, ctx) {
         <span class="peer-seen">${esc(peer.online ? 'online' : seen ? `last seen ${seen}` : 'never seen')}</span>
         <span class="peer-tools">
           ${
+            ctx.canWake && canWake(peer)
+              ? `<button class="btn btn-outline btn-sm peer-wake" data-act="fleet-wake" data-peer="${esc(
+                  peer.id
+                )}" title="${esc(wakeTitle(peer))}">${icons.power}<span>Wake</span></button>`
+              : ''
+          }
+          ${
             updates
               ? `<button class="btn btn-amber btn-sm" data-act="fleet-update-all" data-peer="${esc(peer.id)}"${
                   peer.online ? '' : ' disabled'
@@ -204,7 +213,7 @@ function peerBlock(peer, ctx) {
 
 /**
  * @param {{peers?:Array, apps?:Array, pair?:object, jobs?:object, now?:number,
- *          busy?:boolean}} ctx
+ *          busy?:boolean, caps?:object}} ctx
  */
 export function renderFleetSheet(ctx = {}) {
   const peers = Array.isArray(ctx.peers) ? ctx.peers : [];
@@ -221,7 +230,15 @@ export function renderFleetSheet(ctx = {}) {
       ${
         peers.length
           ? `<div class="peer-list">${peers
-              .map((p) => peerBlock(p, { apps: ctx.apps, jobs: ctx.jobs, now }))
+              .map((p) =>
+                peerBlock(p, {
+                  apps: ctx.apps,
+                  jobs: ctx.jobs,
+                  now,
+                  // No fleetWake() in this build → no button, whatever the peer says.
+                  canWake: !ctx.caps || ctx.caps.fleetWake !== false,
+                })
+              )
               .join('')}</div>`
           : `<div class="stack-empty">
                <p class="empty-title">No other hub paired</p>

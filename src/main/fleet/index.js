@@ -8,14 +8,27 @@
 //   beacon.js    UDP discovery (who is out there)
 //   server.js    the WS listener, pairing and the HMAC challenge
 //   client.js    the dialling half, shared with the `nx fleet` CLI
+//   arp.js       reading a peer's MAC out of the local ARP cache   (v0.7)
+//   wol.js       the magic packet                                  (v0.7)
+//   assets.js    the sha256 index, its auth, and the seeding fetch (v0.7)
 //
-// Module API (FROZEN — ipc.js and the CLI call exactly these):
+// Module API (FROZEN — ipc.js, stacks.js and the CLI call exactly these):
 //   init({config, jobs, discovery, emit, log}) -> {close}
-//   getPeers() -> [{id, name, host, port, online, lastSeen, summary}]
+//   getPeers() -> [{id, name, host, port, online, lastSeen, mac, summary}]
 //   showCode() -> {code, expiresAt}
 //   pair(host, code, port?) / unpair(id)
 //   remoteInstall(peerId, appId, artifactId) / remoteLaunch(…) / remoteUpdateAll(peerId)
 //   onHubEvent(evt)   <- index.js feeds the hub's event fan-out through here
+//   --- v0.7 "fabric" -------------------------------------------------------
+//   wake(peerId) -> Promise<bool>                 WOL to the stored mac
+//   probePeerPort(peerId, port, {timeoutMs}) -> Promise<bool>
+//                                                 remote TCP-connects 127.0.0.1:port
+//   remoteStop(peerId, appId) -> Promise<ack>     remote's polite bus/SIGTERM dance
+//   findAsset(sha256, {timeoutMs}) -> Promise<{peerId, peerName, size}|null>
+//   fetchAsset(sha256, destPath, {peer, onProgress, signal}) -> Promise<{path,sha256,size}>
+//   recordAsset(sha256, filePath) / assetIndex()  the seeding index
+//   isRunning() / hasOnlinePeers()                cheap guards for jobs.js
+//   isPeerOnline(peerId) -> bool                  the `peer-online` health gate
 //
 // SESSIONS. Both hubs listen and both hubs can dial, so without a rule they
 // would connect to each other simultaneously, forever. protocol.shouldDial
@@ -31,6 +44,7 @@
 // nothing at all while nothing changes) without reaching into a sibling
 // module's wiring. `onLocalChange()` is exported for a future direct hook.
 
+const net = require("net");
 const os = require("os");
 
 const protocol = require("./protocol");
@@ -38,6 +52,9 @@ const { createStore } = require("./store");
 const { createBeacon } = require("./beacon");
 const { createServer } = require("./server");
 const client = require("./client");
+const arp = require("./arp");
+const wol = require("./wol");
+const assetsMod = require("./assets");
 const frame = require("../connector/frame");
 
 /** How often the local summary is rebuilt and (if changed) pushed. */
@@ -48,6 +65,11 @@ const DIAL_INTERVAL_MS = 5000;
 const REQUEST_TIMEOUT_MS = 20000;
 /** fleet-changed coalescing, same spirit as the connector's. */
 const CHANGE_MIN_MS = 250;
+/** v0.7: a health probe on a peered stack step. Short by design — it is a
+ *  local TCP connect on the far side, not a network round trip. */
+const PROBE_TIMEOUT_MS = 3000;
+/** v0.7: how long a remote stop waits for the bus to say the app left. */
+const STOP_WAIT_MS = 5000;
 
 let current = null;
 
@@ -86,6 +108,34 @@ function createFleet(o = {}) {
   const dialTimeoutMs = Number(o.dialTimeoutMs) > 0 ? Number(o.dialTimeoutMs) : 8000;
   const pairWindowMs = Number(o.pairWindowMs) > 0 ? Number(o.pairWindowMs) : protocol.PAIR_WINDOW_MS;
 
+  /* ---- v0.7 "fabric" knobs, all injectable so the tests stay on loopback ---- */
+
+  /** The sha256 → path index this hub serves and consults. */
+  const assets = o.assets || assetsMod.createAssetIndex(o.dataDir || config.dataDir());
+  /** ip → Promise<mac|null>. The real one reads /proc/net/arp or `arp -a`. */
+  const arpLookup = typeof o.arpLookup === "function" ? o.arpLookup : (ip) => arp.lookup(ip);
+  /** Where WOL packets go. 255.255.255.255 in life, 127.0.0.1 in tests. */
+  const wolAddress = o.wolAddress || wol.BROADCAST_ADDRESS;
+  const wolPorts = Array.isArray(o.wolPorts) && o.wolPorts.length ? o.wolPorts : wol.WOL_PORTS;
+  const assetFindMs = Number(o.assetFindMs) > 0 ? Number(o.assetFindMs) : assetsMod.FIND_TIMEOUT_MS;
+  const probeTimeoutMs = Number(o.probeTimeoutMs) > 0 ? Number(o.probeTimeoutMs) : PROBE_TIMEOUT_MS;
+  const stopWaitMs = Number.isFinite(o.stopWaitMs) ? Math.max(0, Number(o.stopWaitMs)) : STOP_WAIT_MS;
+  /** The connector bus, for the polite half of a remote stop. Lazy: a hub
+   *  without one (a unit test, a build without the bus) just goes to SIGTERM. */
+  let connectorMod = o.connector === undefined ? undefined : o.connector;
+  function bus() {
+    if (connectorMod !== undefined) return connectorMod;
+    try {
+      // eslint-disable-next-line global-require
+      connectorMod = require("../connector");
+    } catch (_) {
+      connectorMod = null;
+    }
+    return connectorMod;
+  }
+  /** process.kill, injectable — a test must never SIGTERM a real pid. */
+  const kill = typeof o.kill === "function" ? o.kill : (pid, sig) => process.kill(pid, sig);
+
   /** peerId -> Session (at most one, by construction) */
   const sessions = new Map();
   /** peerId -> the last `summary` payload it pushed */
@@ -94,6 +144,9 @@ function createFleet(o = {}) {
   const inflight = new Map();
   /** jobId -> {peerId, rid} for jobs a PEER asked us to run */
   const jobOwners = new Map();
+  /** v0.7: rid -> (session, payload) => void, for the broadcast asset queries
+   *  (which are one-to-many and therefore not `inflight` requests) */
+  const assetQueries = new Map();
   /** peers we are currently dialling, so the retry loop cannot pile up */
   const dialing = new Set();
   /** peers whose dial already failed once — log the noise only the first time */
@@ -189,8 +242,35 @@ function createFleet(o = {}) {
     // A fresh session starts with the truth on both sides: BOTH ends adopt,
     // so both push their summary and neither has to ask.
     session.send(lastSummary || buildLocalSummary());
+    captureMac(session);
     notifyChange();
     return session;
+  }
+
+  /**
+   * v0.7: learn the peer's MAC while it is awake.
+   *
+   * Fire-and-forget on purpose — it takes up to two 2s retries when the ARP
+   * entry is still INCOMPLETE, and nothing in the session may wait on that.
+   * Runs on EVERY session, whichever side dialled, so a peer that changed NIC
+   * (or moved to a new address) corrects itself the next time it connects.
+   */
+  function captureMac(session) {
+    const ip = protocol.normalizeHost(session.host);
+    if (!ip) return;
+    Promise.resolve()
+      .then(() => arpLookup(ip))
+      .then((mac) => {
+        if (closed || !arp.isMac(mac)) return;
+        const before = store.getPeer(session.peerId);
+        if (before && before.mac === mac) return;
+        // touchPeer refuses to clear a mac, so a later failed lookup can never
+        // undo this — see store.js.
+        store.touchPeer(session.peerId, { mac });
+        log(`fleet: ${session.peerName} is ${mac} (${ip}) — wake-on-LAN is available`);
+        notifyChange();
+      })
+      .catch((e) => log(`fleet: could not read ${session.peerName}'s MAC — ${e.message}`));
   }
 
   async function ensureSession(peerId) {
@@ -270,14 +350,15 @@ function createFleet(o = {}) {
     }
   }
 
-  async function request(peerId, payload) {
+  async function request(peerId, payload, { timeoutMs } = {}) {
     const session = await ensureSession(peerId);
     const rid = nextRid();
+    const waitMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : requestTimeoutMs;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         inflight.delete(rid);
         reject(new Error(`${session.peerName} did not answer in time.`));
-      }, requestTimeoutMs);
+      }, waitMs);
       if (timer.unref) timer.unref();
       inflight.set(rid, { peerId, resolve, reject, timer });
       if (!session.send(Object.assign({ rid }, payload))) {
@@ -310,6 +391,17 @@ function createFleet(o = {}) {
         return onAck(session, payload);
       case "job-event":
         return onJobEvent(session, payload);
+      // ---- v0.7 "fabric" ----
+      case "probe":
+        return onProbe(session, payload);
+      case "probe-result":
+        return onProbeResult(session, payload);
+      case "stop":
+        return onRemoteStop(session, payload);
+      case "asset-query":
+        return onAssetQuery(session, payload);
+      case "asset-have":
+        return onAssetHave(session, payload);
       default:
         // Forward compatibility: a newer peer's verb earns a complaint, not a
         // hangup — the session is authenticated, so it is a version gap.
@@ -416,6 +508,253 @@ function createFleet(o = {}) {
     }
     log(`fleet: ${session.peerName} queued update-all (${jobIds.length} job(s))`);
     return ack(session, payload.rid, { ok: true, jobIds, count: jobIds.length, failures });
+  }
+
+  /* ---------------- v0.7: probe · stop · assets ---------------- */
+
+  /**
+   * `probe {rid, port}` — a health gate on a PEERED stack step.
+   *
+   * The gate has to run on the remote, because "is 9757 open" means "open on
+   * the machine the app is actually running on". We connect to 127.0.0.1 and
+   * nowhere else: this is a health check for a service the remote hub just
+   * launched, never a port scanner a peer can aim at its LAN.
+   */
+  function onProbe(session, payload) {
+    const port = Number(payload.port);
+    const rid = payload.rid || null;
+    const reply = (open) => session.send({ type: "probe-result", rid, port, open: Boolean(open) });
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) return reply(false);
+    const timeoutMs = Number(payload.timeoutMs) > 0 ? Math.min(Number(payload.timeoutMs), 30000) : probeTimeoutMs;
+
+    let settled = false;
+    const finish = (open) => {
+      if (settled) return;
+      settled = true;
+      try {
+        socket.destroy();
+      } catch (_) {
+        /* ignore */
+      }
+      reply(open);
+    };
+    const socket = net.connect({ host: "127.0.0.1", port });
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
+    return undefined;
+  }
+
+  /** The answer to OUR probe. Resolves the inflight promise with a bare bool. */
+  function onProbeResult(session, payload) {
+    const entry = payload.rid ? inflight.get(payload.rid) : null;
+    if (!entry) return;
+    inflight.delete(payload.rid);
+    clearTimeout(entry.timer);
+    entry.resolve(Boolean(payload.open));
+  }
+
+  /** Every pid this hub is watching for `appId` (jobs' launch tracking). */
+  function trackedPidsFor(appId) {
+    const table = jobs && jobs._tracked;
+    if (!table || typeof table.values !== "function") return [];
+    const pids = [];
+    for (const entry of table.values()) {
+      if (entry && entry.appId === appId && Number.isInteger(entry.pid)) pids.push(entry.pid);
+    }
+    return pids;
+  }
+
+  function sigterm(pid) {
+    try {
+      // Never SIGKILL — a fleet stop is as polite as a local one (SPEC v0.5).
+      kill(pid, "SIGTERM");
+      return true;
+    } catch (_) {
+      return false; // already gone, or not ours to signal
+    }
+  }
+
+  /** Wait for the bus to stop seeing `appId`, up to `ms`. */
+  async function waitForDeparture(appId, ms) {
+    const c = bus();
+    if (!c || typeof c.isPresent !== "function") return false;
+    const deadline = Date.now() + ms;
+    for (;;) {
+      if (!c.isPresent(appId)) return true;
+      if (Date.now() >= deadline) return false;
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((r) => {
+        const t = setTimeout(r, Math.min(100, Math.max(1, deadline - Date.now())));
+        if (t.unref) t.unref();
+      });
+    }
+  }
+
+  /**
+   * `stop {rid, appId}` — the peered half of `stacks.stop` (SPEC v0.7).
+   *
+   * Same two-step dance the local stop does, for the same reason: an app that
+   * speaks the NX Connector bus can save its state, so it gets asked first and
+   * signalled only if it does not go. The pid comes from jobs' own launch
+   * tracking, so a peer can only stop something THIS hub started — there is no
+   * path from the wire to an arbitrary pid.
+   */
+  async function onRemoteStop(session, payload) {
+    const appId = String(payload.appId || "").trim();
+    if (!appId) return ack(session, payload.rid, { ok: false, error: "stop needs an appId" });
+
+    let how = null;
+    const c = bus();
+    try {
+      if (c && typeof c.isPresent === "function" && c.isPresent(appId) && typeof c.requestShutdown === "function") {
+        if (c.requestShutdown(appId)) {
+          how = (await waitForDeparture(appId, stopWaitMs)) ? "shutdown-request" : null;
+        }
+      }
+    } catch (e) {
+      log(`fleet: requestShutdown(${appId}) failed — ${e.message}`);
+      how = null;
+    }
+
+    const pids = trackedPidsFor(appId);
+    if (!how) {
+      const signalled = pids.filter((pid) => sigterm(pid));
+      how = signalled.length ? "sigterm" : "gone";
+    }
+    log(`fleet: ${session.peerName} stopped ${appId} (${how})`);
+    return ack(session, payload.rid, { ok: true, appId, how, pids });
+  }
+
+  /**
+   * `asset-query {rid, sha256}` — "do you have these bytes?"
+   *
+   * Answered either way, `have:false` included: findAsset counts the noes so a
+   * fleet where nobody has the file gives up immediately instead of burning
+   * the full 800ms budget before every single GitHub download.
+   */
+  function onAssetQuery(session, payload) {
+    const sha = assetsMod.normalizeSha(payload.sha256);
+    const rid = payload.rid || null;
+    if (!sha) return session.send({ type: "asset-have", rid, sha256: null, have: false });
+    const entry = assets ? assets.get(sha) : null;
+    return session.send({
+      type: "asset-have",
+      rid,
+      sha256: sha,
+      have: Boolean(entry),
+      size: entry ? entry.size : 0,
+    });
+  }
+
+  /** An answer to one of OUR asset queries. */
+  function onAssetHave(session, payload) {
+    const handler = payload.rid ? assetQueries.get(payload.rid) : null;
+    if (handler) handler(session, payload);
+  }
+
+  /**
+   * Ask every live peer at once and take the first yes (SPEC: within 800ms).
+   *
+   * Broadcast rather than sequential: on a fleet of five, asking one at a time
+   * would cost five timeouts before a download that GitHub would have finished
+   * by then. The budget is a hard ceiling — a slow fleet costs the user 0.8s
+   * once, never a stalled install.
+   *
+   * @returns {Promise<{peerId, peerName, size}|null>}
+   */
+  function findAsset(sha256, { timeoutMs = assetFindMs } = {}) {
+    const sha = assetsMod.normalizeSha(sha256);
+    return new Promise((resolve) => {
+      if (closed || !sha) return resolve(null);
+      const live = Array.from(sessions.values()).filter((s) => s.alive);
+      if (!live.length) return resolve(null);
+
+      const rid = nextRid();
+      let settled = false;
+      let outstanding = live.length;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        assetQueries.delete(rid);
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish(null), timeoutMs);
+      if (timer.unref) timer.unref();
+
+      assetQueries.set(rid, (session, payload) => {
+        if (payload.sha256 && payload.sha256 !== sha) return;
+        if (payload.have) {
+          finish({ peerId: session.peerId, peerName: session.peerName, size: Number(payload.size) || 0 });
+          return;
+        }
+        outstanding -= 1;
+        if (outstanding <= 0) finish(null);
+      });
+
+      for (const session of live) {
+        if (!session.send({ type: "asset-query", rid, sha256: sha })) outstanding -= 1;
+      }
+      if (outstanding <= 0) finish(null);
+      return undefined;
+    });
+  }
+
+  /**
+   * Pull one asset off a peer over the authed HTTP route.
+   *
+   * The peer is resolved to a host/port/secret HERE rather than in the caller:
+   * jobs.js has no business holding a pairing secret, and findAsset's return
+   * value deliberately carries none.
+   */
+  async function fetchAsset(sha256, destPath, opts = {}) {
+    const sha = assetsMod.normalizeSha(sha256);
+    if (!sha) throw new Error("fleet: not a sha256");
+    const found = opts.peer && opts.peer.peerId ? opts.peer : await findAsset(sha, opts);
+    if (!found) throw new Error("fleet: no peer has that file");
+    const peer = store.getPeer(found.peerId);
+    if (!peer || !peer.secret) throw new Error("fleet: that peer is not paired any more");
+    const where = addressFor(peer);
+    const session = sessions.get(peer.id);
+    const result = await assetsMod.fetchAsset({
+      // A live session knows the address the peer is ACTUALLY answering on,
+      // which beats both the beacon and fleet.json when a DHCP lease moved.
+      host: (session && session.alive && session.host) || where.host,
+      port: where.port,
+      sha256: sha,
+      secret: peer.secret,
+      destPath,
+      onProgress: opts.onProgress,
+      signal: opts.signal,
+      timeoutMs: opts.timeoutMs,
+    });
+    log(`fleet: fetched ${sha.slice(0, 12)}… (${result.size} bytes) from ${found.peerName || peer.name}`);
+    return Object.assign({ peerId: peer.id, peerName: found.peerName || peer.name }, result);
+  }
+
+  /* ---------------- v0.7: wake-on-LAN ---------------- */
+
+  /**
+   * Send the magic packets for a peer's stored MAC.
+   *
+   * @returns {Promise<boolean>} whether the packets left this host. It is NOT
+   *          a claim that the peer woke — nothing on this side can know that,
+   *          which is what the `peer-online` gate is for.
+   */
+  function wake(peerId) {
+    const peer = store.getPeer(String(peerId || ""));
+    if (!peer) {
+      log(`fleet: cannot wake ${peerId} — not a paired hub`);
+      return Promise.resolve(false);
+    }
+    if (!peer.mac) {
+      log(`fleet: cannot wake ${peer.name} — no MAC learned yet (connect to it once while it is awake)`);
+      return Promise.resolve(false);
+    }
+    log(`fleet: waking ${peer.name} (${peer.mac})`);
+    return wol.wake(peer.mac, { address: wolAddress, ports: wolPorts, log });
   }
 
   function onAck(session, payload) {
@@ -569,6 +908,9 @@ function createFleet(o = {}) {
         online: Boolean((session && session.alive) || beaconFresh),
         connected: Boolean(session && session.alive),
         beacon: beaconFresh,
+        // v0.7: null until a session taught us one. The UI shows "wake" only
+        // when this is set, because that is exactly when wake() can work.
+        mac: peer.mac || null,
         hubVersion: (summary && summary.hubVersion) || (heard && heard.hubVersion) || null,
         lastSeen: lastSeen || null,
         summary,
@@ -611,6 +953,8 @@ function createFleet(o = {}) {
     local,
     peers: () => store.peers(),
     pairCode: activeCode,
+    // v0.7: the seeding route lives on this same listener (SPEC).
+    assets,
     onPair: (peer) => {
       store.upsertPeer(peer);
       notifyChange();
@@ -675,6 +1019,56 @@ function createFleet(o = {}) {
     remoteUpdateAll(peerId) {
       return request(peerId, { type: "update-all" });
     },
+
+    /* ---- v0.7 "fabric" — the surface stacks.js and jobs.js call ---- */
+
+    wake,
+    findAsset,
+    fetchAsset,
+    assetIndex: () => assets,
+    /** Remember a verified file so peers can pull it (jobs.js calls this). */
+    recordAsset: (sha256, filePath) => (assets ? assets.record(sha256, filePath) : null),
+    /** Is any peer actually connected? The cheap guard before a findAsset. */
+    hasOnlinePeers: () => Array.from(sessions.values()).some((s) => s.alive),
+
+    /**
+     * SPEC's `peer-online` health gate, and the implicit gate after a wake
+     * step: same definition as getPeers().online — a live session OR a beacon
+     * inside its 15s window — without the caller having to scan the list.
+     */
+    isPeerOnline(peerId, { now = Date.now() } = {}) {
+      const id = String(peerId || "");
+      const session = sessions.get(id);
+      if (session && session.alive) return true;
+      return Boolean(beacon && beacon.isFresh(id, now));
+    },
+
+    /**
+     * A health gate for a peered stack step: is `port` open on the PEER's
+     * loopback? Never throws — a gate wants a boolean, and "the peer is not
+     * reachable" and "the port is shut" mean the same thing to a stack.
+     */
+    async probePeerPort(peerId, port, { timeoutMs = probeTimeoutMs } = {}) {
+      try {
+        const open = await request(
+          peerId,
+          { type: "probe", port: Number(port), timeoutMs },
+          // A little slack over the remote's own connect timeout, so a shut
+          // port comes back as `false` rather than as our timeout.
+          { timeoutMs: timeoutMs + 2000 }
+        );
+        return open === true;
+      } catch (e) {
+        log(`fleet: probe of ${port} on ${peerId} failed — ${e.message}`);
+        return false;
+      }
+    },
+
+    /** Ask a peer to stop one app the way it would stop it locally. */
+    remoteStop(peerId, appId) {
+      return request(peerId, { type: "stop", appId: String(appId || "") });
+    },
+
     close() {
       if (closed) return Promise.resolve();
       closed = true;
@@ -689,6 +1083,9 @@ function createFleet(o = {}) {
         clearTimeout(entry.timer);
         entry.reject(new Error("fleet: the hub is shutting down"));
       }
+      // v0.7: a pending findAsset resolves null rather than hanging — the
+      // caller's fallback (GitHub) is always the right answer at shutdown.
+      assetQueries.clear();
       for (const session of Array.from(sessions.values())) {
         session.onClose = noop;
         session.close(frame.CLOSE_NORMAL, "hub closing");
@@ -765,6 +1162,9 @@ module.exports = {
   protocol,
   createStore,
   client,
+  arp,
+  wol,
+  assets: assetsMod,
   _current: () => current,
   getPeers: passthrough("getPeers", () => []),
   snapshot: passthrough("snapshot", () => null),
@@ -793,7 +1193,37 @@ module.exports = {
     if (current) current.onHubEvent(evt);
   },
   onLocalChange: (cb) => (current ? current.onLocalChange(cb) : noop),
+
+  /* ---- v0.7 "fabric" ------------------------------------------------ */
+
+  /** Whether a fleet is actually up. jobs.js checks this before seeding. */
+  isRunning: () => Boolean(current),
+  hasOnlinePeers: passthrough("hasOnlinePeers", () => false),
+  isPeerOnline: passthrough("isPeerOnline", () => false),
+  /** WOL. False (never a throw) when the fleet is off or the mac is unknown. */
+  wake: (peerId) => (current ? current.wake(peerId) : Promise.resolve(false)),
+  probePeerPort: (...a) => (current ? current.probePeerPort(...a) : Promise.resolve(false)),
+  remoteStop: (...a) => {
+    if (!current) throw new Error("The fleet is switched off — turn it on in Settings.");
+    return current.remoteStop(...a);
+  },
+  findAsset: (...a) => (current ? current.findAsset(...a) : Promise.resolve(null)),
+  fetchAsset: (...a) => {
+    if (!current) return Promise.reject(new Error("The fleet is switched off — turn it on in Settings."));
+    return current.fetchAsset(...a);
+  },
+  /**
+   * The seeding index is maintained whether or not the fleet is RUNNING: a hub
+   * with the setting off still records what it verified, so switching the
+   * fleet on later does not start from an empty index.
+   */
+  assetIndex: (dataDir) => (current && !dataDir ? current.assetIndex() : assetsMod.createAssetIndex(dataDir)),
+  recordAsset: (sha256, filePath) =>
+    current ? current.recordAsset(sha256, filePath) : assetsMod.createAssetIndex().record(sha256, filePath),
+
   SUMMARY_INTERVAL_MS,
   DIAL_INTERVAL_MS,
   REQUEST_TIMEOUT_MS,
+  PROBE_TIMEOUT_MS,
+  STOP_WAIT_MS,
 };

@@ -63,12 +63,20 @@ function fakeDiscovery(apps = []) {
   };
 }
 
-/** A jobs stand-in that records what a peer asked this hub to do. */
-function fakeJobs() {
+/**
+ * A jobs stand-in that records what a peer asked this hub to do.
+ *
+ * `_tracked` mirrors the real jobs.js launch table (pid → {appId, pid, …}),
+ * which is where a v0.7 remote `stop` finds the process to signal.
+ */
+function fakeJobs({ tracked = [] } = {}) {
   const calls = [];
   let counter = 0;
+  const table = new Map();
+  for (const entry of tracked) table.set(entry.pid, entry);
   return {
     calls,
+    _tracked: table,
     install(appId, artifactId) {
       counter += 1;
       const jobId = `job-${counter}`;
@@ -77,6 +85,26 @@ function fakeJobs() {
     },
     async launch(appId, artifactId) {
       calls.push({ kind: "launch", appId, artifactId });
+      return true;
+    },
+  };
+}
+
+/**
+ * A connector-bus stand-in for the polite half of a remote stop.
+ * `present` is a live set — a test drops an app from it to play "it left".
+ */
+function fakeConnector({ present = [], honourShutdown = true } = {}) {
+  const live = new Set(present);
+  const calls = [];
+  return {
+    calls,
+    live,
+    isPresent: (appId) => live.has(appId),
+    requestShutdown(appId) {
+      calls.push(appId);
+      if (!honourShutdown) return false;
+      live.delete(appId); // the app took the hint
       return true;
     },
   };
@@ -251,6 +279,7 @@ module.exports = {
   stopAll,
   fakeDiscovery,
   fakeJobs,
+  fakeConnector,
   app,
   startFleet,
   pairHubs,

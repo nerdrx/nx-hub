@@ -58,9 +58,10 @@ import {
   validateDraft,
   moveStep,
   newRun,
-  HEALTH_TYPES,
+  coerceStepFields,
   CLEAR_AFTER_MS,
 } from './lib/stacks.js';
+import { normalizeDevLinks, devTiles, devIds, devUnlinkConfirm } from './lib/dev.js';
 import { renderStacksSheet } from './views/stacks.js';
 import {
   normalizeFleet,
@@ -118,6 +119,13 @@ const V06_METHODS = [
   'fleetUpdateAll',
 ];
 
+/**
+ * Optional v0.7 (fabric) bridge methods. Cross-hub stacks need nothing new on
+ * the bridge — they ride runStack — so this list is only the surfaces that do:
+ * the dev links and wake-on-LAN.
+ */
+const V07_METHODS = ['getDevLinks', 'devRun', 'devUnlink', 'fleetWake'];
+
 const ui = {
   loaded: false,
   view: 'manage', // 'launch' | 'manage'
@@ -171,6 +179,9 @@ const ui = {
   pair: blankPairState(),
   pairTimer: 0,
   dismissedCrashes: new Set(),
+  // v0.7 — `nx dev link` checkouts. Empty until getDevLinks() answers, and
+  // permanently empty in a build that has no such method.
+  devLinks: [],
 };
 
 let state = normalizeState(null);
@@ -234,7 +245,7 @@ function api() {
 function detectCaps() {
   const nx = api();
   const caps = {};
-  for (const m of [...V02_METHODS, ...V05_METHODS, ...V06_METHODS]) {
+  for (const m of [...V02_METHODS, ...V05_METHODS, ...V06_METHODS, ...V07_METHODS]) {
     caps[m] = !!(nx && typeof nx[m] === 'function');
   }
   return caps;
@@ -356,7 +367,13 @@ function busClients() {
   return clientsByApp(state.connector);
 }
 
-/** Tiles for the launcher view, honouring the filter, prefs and recents. */
+/**
+ * Tiles for the launcher view, honouring the filter, prefs and recents.
+ *
+ * Dev tiles come last and stay out of the favorites/recents rotation: a linked
+ * checkout is a tool you go looking for, and letting it shuffle the installed
+ * apps around every time it runs would cost more than it gives.
+ */
 function currentTiles() {
   const tiles = launchTiles(filterApps(state.apps, ui.filter), {
     adb: state.adb,
@@ -364,12 +381,22 @@ function currentTiles() {
     prefs: prefsMap(),
     clients: busClients(),
   });
-  return orderTiles(tiles, { recents: ui.recents });
+  return [...orderTiles(tiles, { recents: ui.recents }), ...devTiles(ui.devLinks, { filter: ui.filter })];
 }
 
 /** Wide stack tiles, with whatever a live run has reported so far. */
 function currentStackTiles() {
-  return stackTiles(ui.stacks, { apps: state.apps, runs: ui.runs });
+  return stackTiles(ui.stacks, { apps: state.apps, runs: ui.runs, peers: ui.fleet.peers });
+}
+
+/**
+ * Peers the stacks editor may point a step at. A build with no getFleet() has
+ * no peers at all, which is what keeps the whole cross-hub half of the editor
+ * off the screen.
+ */
+function editorPeers() {
+  if (!ui.caps.getFleet) return [];
+  return (ui.fleet.peers || []).map((p) => ({ id: p.id, name: p.name, online: !!p.online }));
 }
 
 function renderTabs() {
@@ -424,6 +451,7 @@ function renderSheet() {
       pair: ui.pair,
       jobs: ui.fleetJobs,
       now: Date.now(),
+      caps: ui.caps,
     });
     return;
   }
@@ -431,6 +459,7 @@ function renderSheet() {
     host.innerHTML = renderStacksSheet({
       stacks: ui.stacks,
       apps: state.apps,
+      peers: editorPeers(),
       draft: ui.stackDraft,
       errors: ui.stackErrors,
       runs: ui.runs,
@@ -507,6 +536,8 @@ function render() {
     dismissedCrashes: ui.dismissedCrashes,
     openMenu: ui.openMenu,
     clients: busClients(),
+    // v0.7 — cards of apps that also have a checkout linked wear a DEV mark.
+    devIds: devIds(ui.devLinks),
     now: Date.now(),
   };
 
@@ -758,6 +789,19 @@ async function openVersions(appId) {
   schedule();
 }
 
+/* -------------------------------------------------------------- dev links */
+
+async function loadDevLinks() {
+  if (!ui.caps.getDevLinks) return;
+  try {
+    ui.devLinks = normalizeDevLinks(await maybeCall('getDevLinks'));
+  } catch (err) {
+    ui.devLinks = [];
+    toast('error', `Could not read the dev links: ${(err && err.message) || err}`);
+  }
+  schedule();
+}
+
 /* ----------------------------------------------------------------- stacks */
 
 async function loadStacks() {
@@ -812,14 +856,16 @@ function readStackDraft() {
     const field = el.getAttribute('data-step-field');
     if (!Number.isInteger(i) || !steps[i] || !field) continue;
     if (field === 'optional') steps[i].optional = !!el.checked;
-    else if (field === 'healthType') steps[i].healthType = HEALTH_TYPES.includes(el.value) ? el.value : 'connector';
     else steps[i][field] = el.value;
   }
   // A step that now points at another app cannot keep the old app's artifact.
   steps.forEach((s, i) => {
     if (s.appId !== wasApp[i]) s.artifactId = '';
   });
-  ui.stackDraft.steps = steps;
+  // v0.7 — a wake needs a peer, and a peered step cannot gate on this hub's bus.
+  // Coercing on every read means the inputs can never disagree with each other,
+  // whatever order the user touched them in.
+  ui.stackDraft.steps = steps.map((s) => coerceStepFields(s));
 }
 
 function patchSteps(fn) {
@@ -1677,6 +1723,69 @@ async function onAction(act, el, ev) {
       break;
     }
 
+    /* ------------------------------------------------------------- v0.7 */
+
+    case 'dev-run': {
+      ui.openMenu = '';
+      const id = el.getAttribute('data-dev') || el.getAttribute('data-app') || '';
+      if (!id) break;
+      flashTile(el.closest ? el.closest('.tile') : null, 'launching', 700);
+      // devRun() announces its own success — a second toast from here would say
+      // the same thing twice. It rejects with a message meant to be read, so
+      // the failure path shows that message rather than wrapping it.
+      try {
+        const res = await maybeCall('devRun', id);
+        if (res && res.ok === false) toast('error', res.error || `Could not start ${id}`);
+      } catch (err) {
+        toast('error', (err && err.message) || `Could not start ${id}`);
+      }
+      break;
+    }
+    case 'dev-folder': {
+      ui.openMenu = '';
+      const path = el.getAttribute('data-path') || '';
+      if (path) await call('showInFolder', path);
+      else toast('warn', 'That dev link has no folder recorded');
+      schedule();
+      break;
+    }
+    case 'dev-unlink': {
+      ui.openMenu = '';
+      const id = el.getAttribute('data-dev') || el.getAttribute('data-app') || '';
+      const link = ui.devLinks.find((l) => l.appId === id);
+      if (!link) break;
+      if (!window.confirm(devUnlinkConfirm(link))) break;
+      const res = await call('devUnlink', id);
+      if (res === null) break;
+      if (res && res.ok === false) {
+        toast('warn', `Could not unlink ${link.name}`);
+        break;
+      }
+      toast('info', `${link.name} unlinked — the folder is untouched`);
+      // The call hands back the fresh list, so the tiles update from the answer
+      // rather than from another round trip.
+      if (res && Array.isArray(res.links)) {
+        ui.devLinks = normalizeDevLinks(res.links);
+        schedule();
+      } else {
+        await loadDevLinks();
+      }
+      break;
+    }
+    case 'fleet-wake': {
+      const peerId = el.getAttribute('data-peer') || '';
+      const peer = peerById(ui.fleet.peers, peerId);
+      if (!peer) break;
+      const res = await call('fleetWake', peerId);
+      if (res === null) break;
+      if (res === false) {
+        toast('warn', `Could not send a magic packet to ${peer.name}`);
+        break;
+      }
+      toast('info', `Magic packet sent to ${peer.name} — it can take a minute to answer`);
+      break;
+    }
+
     /* ------------------------------------------------------------- v0.6 */
 
     case 'fleet':
@@ -1840,6 +1949,10 @@ function onHubEvent(ev) {
     case 'fleet-changed':
       loadFleet();
       break;
+    // v0.7 — `nx dev link/unlink` from the CLI reaches a running hub this way.
+    case 'dev-links-changed':
+      loadDevLinks();
+      break;
     case 'fleet-pair-code':
       // The target hub armed its window — show the code even if this side did
       // not ask for it (the other hub may have started the flow).
@@ -1946,6 +2059,17 @@ function wireDom() {
     const stepField = el.getAttribute ? el.getAttribute('data-step-field') : '';
     if ((stepField === 'healthType' || stepField === 'appId') && ui.stackDraft) {
       readStackDraft();
+      schedule();
+      return;
+    }
+    // v0.7 — moving a step to another hub, or turning it into a wake, swaps the
+    // controls under it. Only THIS moment fills the wake timeout default: doing
+    // it on every read would refill a box the user is trying to clear.
+    if ((stepField === 'peer' || stepField === 'action') && ui.stackDraft) {
+      readStackDraft();
+      const i = Number(el.getAttribute('data-index'));
+      const steps = ui.stackDraft.steps || [];
+      if (Number.isInteger(i) && steps[i]) steps[i] = coerceStepFields(steps[i], { fillDefaults: true });
       schedule();
       return;
     }
@@ -2181,6 +2305,7 @@ async function boot() {
   await pullState();
   await loadStacks();
   await loadFleet();
+  await loadDevLinks();
   // First run: open the launcher when there is anything to launch.
   if (!ui.viewRemembered) {
     ui.view = ui.stacks.length ? 'launch' : defaultView(currentTiles());

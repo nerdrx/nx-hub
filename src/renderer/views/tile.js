@@ -3,6 +3,7 @@
 
 import { esc } from '../lib/html.js';
 import { tileMenu } from '../lib/launcher.js';
+import { devTileMenu } from '../lib/dev.js';
 import { renderStackTiles } from './stacktile.js';
 import * as icons from './icons.js';
 
@@ -16,10 +17,15 @@ export function iconSrc(iconPath) {
 }
 
 function menuMarkup(tile, open, caps) {
-  const items = tileMenu(tile, caps)
+  // A dev tile's menu talks to devRun/devUnlink, not to the app/artifact pair —
+  // and it carries the linked PATH, which is a string off the user's disk and
+  // is escaped like anything else that reaches an attribute.
+  const items = (tile.dev ? devTileMenu(tile, caps) : tileMenu(tile, caps))
     .map(
       (m) =>
-        `<button class="menu-item" data-act="${esc(m.act)}" data-app="${esc(tile.appId)}" data-art="${esc(tile.artifactId)}"${m.disabled ? ' disabled' : ''}>${esc(m.label)}</button>`
+        `<button class="menu-item${m.danger ? ' danger' : ''}" data-act="${esc(m.act)}" data-app="${esc(tile.appId)}" data-art="${esc(tile.artifactId)}"${
+          tile.dev ? ` data-dev="${esc(tile.appId)}" data-path="${esc(tile.path || '')}"` : ''
+        }${m.act === 'dev-folder' && tile.path ? ` title="${esc(tile.path)}"` : ''}${m.disabled ? ' disabled' : ''}>${esc(m.label)}</button>`
     )
     .join('');
   return `
@@ -36,11 +42,16 @@ export function renderTile(tile, ctx = {}) {
   const art = src
     ? `<img class="tile-icon" src="${esc(src)}" alt="" data-fallback="${esc(tile.monogram)}">`
     : `<span class="tile-mono" style="--h:${Number(tile.hue) || 265}">${esc(tile.monogram)}</span>`;
+  // A dev tile launches a checkout, so its hit target is devRun(id) — the
+  // app/artifact attributes stay on it only so the menu can share this markup.
+  const hitAct = tile.dev ? 'dev-run' : 'tile-launch';
 
   return `
-  <div class="tile ${tile.disabled ? 'is-disabled' : ''}" data-tile="${esc(tile.key)}"
+  <div class="tile ${tile.disabled ? 'is-disabled' : ''}${tile.dev ? ' tile-dev' : ''}${tile.broken ? ' tile-dev-broken' : ''}" data-tile="${esc(tile.key)}"
        data-app="${esc(tile.appId)}" data-art="${esc(tile.artifactId)}" style="--h:${Number(tile.hue) || 265}">
-    <button class="tile-hit" data-act="tile-launch" data-app="${esc(tile.appId)}" data-art="${esc(tile.artifactId)}" data-tile="${esc(tile.key)}"
+    <button class="tile-hit" data-act="${esc(hitAct)}" data-app="${esc(tile.appId)}" data-art="${esc(tile.artifactId)}" data-tile="${esc(tile.key)}"${
+      tile.dev ? ` data-dev="${esc(tile.appId)}" data-path="${esc(tile.path || '')}"` : ''
+    }
             ${tile.disabled ? 'disabled' : ''} title="${esc(tile.title)}">
       <span class="tile-art" style="--h:${Number(tile.hue) || 265}">${art}</span>
       <span class="tile-name">${esc(tile.name)}</span>
@@ -53,6 +64,17 @@ export function renderTile(tile, ctx = {}) {
       }
       ${tile.live && tile.liveCaption && tile.sublabel ? `<span class="tile-sub">${esc(tile.sublabel)}</span>` : ''}
       ${tile.disabled ? `<span class="tile-off">${esc(tile.disabledReason || 'unavailable')}</span>` : ''}
+      ${
+        tile.dev
+          ? `<span class="dev-chip" title="${esc(
+              tile.broken
+                ? `${tile.path || 'the linked folder'} is not there any more`
+                : tile.launchCmd
+                  ? `linked checkout — runs ${tile.launchCmd}`
+                  : `linked checkout at ${tile.path || 'an unknown path'}`
+            )}">DEV</span>`
+          : ''
+      }
     </button>
     ${tile.live ? `<span class="tile-live" title="${esc(tile.liveTitle || 'live on the bus')}" aria-label="live"></span>` : ''}
     ${tile.updateAvailable ? '<span class="tile-dot" title="update available"></span>' : ''}

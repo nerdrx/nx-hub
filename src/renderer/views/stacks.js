@@ -6,19 +6,23 @@
 import { esc } from '../lib/html.js';
 import { renderSheet } from './sheet.js';
 import {
-  HEALTH_TYPES,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_DELAY_MS,
+  DEFAULT_WAKE_TIMEOUT_MS,
   MIN_COOLDOWN_S,
   MAX_COOLDOWN_S,
   DEFAULT_COOLDOWN_MS,
   TRIGGER_TYPES,
   normalizeStacks,
   isFinished,
+  isWakeStep,
   nameMap,
+  peerNameMap,
   pickableApps,
   stepArtifacts,
   healthLabel,
+  healthTypesFor,
+  coerceHealthType,
   triggerLabel,
 } from '../lib/stacks.js';
 import * as icons from './icons.js';
@@ -27,6 +31,13 @@ const HEALTH_TEXT = {
   connector: 'The app reports in on the bus',
   port: 'A TCP port answers',
   delay: 'A fixed wait',
+  // v0.7 — the gate that needs no app at all: the other hub is simply there.
+  'peer-online': 'The other hub answers',
+};
+
+const ACTION_TEXT = {
+  launch: 'Launch an app',
+  wake: 'Wake a hub',
 };
 
 const TRIGGER_TEXT = {
@@ -37,14 +48,18 @@ const TRIGGER_TEXT = {
 
 /* -------------------------------------------------------------------- list */
 
-function stepChain(stack, names) {
+function stepChain(stack, names, peerNames) {
   return stack.steps
-    .map(
-      (s) =>
-        `<span class="chain-app" title="ready when: ${esc(healthLabel(s.health))}">${esc(names.get(s.appId) || s.appId)}${
-          s.optional ? '<span class="step-opt">optional</span>' : ''
-        }</span>`
-    )
+    .map((s) => {
+      const wake = isWakeStep(s);
+      const peerName = s.peer ? peerNames.get(s.peer) || s.peer : '';
+      const label = wake ? `Wake ${peerName}` : names.get(s.appId) || s.appId;
+      return `<span class="chain-app" title="ready when: ${esc(healthLabel(s.health))}">${
+        wake ? `<span class="chain-power" aria-hidden="true">${icons.power}</span>` : ''
+      }${esc(label)}${
+        peerName && !wake ? `<span class="step-peer-tag" title="${esc(`runs on ${peerName}`)}">${esc(peerName)}</span>` : ''
+      }${s.optional ? '<span class="step-opt">optional</span>' : ''}</span>`;
+    })
     .join('<span class="chain-sep" aria-hidden="true">›</span>');
 }
 
@@ -61,7 +76,7 @@ function stackRow(stack, ctx) {
               )}">auto</span>`
             : ''
         }</span>
-        <span class="stack-row-steps">${stepChain(stack, ctx.names)}</span>
+        <span class="stack-row-steps">${stepChain(stack, ctx.names, ctx.peerNames)}</span>
         <span class="stack-row-id">${esc(stack.id)}</span>
       </div>
       ${
@@ -91,33 +106,80 @@ function errorMarkup(errors, key) {
   return errors && errors[key] ? `<p class="field-error">${esc(errors[key])}</p>` : '';
 }
 
+/**
+ * One step of the editor.
+ *
+ * v0.7 adds two controls that only exist when this hub has a fleet: "Runs on"
+ * (this hub, or a paired peer) and "Step does" (launch an app, or wake a hub).
+ * Without a peer to point at, neither can produce a valid step — so neither is
+ * rendered, and the editor looks exactly like v0.6.
+ */
 function stepMarkup(step, index, ctx) {
   const apps = ctx.apps;
+  const known = ctx.peers || [];
+  const peerId = String(step.peer || '');
+  // A stack can outlive a pairing, and SPEC makes that a RUN-time failure on
+  // purpose. So the vanished hub keeps its slot in the picker (the only control
+  // that can un-point the step), the step still saves, and a chip says why it
+  // will fail if nothing changes.
+  const unknownPeer = !!peerId && known.length > 0 && !known.some((p) => p.id === peerId);
+  const peers =
+    peerId && !known.some((p) => p.id === peerId) ? [...known, { id: peerId, name: peerId }] : known;
+  const canPeer = peers.length > 0;
+  // A wake with no hub picked YET still renders as a wake — the missing hub is
+  // an error under "Runs on", not a reason to undo what the user chose.
+  const wake = canPeer && step.action === 'wake';
+  const shape = { peer: peerId, action: wake ? 'wake' : 'launch' };
+  const peerName = (peers.find((p) => p.id === peerId) || {}).name || peerId;
   const app = apps.find((a) => a.id === step.appId) || null;
-  const artifacts = stepArtifacts(app);
-  const type = HEALTH_TYPES.includes(step.healthType) ? step.healthType : 'connector';
+  const artifacts = wake ? [] : stepArtifacts(app);
+  const type = coerceHealthType(step.healthType, shape);
+  const types = healthTypesFor(shape);
   const errors = ctx.errors || {};
   const last = index === ctx.count - 1;
+  // On a wake step the timeout is not "how patient is the gate" — it is how
+  // long this machine gets to finish booting, so it says that.
+  const timeoutLabel = wake ? 'Time to boot (ms)' : type === 'delay' ? 'Wait (ms)' : 'Timeout (ms)';
+  const timeoutPlaceholder = wake
+    ? DEFAULT_WAKE_TIMEOUT_MS
+    : type === 'delay'
+      ? DEFAULT_DELAY_MS
+      : DEFAULT_TIMEOUT_MS;
 
   return `
-    <div class="stack-step" data-step-row="${index}">
+    <div class="stack-step${peerId ? ' step-peered' : ''}${wake ? ' step-wake' : ''}" data-step-row="${index}">
       <div class="step-head">
         <span class="step-n">${index + 1}</span>
-        ${selectMarkup(
-          'step-app',
-          'appId',
-          index,
-          [{ value: '', label: 'Pick an app…' }, ...apps.map((a) => ({ value: a.id, label: a.name }))],
-          step.appId,
-          `Step ${index + 1} app`
-        )}
+        ${
+          peerId
+            ? `<span class="step-peer${unknownPeer ? ' is-unpaired' : ''}" title="${esc(
+                unknownPeer
+                  ? `${peerName} is not paired with this hub any more — this step will fail until you pick another hub`
+                  : `this step runs on ${peerName}`
+              )}">${icons.link}<span>${esc(peerName)}</span>${
+                unknownPeer ? '<span class="step-unpaired">not paired</span>' : ''
+              }</span>`
+            : ''
+        }
+        ${
+          wake
+            ? `<span class="step-wake-label">${icons.power}<span>Wake ${esc(peerName || 'a hub')}</span></span>`
+            : selectMarkup(
+                'step-app',
+                'appId',
+                index,
+                [{ value: '', label: 'Pick an app…' }, ...apps.map((a) => ({ value: a.id, label: a.name }))],
+                step.appId,
+                `Step ${index + 1} app`
+              )
+        }
         <span class="step-move">
           <button class="btn btn-icon step-up" data-act="stack-step-up" data-index="${index}" title="Move up" aria-label="Move up"${index === 0 ? ' disabled' : ''}>${icons.chevron}</button>
           <button class="btn btn-icon step-down" data-act="stack-step-down" data-index="${index}" title="Move down" aria-label="Move down"${last ? ' disabled' : ''}>${icons.chevron}</button>
           <button class="btn btn-icon" data-act="stack-step-remove" data-index="${index}" title="Remove step" aria-label="Remove step">${icons.close}</button>
         </span>
       </div>
-      ${errorMarkup(errors, `step-${index}-appId`)}
+      ${wake ? '' : errorMarkup(errors, `step-${index}-appId`)}
       ${
         artifacts.length > 1
           ? `<label class="lbl">Which build</label>
@@ -135,16 +197,50 @@ function stepMarkup(step, index, ctx) {
           : ''
       }
       <div class="step-grid">
+        ${
+          canPeer
+            ? `<div class="step-cell">
+                 <label class="lbl">Runs on</label>
+                 ${selectMarkup(
+                   'step-peer',
+                   'peer',
+                   index,
+                   [{ value: '', label: 'This hub' }, ...peers.map((p) => ({ value: p.id, label: p.name }))],
+                   peerId,
+                   `Step ${index + 1} hub`
+                 )}
+                 ${errorMarkup(errors, `step-${index}-peer`)}
+               </div>
+               <div class="step-cell">
+                 <label class="lbl">Step does</label>
+                 ${selectMarkup(
+                   'step-action',
+                   'action',
+                   index,
+                   [
+                     { value: 'launch', label: ACTION_TEXT.launch },
+                     { value: 'wake', label: ACTION_TEXT.wake },
+                   ],
+                   step.action === 'wake' ? 'wake' : 'launch',
+                   `Step ${index + 1} action`
+                 )}
+               </div>`
+            : ''
+        }
         <div class="step-cell">
           <label class="lbl">Ready when</label>
-          ${selectMarkup(
-            'step-health',
-            'healthType',
-            index,
-            HEALTH_TYPES.map((t) => ({ value: t, label: HEALTH_TEXT[t] })),
-            type,
-            `Step ${index + 1} health rule`
-          )}
+          ${
+            wake
+              ? `<p class="step-fixed">${HEALTH_TEXT['peer-online']}</p>`
+              : selectMarkup(
+                  'step-health',
+                  'healthType',
+                  index,
+                  types.map((t) => ({ value: t, label: HEALTH_TEXT[t] })),
+                  type,
+                  `Step ${index + 1} health rule`
+                )
+          }
         </div>
         ${
           type === 'port'
@@ -157,13 +253,26 @@ function stepMarkup(step, index, ctx) {
             : ''
         }
         <div class="step-cell">
-          <label class="lbl">${type === 'delay' ? 'Wait (ms)' : 'Timeout (ms)'}</label>
+          <label class="lbl">${timeoutLabel}</label>
           <input class="input input-num" type="number" min="1" inputmode="numeric"
                  data-step-field="timeoutMs" data-index="${index}" value="${esc(step.timeoutMs)}"
-                 placeholder="${type === 'delay' ? DEFAULT_DELAY_MS : DEFAULT_TIMEOUT_MS}"
+                 placeholder="${timeoutPlaceholder}"
                  aria-label="Step ${index + 1} timeout">
         </div>
       </div>
+      ${
+        wake
+          ? `<p class="field-note step-note">${esc(
+              peerName
+                ? `Magic packets go to ${peerName}'s stored MAC address, then the run waits for that hub to answer — give it long enough to finish booting.`
+                : 'Pick the hub above: magic packets go to its stored MAC address, then the run waits for it to answer.'
+            )}</p>`
+          : peerId
+            ? `<p class="field-note step-note">${esc(
+                `The gate runs on ${peerName} — this hub asks it, and only ${peerName} can see its own bus.`
+              )}</p>`
+            : ''
+      }
       ${errorMarkup(errors, `step-${index}-port`)}
       ${errorMarkup(errors, `step-${index}-timeoutMs`)}
       <label class="check">
@@ -285,7 +394,9 @@ function editorBody(draft, ctx) {
           : '<p class="field-note">Nothing installable is discovered yet — a step still needs an app to point at.</p>'
       }
       <div class="stack-steps">
-        ${steps.map((s, i) => stepMarkup(s, i, { apps, errors, count: steps.length })).join('')}
+        ${steps
+          .map((s, i) => stepMarkup(s, i, { apps, errors, count: steps.length, peers: ctx.peers }))
+          .join('')}
       </div>
       ${errorMarkup(errors, 'steps')}
       <button class="btn btn-ghost btn-sm" data-act="stack-step-add">Add step</button>
@@ -310,17 +421,20 @@ function listBody(stacks, ctx) {
 }
 
 /**
- * @param {{stacks?:Array, apps?:Array, draft?:object|null, errors?:object,
- *          runs?:object, saving?:boolean}} ctx
+ * @param {{stacks?:Array, apps?:Array, peers?:Array, draft?:object|null,
+ *          errors?:object, runs?:object, saving?:boolean}} ctx
  */
 export function renderStacksSheet(ctx = {}) {
   const stacks = normalizeStacks(ctx.stacks);
   const draft = ctx.draft || null;
   const names = nameMap(ctx.apps);
+  // v0.7 — absent (no fleet, or a build without getFleet) means the whole
+  // cross-hub half of the editor never renders.
+  const peers = Array.isArray(ctx.peers) ? ctx.peers.filter((p) => p && p.id) : [];
 
   const body = draft
-    ? editorBody(draft, { apps: ctx.apps || [], errors: ctx.errors })
-    : listBody(stacks, { names, runs: ctx.runs || {} });
+    ? editorBody(draft, { apps: ctx.apps || [], errors: ctx.errors, peers })
+    : listBody(stacks, { names, peerNames: peerNameMap(peers), runs: ctx.runs || {} });
 
   const foot = draft
     ? `<button class="btn btn-ghost" data-act="stack-cancel">Cancel</button>

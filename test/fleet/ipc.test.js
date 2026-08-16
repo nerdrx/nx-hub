@@ -8,6 +8,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert");
+const dgram = require("dgram");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -29,6 +30,7 @@ const FLEET_CHANNELS = [
   "nxhub:fleetInstall",
   "nxhub:fleetLaunch",
   "nxhub:fleetUpdateAll",
+  "nxhub:fleetWake", // v0.7
 ];
 
 /** Minimal ipcMain double — same shape as test/core's. */
@@ -294,8 +296,96 @@ test("the preload surface exposes exactly the fleet methods the SPEC names", () 
     ["fleetInstall", "nxhub:fleetInstall"],
     ["fleetLaunch", "nxhub:fleetLaunch"],
     ["fleetUpdateAll", "nxhub:fleetUpdateAll"],
+    ["fleetWake", "nxhub:fleetWake"], // v0.7
   ]) {
     assert.match(source, new RegExp(`\\b${method}:`), `preload is missing ${method}`);
     assert.ok(source.includes(`"${channel}"`), `preload does not invoke ${channel}`);
   }
+});
+
+/* ------------------------------------------------------------------ */
+/* v0.7: fleetWake                                                     */
+/* ------------------------------------------------------------------ */
+
+test("fleetWake reports no-mac rather than pretending it woke something", async (t) => {
+  const env = useTempDataDir();
+  t.after(async () => {
+    await fleet.close();
+    env.cleanup();
+  });
+  await fleet.close();
+
+  const hub = fleet.init({
+    dataDir: env.dir,
+    port: 0,
+    host: "127.0.0.1",
+    beacon: false,
+    log: () => {},
+    emit: () => {},
+  });
+  await hub.ready;
+  const peer = await h.startFleet();
+  await h.pairHubs(hub, peer);
+
+  const ipcMain = fakeIpcMain();
+  ipc.init({ ipcMain, BrowserWindow: null });
+  const result = await ipcMain.invoke("nxhub:fleetWake", peer.store.load().id);
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.sent, false);
+  assert.strictEqual(result.reason, "no-mac", "no session ever taught this hub a hardware address");
+});
+
+test("fleetWake with a stored MAC sends, and reports what it sent", async (t) => {
+  const env = useTempDataDir();
+  t.after(async () => {
+    await fleet.close();
+    env.cleanup();
+  });
+  await fleet.close();
+
+  const sink = dgram.createSocket({ type: "udp4", reuseAddr: true });
+  const packets = [];
+  sink.on("message", (m) => packets.push(Buffer.from(m)));
+  const port = await new Promise((r) => sink.bind(0, "127.0.0.1", () => r(sink.address().port)));
+  t.after(() => sink.close());
+
+  const hub = fleet.init({
+    dataDir: env.dir,
+    port: 0,
+    host: "127.0.0.1",
+    beacon: false,
+    // Loopback and an ephemeral port: nothing broadcasts out of this test.
+    wolAddress: "127.0.0.1",
+    wolPorts: [port],
+    log: () => {},
+    emit: () => {},
+  });
+  await hub.ready;
+  const peer = await h.startFleet();
+  await h.pairHubs(hub, peer);
+  const peerId = peer.store.load().id;
+  hub.store.touchPeer(peerId, { mac: "aa:bb:cc:dd:ee:ff" });
+
+  const ipcMain = fakeIpcMain();
+  ipc.init({ ipcMain, BrowserWindow: null });
+  const result = await ipcMain.invoke("nxhub:fleetWake", peerId);
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.sent, true);
+  assert.strictEqual(result.mac, "aa:bb:cc:dd:ee:ff");
+
+  await new Promise((r) => setTimeout(r, 120));
+  assert.strictEqual(packets.length, 3, "SPEC: three magic packets");
+  assert.strictEqual(packets[0].length, 102);
+});
+
+test("fleetWake on a switched-off fleet is a quiet false, not a throw", async (t) => {
+  const env = useTempDataDir();
+  t.after(() => env.cleanup());
+  await fleet.close();
+
+  const ipcMain = fakeIpcMain();
+  ipc.init({ ipcMain, BrowserWindow: null });
+  const result = await ipcMain.invoke("nxhub:fleetWake", "0123456789abcdef");
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.sent, false);
 });

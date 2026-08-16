@@ -13,10 +13,40 @@
 import { isLaunchable } from './actions.js';
 import { monogram, tileHue } from './launcher.js';
 
-export const HEALTH_TYPES = ['connector', 'port', 'delay'];
+/**
+ * Every health type the model knows. Same name and same contents as main's own
+ * export — the two lists sit on either side of the IPC boundary and drifting
+ * apart is exactly the bug that would be invisible until a stack refused to run.
+ */
+export const HEALTH_TYPES = ['connector', 'port', 'delay', 'peer-online'];
 export const DEFAULT_TIMEOUT_MS = 30000;
 export const DEFAULT_DELAY_MS = 2000;
 export const MAX_TIMEOUT_MS = 600000;
+
+/**
+ * v0.7 cross-hub steps. SPEC: a step gains optional `peer` (fleet peer id) and
+ * `action: "launch"(default) | "wake"`.
+ *
+ * A peered step's gate runs on the OTHER machine, so `connector` is invalid
+ * there — that hub's bus is not visible from here, and SPEC says such a gate
+ * drops to `delay`. The new `peer-online` type gates on the peer's beacon and
+ * is the implicit gate after a wake step.
+ */
+export const PEER_HEALTH_TYPES = ['port', 'delay', 'peer-online'];
+
+/**
+ * What a step running HERE may gate on. `peer-online` is deliberately absent:
+ * main sanitizes it back to a delay on a local step, so offering it would be
+ * offering a choice that silently becomes another one.
+ */
+export const LOCAL_HEALTH_TYPES = ['connector', 'port', 'delay'];
+export const STEP_ACTIONS = ['launch', 'wake'];
+
+/** SPEC: a wake step gates peer-online with this timeout unless told otherwise. */
+export const DEFAULT_WAKE_TIMEOUT_MS = 120000;
+
+/** A peer id is another hub's own string — kept verbatim, only bounded. */
+export const MAX_PEER_ID_LEN = 128;
 
 /**
  * v0.6 automation. SPEC: `trigger: { type: "adb-device"|"connector-app",
@@ -64,12 +94,46 @@ export function slugify(name) {
     .replace(/-+$/, '');
 }
 
-export function normalizeHealth(raw) {
+/**
+ * Which gates a step may pick, given where it runs and what it does.
+ * A wake step has exactly one: the hub answering IS the step finishing.
+ */
+export function healthTypesFor(step) {
+  const s = step && typeof step === 'object' ? step : {};
+  if (String(s.action) === 'wake') return ['peer-online'];
+  return String(s.peer || '').trim() ? PEER_HEALTH_TYPES : LOCAL_HEALTH_TYPES;
+}
+
+/**
+ * Force a health type into the set this step is allowed to use.
+ *
+ * `connector` on a peered step drops to `delay` (SPEC's own word). Everything
+ * else that does not fit falls back to the first legal type, so a stack written
+ * by hand — or by an older hub — can never render a gate that cannot run.
+ */
+export function coerceHealthType(type, step) {
+  const allowed = healthTypesFor(step);
+  const want = HEALTH_TYPES.includes(type) ? type : '';
+  if (allowed.includes(want)) return want;
+  if (want === 'connector' && allowed.includes('delay')) return 'delay';
+  return allowed[0];
+}
+
+export function normalizeHealth(raw, step) {
   const h = raw && typeof raw === 'object' ? raw : {};
-  const type = HEALTH_TYPES.includes(h.type) ? h.type : 'connector';
+  const type = coerceHealthType(h.type, step);
+  const wake = !!step && String(step.action) === 'wake';
   const out = { type };
   const timeout = Math.round(Number(h.timeoutMs));
-  if (Number.isFinite(timeout) && timeout > 0) out.timeoutMs = timeout;
+  if (Number.isFinite(timeout) && timeout > 0) {
+    // Main clamps at MAX_TIMEOUT_MS; clamping here too means the number the
+    // editor shows is the number that will actually be used.
+    out.timeoutMs = Math.min(timeout, MAX_TIMEOUT_MS);
+  } else if (wake) {
+    // A wake always carries its budget — SPEC's own default for how long a
+    // machine gets to finish booting.
+    out.timeoutMs = DEFAULT_WAKE_TIMEOUT_MS;
+  }
   if (type === 'port') {
     const port = Math.round(Number(h.port));
     if (Number.isFinite(port) && port > 0) out.port = port;
@@ -77,13 +141,36 @@ export function normalizeHealth(raw) {
   return out;
 }
 
+/** A step that sends magic packets instead of launching anything. */
+export function isWakeStep(step) {
+  return !!step && step.action === 'wake' && !!step.peer;
+}
+
+/** A peer id, exactly as the other hub wrote it — trimmed and bounded, never slugified. */
+export function normalizePeerId(raw) {
+  return String(raw === null || raw === undefined ? '' : raw)
+    .trim()
+    .slice(0, MAX_PEER_ID_LEN);
+}
+
 export function normalizeStep(raw) {
   const s = raw && typeof raw === 'object' ? raw : {};
+  const peer = normalizePeerId(s.peer);
+  // A wake with nothing to wake is not a step — it degrades to a launch, and
+  // then the empty appId drops it in normalizeStack().
+  const action = s.action === 'wake' && peer ? 'wake' : 'launch';
+  const wake = action === 'wake';
+  // Main stores a wake step as { appId: null, artifactId: null } — matching it
+  // exactly means a stack survives a round trip through either process
+  // unchanged. Every reader here treats null and '' the same way.
   const step = {
-    appId: String(s.appId || '').trim().toLowerCase(),
-    health: normalizeHealth(s.health),
+    appId: wake ? null : String(s.appId || '').trim().toLowerCase(),
+    health: normalizeHealth(s.health, { peer, action }),
   };
-  if (s.artifactId) step.artifactId = String(s.artifactId);
+  if (wake) step.artifactId = null;
+  else if (s.artifactId) step.artifactId = String(s.artifactId);
+  if (peer) step.peer = peer;
+  if (wake) step.action = 'wake';
   if (s.optional) step.optional = true;
   return step;
 }
@@ -125,7 +212,11 @@ export function normalizeStack(raw) {
   const out = {
     id,
     name: name || id,
-    steps: asArray(s.steps).map(normalizeStep).filter((st) => st.appId),
+    // A wake step legitimately has no app — it is the one step type that is
+    // about a machine rather than a program.
+    steps: asArray(s.steps)
+      .map(normalizeStep)
+      .filter((st) => st.appId || isWakeStep(st)),
   };
   // Absent for Manual — the key never appears in what reaches saveStack().
   if (trigger) out.trigger = trigger;
@@ -141,7 +232,44 @@ export function normalizeStacks(list) {
 /* ------------------------------------------------------------------ editor */
 
 export function blankStep() {
-  return { appId: '', artifactId: '', healthType: 'connector', port: '', timeoutMs: '', optional: false };
+  return {
+    appId: '',
+    artifactId: '',
+    // v0.7 — '' means "this hub", and every new step starts local.
+    peer: '',
+    action: 'launch',
+    healthType: 'connector',
+    port: '',
+    timeoutMs: '',
+    optional: false,
+  };
+}
+
+/**
+ * Keep one draft step internally consistent after the user changes `peer` or
+ * `action`: a gate that cannot run where the step runs is rewritten to one that
+ * can.
+ *
+ * What this does NOT do is second-guess the user's intent. "Wake a hub" with no
+ * hub picked yet stays a wake — reverting the select under the user and then
+ * demanding an app they never wanted would be the wrong answer to a half-filled
+ * form. validateDraft() asks for the missing hub; normalizeStep() is what
+ * degrades a peerless wake on the way into the saved model.
+ *
+ * `fillDefaults` is only passed when the user JUST flipped the action — filling
+ * the timeout on every read would fight anyone trying to clear the box.
+ * The app id is deliberately NOT cleared for a wake step either: the picker
+ * hides, the typed value survives, and flipping back restores it.
+ */
+export function coerceStepFields(step, opts = {}) {
+  const s = { ...(step && typeof step === 'object' ? step : {}) };
+  s.peer = normalizePeerId(s.peer);
+  s.action = s.action === 'wake' ? 'wake' : 'launch';
+  s.healthType = coerceHealthType(s.healthType, s);
+  if (opts.fillDefaults && s.action === 'wake' && !String(s.timeoutMs || '').trim()) {
+    s.timeoutMs = String(DEFAULT_WAKE_TIMEOUT_MS);
+  }
+  return s;
 }
 
 /** Trigger fields of a blank draft — Manual, with the default cooldown shown. */
@@ -175,8 +303,11 @@ export function draftFromStack(stack) {
     ...triggerFieldsFrom(s.trigger || null),
     steps: s.steps.length
       ? s.steps.map((st) => ({
-          appId: st.appId,
+          // A wake step's appId is null in the model; an input holds a string.
+          appId: st.appId || '',
           artifactId: st.artifactId || '',
+          peer: st.peer || '',
+          action: st.action === 'wake' ? 'wake' : 'launch',
           healthType: st.health.type,
           port: st.health.port ? String(st.health.port) : '',
           timeoutMs: st.health.timeoutMs ? String(st.health.timeoutMs) : '',
@@ -214,17 +345,23 @@ export function stackFromDraft(draft) {
     id: slugify(name),
     name,
     ...(trigger ? { trigger } : {}),
-    steps: asArray(d.steps).map((step) => {
-      const s = step && typeof step === 'object' ? step : {};
-      const type = HEALTH_TYPES.includes(s.healthType) ? s.healthType : 'connector';
-      const health = { type };
+    steps: asArray(d.steps).map((raw) => {
+      const s = coerceStepFields(raw);
+      const health = { type: s.healthType };
       const timeout = Math.round(Number(s.timeoutMs));
       if (Number.isFinite(timeout) && timeout > 0) health.timeoutMs = timeout;
-      if (type === 'port') {
+      if (s.healthType === 'port') {
         const port = Math.round(Number(s.port));
         if (Number.isFinite(port) && port > 0) health.port = port;
       }
-      return { appId: s.appId, artifactId: s.artifactId || '', health, optional: !!s.optional };
+      return {
+        appId: s.appId,
+        artifactId: s.artifactId || '',
+        peer: s.peer,
+        action: s.action,
+        health,
+        optional: !!s.optional,
+      };
     }),
   });
 }
@@ -277,9 +414,15 @@ export function validateDraft(draft, stacks = []) {
   if (!steps.length) errors.steps = 'A stack needs at least one step.';
 
   steps.forEach((raw, i) => {
-    const step = raw && typeof raw === 'object' ? raw : {};
-    if (!String(step.appId || '').trim()) errors[`step-${i}-appId`] = 'Pick an app for this step.';
-    const type = HEALTH_TYPES.includes(step.healthType) ? step.healthType : 'connector';
+    const step = coerceStepFields(raw);
+    // A step the user marked "Wake a hub" but never gave a hub to: say what is
+    // missing, rather than demanding an app they never meant to pick.
+    if (step.action === 'wake' && !step.peer) {
+      errors[`step-${i}-peer`] = 'Pick the hub this step should wake.';
+    } else if (step.action !== 'wake' && !String(step.appId || '').trim()) {
+      errors[`step-${i}-appId`] = 'Pick an app for this step.';
+    }
+    const type = step.healthType;
 
     if (type === 'port') {
       const port = numberish(step.port);
@@ -352,6 +495,11 @@ export function newRun(stackId) {
     failedIndex: -1,
     skipped: [],
     finishedAt: 0,
+    // v0.7 — stepIndex → peer id, as reported by the event's extras. A remote
+    // step says WHERE it is happening even when the saved model does not.
+    peers: {},
+    // How a stop actually landed: '' | 'remote-stop' | 'remote-failed' | …
+    how: '',
     // Set by a `triggered` event: which watcher started this run.
     reason: '',
   };
@@ -380,7 +528,13 @@ export function applyStackProgress(run, ev, ctx = {}) {
   const fresh = !run || isFinished(run);
   const next = fresh
     ? newRun(stackId)
-    : { ...run, stackId, steps: run.steps.slice(), skipped: (run.skipped || []).slice() };
+    : {
+        ...run,
+        stackId,
+        steps: run.steps.slice(),
+        skipped: (run.skipped || []).slice(),
+        peers: { ...(run.peers || {}) },
+      };
 
   const idx = Number(ev.stepIndex);
   // SPEC: a run-level verdict (and the v0.6 `triggered` event) carries
@@ -391,8 +545,15 @@ export function applyStackProgress(run, ev, ctx = {}) {
   if (hasIdx) {
     next.steps[idx] = phase === 'done' ? 'healthy' : phase;
     next.stepIndex = idx;
+    // SPEC v0.7: a remote step's events MAY carry the peer in their extras.
+    // Remember it per step — one run can straddle two machines.
+    if (ev.peer) next.peers[idx] = String(ev.peer);
   }
   if (ev.appId) next.appId = String(ev.appId);
+  // v0.7 — a stop of a peered step reports how it went; the run-level failed
+  // event may carry a peer of its own.
+  if (ev.how) next.how = String(ev.how);
+  if (!hasIdx && ev.peer && next.stepIndex >= 0) next.peers[next.stepIndex] = String(ev.peer);
 
   if (phase === 'triggered') {
     // The watcher fired: the run exists before anything launched. Keep the
@@ -439,14 +600,39 @@ export function nameMap(apps) {
   return map;
 }
 
-/** The one line under a stack tile. Sentence case, concrete, English. */
-export function runLabel(run, stack, names) {
+/** Peer id → the name that hub calls itself. Ids are case-sensitive hex. */
+export function peerNameMap(peers) {
+  const map = new Map();
+  for (const peer of asArray(peers)) {
+    if (peer && peer.id) map.set(String(peer.id), peer.name || peer.id);
+  }
+  return map;
+}
+
+/**
+ * The one line under a stack tile. Sentence case, concrete, English.
+ *
+ * v0.7: when the step is running somewhere else, the line is prefixed with that
+ * hub's name — "workshop-pc · Waiting for WiVRn NX…". The live event's peer
+ * wins over the saved model's, because a run knows where it actually went.
+ *
+ * @param {object|null} run
+ * @param {object|null} stack
+ * @param {Map|Array} names  app names
+ * @param {Map|Array} peers  peer names (v0.7; absent = no prefixes)
+ */
+export function runLabel(run, stack, names, peers) {
   if (!run) return '';
   const lookup = names instanceof Map ? names : nameMap(names);
+  const peerLookup = peers instanceof Map ? peers : peerNameMap(peers);
   const steps = (stack && stack.steps) || [];
   const step = steps[run.stepIndex] || null;
   const appId = (step && step.appId) || run.appId || '';
   const appName = lookup.get(String(appId).toLowerCase()) || appId || 'the app';
+  const peerId = (run.peers && run.peers[run.stepIndex]) || (step && step.peer) || '';
+  const peerName = peerId ? peerLookup.get(peerId) || peerId : '';
+  const where = peerName ? `${peerName} · ` : '';
+  const wake = isWakeStep(step);
 
   switch (run.phase) {
     case 'triggered':
@@ -454,8 +640,15 @@ export function runLabel(run, stack, names) {
     case 'done':
       return 'Every step is up';
     case 'failed':
-      return `${appName} did not come up`;
+      return wake
+        ? `${peerName || 'That hub'} did not wake up`
+        : `${where}${appName} did not come up`;
     case 'stopped':
+      // A stack that reached across the LAN says whether the far side agreed.
+      if (run.how === 'remote-stop') return peerName ? `Stopped on ${peerName}` : 'Stopped';
+      if (run.how === 'remote-failed') {
+        return peerName ? `${peerName} did not confirm the stop` : 'The other hub did not confirm the stop';
+      }
       return 'Stopped';
     case 'stopping':
       return 'Stopping…';
@@ -463,10 +656,17 @@ export function runLabel(run, stack, names) {
       break;
   }
   const phase = run.steps[run.stepIndex] || '';
-  if (phase === 'launching') return `Launching ${appName}…`;
-  if (phase === 'waiting') return `Waiting for ${appName}…`;
-  if (phase === 'healthy') return `${appName} is up`;
-  if (phase === 'failed') return `${appName} timed out — carrying on`;
+  if (wake) {
+    if (phase === 'launching') return `Waking ${peerName || 'the other hub'}…`;
+    if (phase === 'waiting') return `Waiting for ${peerName || 'the other hub'} to answer…`;
+    if (phase === 'healthy') return `${peerName || 'That hub'} is awake`;
+    if (phase === 'failed') return `${peerName || 'That hub'} stayed asleep — carrying on`;
+    return 'Running…';
+  }
+  if (phase === 'launching') return `${where}Launching ${appName}…`;
+  if (phase === 'waiting') return `${where}Waiting for ${appName}…`;
+  if (phase === 'healthy') return `${where}${appName} is up`;
+  if (phase === 'failed') return `${where}${appName} timed out — carrying on`;
   return 'Running…';
 }
 
@@ -500,10 +700,14 @@ export function cooldownLabel(trigger) {
  * live run state. The view stays dumb; all of this is testable here.
  *
  * @param {Array} stacks
- * @param {{apps?:Array, runs?:object}} ctx
+ * @param {{apps?:Array, runs?:object, peers?:Array}} ctx
  */
 export function stackTiles(stacks, ctx = {}) {
   const names = nameMap(ctx.apps);
+  const peerNames = peerNameMap(ctx.peers);
+  // An unpaired peer is only knowable when a peer list was actually supplied —
+  // a build with no fleet must not brand every peered step as broken.
+  const knowsPeers = Array.isArray(ctx.peers) && ctx.peers.length > 0;
   const runs = ctx.runs && typeof ctx.runs === 'object' ? ctx.runs : {};
   return normalizeStacks(stacks).map((stack) => {
     const run = runs[stack.id] || null;
@@ -513,7 +717,7 @@ export function stackTiles(stacks, ctx = {}) {
       name: stack.name,
       running,
       phase: run ? run.phase : '',
-      status: runLabel(run, stack, names),
+      status: runLabel(run, stack, names, peerNames),
       // v0.6 — a stack that starts itself says so with a bolt and an "auto" chip.
       triggered: !!stack.trigger,
       triggerTitle: stack.trigger
@@ -522,13 +726,24 @@ export function stackTiles(stacks, ctx = {}) {
           }`
         : '',
       steps: stack.steps.map((step, i) => {
-        const name = names.get(step.appId) || step.appId;
+        const wake = isWakeStep(step);
+        const peer = step.peer || '';
+        const peerName = peer ? peerNames.get(peer) || peer : '';
+        // A wake step is about a machine, so the machine's name IS the label.
+        const name = wake ? peerName || 'a hub' : names.get(step.appId) || step.appId;
         const phase = run ? run.steps[i] || '' : '';
         return {
-          appId: step.appId,
+          appId: step.appId || '',
           name,
-          monogram: monogram(name),
-          hue: tileHue(step.appId),
+          // v0.7 — the wake step draws a power glyph instead of two letters.
+          monogram: wake ? '' : monogram(name),
+          hue: tileHue(wake ? peer : step.appId),
+          peer,
+          peerName,
+          wake,
+          // Pairing can change under a saved stack. That is a run-time failure
+          // by design, so the step still renders — it just says so first.
+          unknownPeer: knowsPeers && !!peer && !peerNames.has(peer),
           optional: !!step.optional,
           health: step.health.type,
           phase,
@@ -555,10 +770,17 @@ export function stepArtifacts(app) {
   return (app.artifacts || []).filter((a) => isLaunchable(a));
 }
 
-/** Short human summary of a health rule, for the tile title and the list row. */
+/**
+ * Short human summary of a health rule, for the tile title and the list row.
+ *
+ * This reads the type as written rather than coercing it: the caller has a
+ * saved gate in hand and wants it described, not repaired.
+ */
 export function healthLabel(health) {
-  const h = normalizeHealth(health);
-  if (h.type === 'port') return `port ${h.port || '?'}`;
-  if (h.type === 'delay') return `wait ${h.timeoutMs || DEFAULT_DELAY_MS} ms`;
+  const h = health && typeof health === 'object' ? health : {};
+  const type = HEALTH_TYPES.includes(h.type) ? h.type : 'connector';
+  if (type === 'port') return `port ${h.port || '?'}`;
+  if (type === 'delay') return `wait ${h.timeoutMs || DEFAULT_DELAY_MS} ms`;
+  if (type === 'peer-online') return 'that hub answers';
   return 'on the bus';
 }

@@ -359,7 +359,7 @@ test('the fleet sheet opens, shows a code and survives a wrong one', async () =>
   const code = sheetField({ 'data-fleet-field': 'code' }, '000000');
   await clickAndSettle({ 'data-act': 'fleet-pair-submit' }, 700);
   assert.match(dom.html('sheet-root'), /did not match/, 'the wrong code says so, inline');
-  assert.equal(mock().peers().length, 2, 'and pairs nothing');
+  assert.equal(mock().peers().length, 3, 'and pairs nothing');
 
   // A malformed code never reaches the bridge at all.
   code.value = '12';
@@ -369,7 +369,7 @@ test('the fleet sheet opens, shows a code and survives a wrong one', async () =>
   // …then the real one.
   code.value = mock().pairCode();
   await clickAndSettle({ 'data-act': 'fleet-pair-submit' }, 700);
-  assert.equal(mock().peers().length, 3, 'the peer joined the fleet');
+  assert.equal(mock().peers().length, 4, 'the peer joined the fleet');
   assert.ok(dom.html('toasts').includes('Paired with'), 'and it said so');
   assert.ok(dom.html('sheet-root').includes('192.168.1.99'), 'the list picked it up');
 
@@ -386,12 +386,12 @@ test('unpairing confirms, and a remote job draws a row under its peer', async ()
 
   globalThis.window.__confirm = false;
   await clickAndSettle({ 'data-act': 'fleet-unpair', 'data-peer': peerId }, 120);
-  assert.equal(mock().peers().length, 3, 'a declined confirm unpairs nothing');
+  assert.equal(mock().peers().length, 4, 'a declined confirm unpairs nothing');
 
   globalThis.window.__confirm = true;
-  const spare = mock().peers()[2].id;
+  const spare = mock().peers()[3].id;
   await clickAndSettle({ 'data-act': 'fleet-unpair', 'data-peer': spare }, 200);
-  assert.equal(mock().peers().length, 2, 'a confirmed one does');
+  assert.equal(mock().peers().length, 3, 'a confirmed one does');
 
   await clickAndSettle({ 'data-act': 'close-sheet' }, 60);
   assert.equal(dom.html('sheet-root'), '', 'the sheet (and its countdown) closed');
@@ -457,6 +457,205 @@ test('a triggered run opens on the tile before anything launches', async () => {
   assert.ok(launch.includes('phase-triggered'), launch.slice(launch.indexOf('headset-arrives'), 400));
   assert.ok(launch.includes('An app joined the bus — starting…'));
   assert.ok(!launch.includes('st-glyph'), 'no step has been reached yet');
+});
+
+/* ------------------------------------------------------------------ v0.7 */
+
+test('dev links get their own tiles, run from the checkout, and unlink', async () => {
+  await clickAndSettle({ 'data-act': 'view', 'data-view': 'launch' }, 80);
+  const launch = dom.html('launch');
+  assert.ok(launch.includes('tile-dev'), 'the linked checkouts have tiles');
+  assert.ok(launch.includes('>DEV<'), 'wearing the DEV chip');
+  assert.ok(launch.includes('data-act="dev-run"'), 'and they run the checkout, not an install');
+  assert.ok(!launch.includes('<b>'), 'the linked names are escaped');
+
+  // The tile order: dev tiles sit last, after every installed app.
+  assert.ok(
+    launch.lastIndexOf('data-act="tile-launch"') < launch.indexOf('data-act="dev-run"'),
+    'dev tiles come after the app tiles'
+  );
+
+  await clickAndSettle({ 'data-act': 'dev-run', 'data-dev': 'nx-sandbox' }, 120);
+  const toasts = dom.html('toasts');
+  assert.match(toasts, /Running NX Sandbox/, toasts);
+  assert.match(toasts, /--verbose/, 'the custom command is what ran');
+  assert.equal(
+    (toasts.match(/Running NX Sandbox/g) || []).length,
+    1,
+    'devRun toasts on its own — the renderer must not say it twice'
+  );
+
+  // A link whose folder went away: still listed, no longer runnable.
+  mock().toggleDevExists('nx-sandbox');
+  await tick(120);
+  const broken = dom.html('launch');
+  assert.ok(broken.includes('tile-dev-broken'), 'the tile reads as inert');
+  assert.ok(broken.includes('folder is gone'));
+  assert.match(broken, /<button class="tile-hit"[^>]*disabled/);
+  mock().toggleDevExists('nx-sandbox');
+  await tick(120);
+
+  // The error path shows the bridge's own message, not a wrapped one.
+  await clickAndSettle({ 'data-act': 'dev-run', 'data-dev': 'not-a-link' }, 140);
+  assert.match(dom.html('toasts'), /No dev link/, dom.html('toasts'));
+
+  // The card of the app that ALSO has a checkout carries the marker.
+  await clickAndSettle({ 'data-act': 'view', 'data-view': 'manage' }, 80);
+  assert.ok(dom.html('grid').includes('dev-mark'), 'the WiVRn NX card is marked');
+
+  // Unlinking asks first.
+  globalThis.window.__confirm = false;
+  await clickAndSettle({ 'data-act': 'dev-unlink', 'data-dev': 'nx-sandbox' }, 120);
+  assert.equal(mock().devLinks().length, 2, 'a declined confirm unlinks nothing');
+
+  globalThis.window.__confirm = true;
+  await clickAndSettle({ 'data-act': 'dev-unlink', 'data-dev': 'nx-sandbox' }, 200);
+  assert.equal(mock().devLinks().length, 1);
+  assert.match(dom.html('toasts'), /unlinked/);
+  assert.ok(!dom.html('grid').includes('NX Sandbox'), 'the fresh list from the call is what redrew');
+
+  await clickAndSettle({ 'data-act': 'view', 'data-view': 'launch' }, 80);
+  assert.ok(!dom.html('launch').includes('NX Sandbox'), 'and the tile is gone');
+
+  mock().relinkDev();
+  await tick(80);
+});
+
+test('the editor builds a peered step and saves it as a cross-hub stack', async () => {
+  await clickAndSettle({ 'data-act': 'stacks' }, 140);
+  await clickAndSettle({ 'data-act': 'stack-new' }, 120);
+  let sheet = dom.html('sheet-root');
+  assert.ok(sheet.includes('data-step-field="peer"'), 'the fleet gives the step a "Runs on"');
+  assert.ok(sheet.includes('>NX-WIN<'), 'and the peers are pickable by name');
+
+  const fields = [
+    sheetField({ 'data-stack-field': 'name' }, 'Remote helper'),
+    sheetField({ 'data-step-field': 'appId', 'data-index': '0' }, 'wivrn-nx'),
+    sheetField({ 'data-step-field': 'peer', 'data-index': '0' }, 'c0ffee11deadbeef'),
+    sheetField({ 'data-step-field': 'healthType', 'data-index': '0' }, 'port'),
+    sheetField({ 'data-step-field': 'port', 'data-index': '0' }, '9757'),
+  ];
+
+  // Moving the step to another hub re-renders it: the local bus is not on offer.
+  doc.dispatch('change', { target: fields[2] });
+  await tick(60);
+  sheet = dom.html('sheet-root');
+  assert.ok(sheet.includes('class="step-peer"'), 'the row says where it runs');
+  assert.ok(!sheet.includes('The app reports in on the bus'), 'and cannot gate on this hub');
+  assert.ok(sheet.includes('The other hub answers'));
+
+  await clickAndSettle({ 'data-act': 'stack-save' }, 220);
+  const saved = mock().stacks().find((s) => s.id === 'remote-helper');
+  assert.ok(saved, 'it saved');
+  assert.equal(saved.steps[0].peer, 'c0ffee11deadbeef');
+  assert.equal(saved.steps[0].appId, 'wivrn-nx');
+  assert.deepEqual(saved.steps[0].health, { type: 'port', port: 9757 }, 'gated on the remote port');
+
+  for (const el of fields) el.remove();
+  await clickAndSettle({ 'data-act': 'close-sheet' }, 60);
+
+  // The tile shows the step as remote.
+  await clickAndSettle({ 'data-act': 'view', 'data-view': 'launch' }, 100);
+  const launch = dom.html('launch');
+  assert.ok(launch.includes('st-link'), 'the step monogram wears the link glyph');
+  assert.ok(launch.includes('st-mono-wake'), 'and the prebuilt stack still shows its wake step');
+});
+
+test('a wake step refuses to save without a hub, then saves without an app', async () => {
+  await clickAndSettle({ 'data-act': 'stacks' }, 140);
+  await clickAndSettle({ 'data-act': 'stack-new' }, 120);
+
+  const fields = [
+    sheetField({ 'data-stack-field': 'name' }, 'Wake the box'),
+    sheetField({ 'data-step-field': 'action', 'data-index': '0' }, 'wake'),
+    sheetField({ 'data-step-field': 'peer', 'data-index': '0' }, ''),
+  ];
+
+  // "Wake" with nothing to wake is refused, and says what is missing.
+  await clickAndSettle({ 'data-act': 'stack-save' }, 160);
+  assert.match(dom.html('sheet-root'), /Pick the hub this step should wake/);
+  assert.equal(mock().stacks().some((s) => s.id === 'wake-the-box'), false, 'and saved nothing');
+
+  // Point it at a hub: the app picker disappears and the boot budget fills in.
+  fields[2].value = 'c0ffee11deadbeef';
+  doc.dispatch('change', { target: fields[2] });
+  await tick(60);
+  const sheet = dom.html('sheet-root');
+  assert.ok(!sheet.includes('data-step-field="appId"'), 'no app to pick on a wake step');
+  assert.ok(sheet.includes('Wake NX-WIN'));
+  assert.match(sheet, /Time to boot \(ms\)/);
+  assert.match(sheet, /value="120000"/, 'two minutes, prefilled');
+
+  await clickAndSettle({ 'data-act': 'stack-save' }, 220);
+  const saved = mock().stacks().find((s) => s.id === 'wake-the-box');
+  assert.ok(saved, 'it saved');
+  assert.equal(saved.steps[0].action, 'wake');
+  assert.equal(saved.steps[0].appId, null, 'with no app at all');
+  assert.deepEqual(saved.steps[0].health, { type: 'peer-online', timeoutMs: 120000 });
+
+  for (const el of fields) el.remove();
+  await clickAndSettle({ 'data-act': 'close-sheet' }, 60);
+});
+
+test('a remote step names the machine it is happening on', async () => {
+  await clickAndSettle({ 'data-act': 'view', 'data-view': 'launch' }, 80);
+  app.onHubEvent({
+    type: 'stack-progress',
+    stackId: 'remote-helper',
+    stepIndex: 0,
+    appId: 'wivrn-nx',
+    phase: 'waiting',
+    peer: 'c0ffee11deadbeef',
+  });
+  await tick(80);
+  const launch = dom.html('launch');
+  assert.ok(launch.includes('NX-WIN · Waiting for WiVRn NX…'), launch.slice(launch.indexOf('remote-helper'), 900));
+
+  app.onHubEvent({ type: 'stack-progress', stackId: 'remote-helper', stepIndex: 0, phase: 'stopped', how: 'remote-stop' });
+  await tick(80);
+  assert.ok(dom.html('launch').includes('Stopped on NX-WIN'), 'and the far side confirmed the stop');
+});
+
+test('an offline peer with a known MAC can be woken from the fleet sheet', async () => {
+  await clickAndSettle({ 'data-act': 'fleet' }, 200);
+  let sheet = dom.html('sheet-root');
+  assert.ok(sheet.includes('data-act="fleet-wake"'), 'the sleeping hub offers a Wake button');
+  assert.match(sheet, /Send a wake-on-LAN packet to a8:a1:59:22:0d:3e/);
+  assert.equal(
+    (sheet.match(/data-act="fleet-wake"/g) || []).length,
+    1,
+    'and only that one — living-room has no MAC, workshop-pc is already up'
+  );
+
+  await clickAndSettle({ 'data-act': 'fleet-wake', 'data-peer': 'c0ffee11deadbeef' }, 160);
+  assert.match(dom.html('toasts'), /Magic packet sent to NX-WIN/, dom.html('toasts'));
+
+  // The box answers a moment later and the button has nothing left to do.
+  await tick(2400);
+  sheet = dom.html('sheet-root');
+  assert.ok(!sheet.includes('data-act="fleet-wake"'), 'a hub that is up cannot be woken');
+  assert.match(dom.html('toasts'), /NX-WIN answered/);
+
+  await clickAndSettle({ 'data-act': 'close-sheet' }, 60);
+});
+
+test('a LAN-seeded download says so, and a LAN-named app does not', async () => {
+  await clickAndSettle({ 'data-act': 'view', 'data-view': 'manage' }, 80);
+
+  mock().simulateLanJob();
+  await tick(320);
+  assert.match(dom.html('grid'), /class="lan-chip"/, 'the bytes came off the fleet');
+  assert.match(dom.html('grid'), /seeded from workshop-pc/);
+
+  // Let it finish so the next job starts from a clean bar.
+  await tick(1600);
+
+  // The trap: an app literally named "LAN party" downloads from GitHub.
+  mock().simulateLanNameJob();
+  await tick(320);
+  const grid = dom.html('grid');
+  assert.ok(!grid.includes('class="lan-chip"'), 'a name is not a marker');
+  await tick(1600);
 });
 
 test('a crash-looping app banners its card, and the dismissal sticks per version', async () => {

@@ -2,7 +2,13 @@
 // NX Hub — fleet: `<dataDir>/fleet.json`.
 //
 //   { "id": "<16 hex>", "name": "<hostname>", "peers": [
-//       { "id", "name", "host", "port", "secret", "lastSeen" } ] }
+//       { "id", "name", "host", "port", "secret", "lastSeen", "mac" } ] }
+//
+// `mac` (v0.7) is the peer's hardware address, learned from the local ARP cache
+// while a session was up (see arp.js). It is the one field that is only ever
+// ADDED, never cleared: a failed lookup — a peer behind a router, a cache that
+// had not filled yet — must not throw away the address that lets us wake a
+// machine that is, by definition, unreachable when we need it.
 //
 // The id is minted ONCE, on first read, and never changes — it is what a peer
 // knows this hub by, and what the pairing secret was derived from. Every write
@@ -21,6 +27,7 @@ const path = require("path");
 
 const config = require("../config");
 const protocol = require("./protocol");
+const arp = require("./arp");
 
 const FILE = "fleet.json";
 
@@ -38,7 +45,7 @@ function sanitizePeer(raw) {
   if (!host) return null;
   const port = Number(raw.port);
   const lastSeen = Number(raw.lastSeen);
-  return {
+  const clean = {
     id: raw.id,
     name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim().slice(0, 64) : raw.id,
     host,
@@ -46,6 +53,12 @@ function sanitizePeer(raw) {
     secret,
     lastSeen: Number.isFinite(lastSeen) && lastSeen > 0 ? lastSeen : null,
   };
+  // v0.7: the key is ADDED, never present-and-undefined. upsertPeer merges with
+  // Object.assign, which happily copies an undefined value over a good one —
+  // an absent mac has to be an absent KEY or re-pairing would forget it.
+  const mac = arp.normalizeMac(raw.mac);
+  if (mac) clean.mac = mac;
+  return clean;
 }
 
 function sanitize(raw) {
@@ -149,6 +162,15 @@ function createStore(dataDir) {
     }
     if (patch.name && patch.name !== peer.name) {
       peer.name = String(patch.name).slice(0, 64);
+      changed = true;
+    }
+    // v0.7: a MAC is only ever written when we actually learned one. A null
+    // (the ARP cache had nothing, the peer is a hop away) leaves the stored
+    // address alone — losing it would cost the user the ability to wake a
+    // machine, and there is no way to re-learn it while that machine is off.
+    const mac = arp.normalizeMac(patch.mac);
+    if (mac && mac !== peer.mac) {
+      peer.mac = mac;
       changed = true;
     }
     if (patch.lastSeen) {

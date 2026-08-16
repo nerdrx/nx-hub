@@ -11,6 +11,8 @@ import {
   versionLabel,
   hasDelta,
   isDeltaApplied,
+  isLanSeeded,
+  lanSeedPeer,
 } from '../lib/version.js';
 import { artifactActions, platformLabel } from '../lib/actions.js';
 import { showOwnerBadge, ownerOf, githubUrl, releaseUrl } from '../lib/model.js';
@@ -59,6 +61,14 @@ export function extractCommand(note) {
   if (run && run[1]) return run[1].trim();
   return '';
 }
+
+/**
+ * v0.7 — the same DEV microchip the launcher tile wears, on the card of an app
+ * that also has a checkout linked. Amber outline: it is a standing caveat about
+ * what "installed" means for this app, which is exactly what amber is for.
+ */
+export const DEV_MARK =
+  '<span class="dev-chip dev-mark" title="a local checkout is linked — Launch has a DEV tile that runs it instead">DEV</span>';
 
 function badge(cls, text, title) {
   return html`<span class="badge ${raw(cls)}"${raw(title ? ` title="${esc(title)}"` : '')}>${text}</span>`;
@@ -128,14 +138,31 @@ function appMenuMarkup(app, pref, caps, open) {
 export const DELTA_CHIP =
   '<span class="delta-chip" title="delta update — only the changed bytes are downloaded">Δ</span>';
 
-/** The phase label of a progress row, plus the Δ chip when this is a delta. */
+/**
+ * The LAN microchip: these bytes came off a hub on this network instead of
+ * GitHub. Violet, because it is this fleet's own doing — cyan already means
+ * "a live property of the transfer" and amber is reserved for attention.
+ *
+ * A function rather than a constant because the title names the peer, and the
+ * peer's name is another machine's string.
+ */
+export function lanChip(message) {
+  if (!isLanSeeded(message)) return '';
+  const peer = lanSeedPeer(message);
+  const title = peer
+    ? `seeded from ${peer} on this network — no GitHub round trip`
+    : 'seeded from a hub on this network — no GitHub round trip';
+  return `<span class="lan-chip" title="${esc(title)}">LAN</span>`;
+}
+
+/** The phase label of a progress row, plus the Δ and LAN chips it has earned. */
 export function renderPhaseLabel(job) {
   if (!job) return '';
   const pct = Number(job.pct);
   const known = Number.isFinite(pct) && pct >= 0;
   return `<span class="job-phase">${esc(
     progressLabel(job.phase, known ? pct : undefined, job.message)
-  )}${hasDelta(job.message) ? DELTA_CHIP : ''}</span>`;
+  )}${hasDelta(job.message) ? DELTA_CHIP : ''}${lanChip(job.message)}</span>`;
 }
 
 export function renderJobBar(job, opts = {}) {
@@ -340,6 +367,7 @@ export function renderAppCard(app, ctx = {}) {
         ${pref.favorite ? `<span class="fav-star" title="favorite">${icons.starFilled}</span>` : ''}
         <h2>${esc(app.name)}</h2>
         ${isHub ? badge('badge-self', 'this app') : ''}
+        ${has(ctx.devIds, app.id) || app.devLink ? DEV_MARK : ''}
         ${showOwnerBadge(app, settings) ? badge('badge-owner', owner, `from ${app.repo}`) : ''}
         ${app.private ? `<span class="lock" title="private repository">${icons.lock}</span>` : ''}
         <span class="card-tools">

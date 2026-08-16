@@ -728,7 +728,10 @@ const COMMANDS = [
   ["doctor", "[--offline] [--json]", "environment: adb, token, paths, rate limit"],
   ["status", "[--json]", "the NX Connector bus: who is live right now"],
   ["stack", "ls | run <id> | stop <id>", "multi-app stacks"],
-  ["fleet", "ls | pair <host> | install <peer> <app> | update <peer>", "the other NX Hubs on your LAN"],
+  ["fleet", "ls | pair <host> | install <peer> <app> | update <peer> | wake <peer>", "the other NX Hubs on your LAN"],
+  // v0.7 [dev-tools]
+  ["dev", "ls | link <path> | unlink <id> | run <id>", "working trees you are hacking on"],
+  ["bisect", "<app> [artifact] | good | bad | skip | status | reset", "binary-search releases for the first bad one"],
   ["help", "", "this text"],
 ];
 

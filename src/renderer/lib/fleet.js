@@ -87,6 +87,10 @@ export function normalizePeer(raw) {
     online: !!p.online,
     lastSeen: p.lastSeen || '',
     hubVersion: str(p.hubVersion),
+    // v0.7 — main resolves the peer's MAC from the ARP table on every session
+    // and persists it. Absent is the normal state for a hub that has never
+    // connected from this side, and it simply means "no wake button".
+    mac: str(p.mac).trim(),
     summary: { apps },
   };
 }
@@ -180,6 +184,22 @@ export function peerAppActions(row) {
     title: installed ? '' : 'not installed on that hub',
   });
   return out;
+}
+
+/**
+ * Can this peer be woken from here?
+ *
+ * Both halves matter: no stored MAC means there is nothing to address the magic
+ * packet to, and a hub that is already answering has nothing to wake up.
+ */
+export function canWake(peer) {
+  return !!(peer && peer.mac && !peer.online);
+}
+
+/** The Wake button's tooltip — it names the address the packet goes to. */
+export function wakeTitle(peer) {
+  if (!peer || !peer.mac) return '';
+  return `Send a wake-on-LAN packet to ${peer.mac}`;
 }
 
 /** "seen 3 min ago" / "" while online. */

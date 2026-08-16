@@ -6,12 +6,35 @@
 import { esc } from '../lib/html.js';
 import * as icons from './icons.js';
 
+const GATE_TEXT = {
+  port: 'port gate',
+  delay: 'delay gate',
+  'peer-online': 'waits for that hub',
+};
+
 function stepMarkup(step, index) {
-  const title = `${step.name} — ${step.health === 'port' ? 'port gate' : step.health === 'delay' ? 'delay gate' : 'waits for the bus'}${
-    step.optional ? ' (optional)' : ''
-  }`;
-  return `<span class="st-step st-${esc(step.state)}${step.optional ? ' st-opt' : ''}" title="${esc(title)}" data-step="${index}">
-      <span class="st-mono" style="--h:${Number(step.hue) || 265}">${esc(step.monogram)}</span>
+  const gate = GATE_TEXT[step.health] || 'waits for the bus';
+  const base = step.wake
+    ? `Wake ${step.name}${step.optional ? ' (optional)' : ''}`
+    : `${step.name} — ${gate}${step.peerName ? ` on ${step.peerName}` : ''}${step.optional ? ' (optional)' : ''}`;
+  // Pairing changed under this stack: still shown, still runnable, but the run
+  // will fail at this step and the tile should say so before it is pressed.
+  const title = step.unknownPeer ? `${base} — that hub is not paired any more` : base;
+  // A wake step is a machine, not a program: the power glyph replaces the two
+  // letters that would otherwise abbreviate an app nobody launched.
+  const mono = step.wake
+    ? `<span class="st-mono st-mono-wake" style="--h:${Number(step.hue) || 265}" aria-hidden="true">${icons.power}</span>`
+    : `<span class="st-mono" style="--h:${Number(step.hue) || 265}">${esc(step.monogram)}</span>`;
+
+  return `<span class="st-step st-${esc(step.state)}${step.optional ? ' st-opt' : ''}${step.peer ? ' st-peered' : ''}${
+    step.unknownPeer ? ' st-unpaired' : ''
+  }" title="${esc(title)}" data-step="${index}">
+      ${mono}
+      ${
+        step.peer
+          ? `<span class="st-link" title="${esc(`runs on ${step.peerName || step.peer}`)}" aria-hidden="true">${icons.link}</span>`
+          : ''
+      }
       ${step.phase ? `<span class="st-glyph" aria-hidden="true">${esc(step.glyph)}</span>` : ''}
     </span>`;
 }

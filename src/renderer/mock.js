@@ -107,6 +107,22 @@ function deltaMessage(phase, art, pct) {
   return '';
 }
 
+/**
+ * v0.7 LAN seeding. SPEC has the download path say "from <peer name>" when the
+ * bytes came off another hub; the renderer's chip keys on the "(LAN)" marker,
+ * so the mock speaks exactly that dialect.
+ */
+function lanMessage(phase, peer, pct, size) {
+  const full = size || 90_000_000;
+  if (phase === 'download') {
+    return pct < 25
+      ? `from ${peer} (LAN) — asking the fleet before GitHub`
+      : `from ${peer} (LAN) — ${mb((full * pct) / 100)} / ${mb(full)}`;
+  }
+  if (phase === 'verify') return `verifying the sha256 from ${peer} (LAN)`;
+  return '';
+}
+
 function baseApps() {
   return [
     {
@@ -596,7 +612,7 @@ export function createMock() {
     return { app, art: app.artifacts.find((a) => a.id === artifactId) };
   }
 
-  function runJob(appId, artifactId, { fail = false, target = '', delta = false } = {}) {
+  function runJob(appId, artifactId, { fail = false, target = '', delta = false, lan = '' } = {}) {
     const { app, art } = find(appId, artifactId);
     if (!app || !art) return null;
     const jobId = `job-${++jobSeq}`;
@@ -624,7 +640,13 @@ export function createMock() {
       // A delta update speaks [resilience]'s exact vocabulary — the renderer
       // matches "delta patch"/"delta applied", never the bare word (asset names
       // contain it).
-      job.message = delta ? deltaMessage(p.phase, art, job.pct) : p.phase === 'download' ? `${speed} MB/s` : '';
+      job.message = lan
+        ? lanMessage(p.phase, lan, job.pct, art.size)
+        : delta
+          ? deltaMessage(p.phase, art, job.pct)
+          : p.phase === 'download'
+            ? `${speed} MB/s`
+            : '';
       emit({
         type: 'job-progress',
         jobId,
@@ -778,6 +800,34 @@ export function createMock() {
         { appId: 'pulsenx', artifactId: 'appimage-linux', health: { type: 'delay', timeoutMs: 1200 }, optional: true },
       ],
     },
+    // v0.7 — the cross-hub shape SPEC describes: wake the Windows box, wait for
+    // its helper's port to answer over the LAN, then bring the local half up.
+    {
+      id: 'vr-night-both-machines',
+      name: 'VR Night (both machines)',
+      steps: [
+        {
+          appId: null,
+          artifactId: null,
+          peer: 'c0ffee11deadbeef',
+          action: 'wake',
+          health: { type: 'peer-online', timeoutMs: 120000 },
+        },
+        {
+          appId: 'wivrn-nx-windows',
+          artifactId: 'windows-zip-windows',
+          peer: 'c0ffee11deadbeef',
+          health: { type: 'port', port: 9757, timeoutMs: 45000 },
+        },
+        { appId: 'pulsenx', artifactId: 'appimage-linux', health: { type: 'connector', timeoutMs: 20000 } },
+        {
+          appId: 'oscgoesbrrr-nx-patches',
+          artifactId: 'appimage-linux',
+          health: { type: 'delay', timeoutMs: 1500 },
+          optional: true,
+        },
+      ],
+    },
   ];
 
   // Every run walks a different path so the UI can reach all of its states:
@@ -786,8 +836,14 @@ export function createMock() {
   let runMode = 0;
   const runs = new Map(); // stackId → token
 
-  function progress(stackId, stepIndex, appId, phase) {
-    emit({ type: 'stack-progress', stackId, stepIndex, appId, phase });
+  // v0.7 — a peered step's events carry the peer id in their extras, which is
+  // what lets the tile prefix its status line with the other hub's name.
+  function progress(stackId, stepIndex, appId, phase, extras = {}) {
+    emit({ type: 'stack-progress', stackId, stepIndex, appId, phase, ...extras });
+  }
+
+  function stepExtras(step) {
+    return step && step.peer ? { peer: step.peer } : {};
   }
 
   function runStackSim(stackId) {
@@ -807,17 +863,18 @@ export function createMock() {
       }
       const i = token.index;
       const s = stack.steps[i];
+      const extras = stepExtras(s);
       const fails =
         (token.mode === 1 && !!s.optional) || (token.mode === 2 && i === stack.steps.length - 1);
 
-      progress(stackId, i, s.appId, 'launching');
+      progress(stackId, i, s.appId, 'launching', extras);
       later(() => {
         if (token.stopped) return;
-        progress(stackId, i, s.appId, 'waiting');
+        progress(stackId, i, s.appId, 'waiting', extras);
         later(() => {
           if (token.stopped) return;
           if (fails) {
-            progress(stackId, i, s.appId, 'failed');
+            progress(stackId, i, s.appId, 'failed', extras);
             if (!s.optional) {
               runs.delete(stackId);
               emit({
@@ -829,7 +886,9 @@ export function createMock() {
             }
           } else {
             if (s.health.type === 'connector' && addClient(s.appId)) token.added.push(s.appId);
-            progress(stackId, i, s.appId, 'healthy');
+            // A wake step that succeeded brings the peer back onto the network.
+            if (s.action === 'wake' && s.peer) wakePeer(s.peer, { quiet: true });
+            progress(stackId, i, s.appId, 'healthy', extras);
           }
           token.index = i + 1;
           later(step, 160);
@@ -846,12 +905,17 @@ export function createMock() {
     const token = runs.get(stackId) || null;
     if (token) token.stopped = true;
     const at = token ? Math.min(token.index, stack.steps.length - 1) : stack.steps.length - 1;
-    progress(stackId, at, stack.steps[at] ? stack.steps[at].appId : '', 'stopping');
+    const peered = stack.steps.find((s) => s.peer) || null;
+    progress(stackId, at, stack.steps[at] ? stack.steps[at].appId : '', 'stopping', stepExtras(stack.steps[at]));
     later(() => {
       // Reverse order, the way main takes a stack down: every app in the stack
       // gets a shutdown-request, not just the ones this run happened to start.
-      for (const step of [...stack.steps].reverse()) dropClient(step.appId);
-      progress(stackId, 0, stack.steps[0] ? stack.steps[0].appId : '', 'stopped');
+      for (const step of [...stack.steps].reverse()) if (step.appId) dropClient(step.appId);
+      // v0.7 — a stack that reached another hub reports whether the far side
+      // confirmed. The mock always gets a clean remote stop.
+      progress(stackId, 0, stack.steps[0] ? stack.steps[0].appId : '', 'stopped', {
+        ...(peered ? { peer: peered.peer, how: 'remote-stop' } : {}),
+      });
       runs.delete(stackId);
     }, 380);
     return true;
@@ -870,7 +934,10 @@ export function createMock() {
       id: 'a1b2c3d4e5f60718',
       name: 'workshop-pc',
       host: '192.168.1.50',
-      hubVersion: '0.6.0',
+      hubVersion: '0.7.0',
+      // v0.7 — resolved from /proc/net/arp on every session. Online, so it
+      // gets no Wake button: there is nothing to wake.
+      mac: '3c:7c:3f:1a:44:90',
       online: true,
       lastSeen: new Date().toISOString(),
       summary: {
@@ -889,6 +956,8 @@ export function createMock() {
       name: 'living-room',
       host: 'living-room.local',
       hubVersion: '0.5.0',
+      // Offline and never seen from this side long enough to learn its MAC:
+      // the Wake button must not appear on this one.
       online: false,
       lastSeen: new Date(Date.now() - 41 * 60000).toISOString(),
       summary: {
@@ -898,10 +967,80 @@ export function createMock() {
         ],
       },
     },
+    // v0.7 — the Windows box the cross-hub stack wakes. Offline WITH a stored
+    // MAC: the only peer that can show a Wake button.
+    {
+      id: 'c0ffee11deadbeef',
+      name: 'NX-WIN',
+      host: '192.168.1.64',
+      hubVersion: '0.7.0',
+      mac: 'a8:a1:59:22:0d:3e',
+      online: false,
+      lastSeen: new Date(Date.now() - 6 * 3600000).toISOString(),
+      summary: {
+        apps: [
+          { id: 'wivrn-nx-windows', name: 'WiVRn NX for SteamVR', installed: '0.4.1', updates: 0 },
+          { id: 'nx-hub', name: 'NX Hub', installed: '0.7.0', updates: 0 },
+        ],
+      },
+    },
   ];
+
+  /* -------------------------------------------------------------- dev links */
+
+  // dataDir/dev.json, resolved the way [dev-tools] hands it over: a bare array
+  // whose entries already say whether the folder is still there (`exists`) and
+  // whether the id shadows a catalogue app (`known` + `appName`).
+  //
+  // One link shadows a discovered app (so its card wears the DEV mark as well
+  // as getting its own tile) and one stands alone; the standalone one carries a
+  // launchCmd and a path with characters that would break naive markup, because
+  // that path is rendered in the tile menu.
+  const DEV_SEED = () => [
+    {
+      appId: 'wivrn-nx',
+      name: 'wivrn-nx',
+      appName: 'WiVRn NX',
+      known: true,
+      exists: true,
+      path: '/home/nerdrx/src/wivrn-nx',
+      launchCmd: '',
+    },
+    {
+      appId: 'nx-sandbox',
+      name: 'NX Sandbox',
+      appName: '',
+      known: false,
+      exists: true,
+      path: '/home/nerdrx/src/nx "sandbox" & co',
+      launchCmd: './build/sandbox --verbose',
+    },
+  ];
+  let devLinks = DEV_SEED();
+  let devPid = 90210;
 
   const fleetChanged = () => emit({ type: 'fleet-changed' });
   const findPeer = (id) => peers.find((p) => p.id === id) || null;
+
+  /**
+   * v0.7 wake-on-LAN. Magic packets are fire-and-forget, so the bool only says
+   * "the packets went out" — the machine answering later is a separate event,
+   * which is exactly why the toast has to promise nothing more than that.
+   */
+  function wakePeer(peerId, opts = {}) {
+    const p = findPeer(peerId);
+    if (!p || !p.mac) return false;
+    if (!opts.quiet) emit({ type: 'toast', level: 'info', message: `Waking ${p.name} (${p.mac})…` });
+    // A real box takes tens of seconds; the mock takes two, so the whole
+    // sequence stays watchable.
+    later(() => {
+      p.online = true;
+      p.lastSeen = new Date().toISOString();
+      fleetChanged();
+      if (!opts.quiet) emit({ type: 'toast', level: 'info', message: `${p.name} answered — it is on the network` });
+    }, 2000);
+    return true;
+  }
 
   function remoteApp(peerId, appId) {
     const p = findPeer(peerId);
@@ -1269,6 +1408,41 @@ export function createMock() {
       }
       return { ok: true, jobs: waiting.length };
     },
+
+    /* --------------------------------------------------------- v0.7 surface */
+
+    async getDevLinks() {
+      return JSON.parse(JSON.stringify(devLinks));
+    },
+    /**
+     * SPEC: devRun toasts on its own and REJECTS with a readable message — the
+     * renderer must show that message verbatim rather than inventing one.
+     */
+    async devRun(id) {
+      const link = devLinks.find((l) => l.appId === id);
+      if (!link) throw new Error(`No dev link called “${id}”.`);
+      if (!link.exists) {
+        throw new Error(`${link.path} is not there any more — unlink it or put the folder back.`);
+      }
+      const cmd = link.launchCmd || './run.sh';
+      emit({
+        type: 'toast',
+        level: 'info',
+        message: `Running ${link.name} from ${link.path} (${cmd})`,
+      });
+      return { ok: true, pid: ++devPid, cmd, source: link.launchCmd ? 'launchCmd' : 'heuristic' };
+    },
+    /** Hands back the fresh list, so the caller never needs a second round trip. */
+    async devUnlink(id) {
+      const before = devLinks.length;
+      devLinks = devLinks.filter((l) => l.appId !== id);
+      emit({ type: 'dev-links-changed' });
+      changed();
+      return { ok: devLinks.length !== before, links: JSON.parse(JSON.stringify(devLinks)) };
+    },
+    async fleetWake(peerId) {
+      return wakePeer(peerId);
+    },
   };
 
   // ------------------------------------------------------------ dev helpers
@@ -1495,6 +1669,72 @@ export function createMock() {
     simulateDeltaJob(appId = 'oscgoesbrrr-nx-patches', artifactId = 'appimage-linux') {
       return runJob(appId, artifactId, { delta: true });
     },
+
+    /* -------------------------------------------------------- v0.7 helpers */
+
+    /** The cross-hub stack: wake NX-WIN, gate its helper's port, then go local. */
+    runPeeredStack(stackId = 'vr-night-both-machines') {
+      return runStackSim(stackId);
+    },
+    /** Send the magic packets to the one peer that is asleep and addressable. */
+    wakeMockPeer(peerId = 'c0ffee11deadbeef') {
+      return wakePeer(peerId);
+    },
+    /** Put NX-WIN back to sleep so the Wake button comes back. */
+    sleepMockPeer(peerId = 'c0ffee11deadbeef') {
+      const p = findPeer(peerId);
+      if (!p) return false;
+      p.online = false;
+      p.lastSeen = new Date().toISOString();
+      fleetChanged();
+      emit({ type: 'toast', level: 'warn', message: `${p.name} went to sleep` });
+      return true;
+    },
+    /** A download served by a hub on this network instead of GitHub. */
+    simulateLanJob(appId = 'quadforge', artifactId = 'blender-addon-linux', peer = 'workshop-pc') {
+      return runJob(appId, artifactId, { lan: peer });
+    },
+    /**
+     * The regex trap, on purpose: an app whose NAME contains LAN must not light
+     * the chip. Its messages never carry the "(LAN)" marker.
+     */
+    simulateLanNameJob(appId = 'quadforge', artifactId = 'blender-addon-linux') {
+      return runJob(appId, artifactId, { target: 'LAN party 3.0' });
+    },
+    devLinks() {
+      return JSON.parse(JSON.stringify(devLinks));
+    },
+    /** Add a dev link back after unlinking it, so the tile can be re-reached. */
+    relinkDev() {
+      const have = new Set(devLinks.map((l) => l.appId));
+      let added = 0;
+      for (const l of DEV_SEED()) {
+        if (!have.has(l.appId)) {
+          devLinks.push(l);
+          added += 1;
+        }
+      }
+      emit({ type: 'dev-links-changed' });
+      emit({ type: 'toast', level: 'info', message: `${added} dev link${added === 1 ? '' : 's'} restored` });
+      return added;
+    },
+    /**
+     * Move the folder out from under a link, or put it back — the broken tile
+     * is a state the user WILL hit (a checkout gets moved) and the only way to
+     * see it is to reach it here.
+     */
+    toggleDevExists(appId = 'nx-sandbox') {
+      const link = devLinks.find((l) => l.appId === appId);
+      if (!link) return null;
+      link.exists = !link.exists;
+      emit({ type: 'dev-links-changed' });
+      emit({
+        type: 'toast',
+        level: link.exists ? 'info' : 'warn',
+        message: link.exists ? `${link.name} found again` : `${link.name}: ${link.path} is gone`,
+      });
+      return link.exists;
+    },
     /** Begin drifting the live values (page mode only — see tickFields). */
     startTicking() {
       if (ticking) return;
@@ -1536,7 +1776,14 @@ function toolbar(dev) {
     <button class="btn btn-ghost btn-sm" data-mock="peer">toggle peer online</button>
     <button class="btn btn-ghost btn-sm" data-mock="fleet-job">simulate remote job</button>
     <button class="btn btn-ghost btn-sm" data-mock="crash">cycle crash loop</button>
-    <button class="btn btn-ghost btn-sm" data-mock="delta">simulate delta update</button>`;
+    <button class="btn btn-ghost btn-sm" data-mock="delta">simulate delta update</button>
+    <button class="btn btn-ghost btn-sm" data-mock="peered-stack">run cross-hub stack</button>
+    <button class="btn btn-ghost btn-sm" data-mock="wake">wake NX-WIN</button>
+    <button class="btn btn-ghost btn-sm" data-mock="sleep">put NX-WIN to sleep</button>
+    <button class="btn btn-ghost btn-sm" data-mock="lan">simulate LAN download</button>
+    <button class="btn btn-ghost btn-sm" data-mock="lan-name">simulate "LAN party" download</button>
+    <button class="btn btn-ghost btn-sm" data-mock="relink">restore dev links</button>
+    <button class="btn btn-ghost btn-sm" data-mock="dev-gone">toggle dev folder missing</button>`;
   bar.addEventListener('click', (ev) => {
     const el = ev.target instanceof Element ? ev.target.closest('[data-mock]') : null;
     if (!el) return;
@@ -1555,6 +1802,13 @@ function toolbar(dev) {
     else if (what === 'fleet-job') dev.simulateFleetJob();
     else if (what === 'crash') dev.cycleCrashLoop();
     else if (what === 'delta') dev.simulateDeltaJob();
+    else if (what === 'peered-stack') dev.runPeeredStack();
+    else if (what === 'wake') dev.wakeMockPeer();
+    else if (what === 'sleep') dev.sleepMockPeer();
+    else if (what === 'lan') dev.simulateLanJob();
+    else if (what === 'lan-name') dev.simulateLanNameJob();
+    else if (what === 'relink') dev.relinkDev();
+    else if (what === 'dev-gone') dev.toggleDevExists();
   });
   document.body.appendChild(bar);
 }

@@ -15,6 +15,10 @@ const { matchApp, matchStack, matchPeer, pickArtifact, hostPlatform } = require(
 const { createProgress } = require("./progress");
 const render = require("./render");
 const shim = require("./shim");
+// v0.7 [dev-tools]: `nx dev` and `nx bisect` are self-contained shells over
+// src/main/devlinks.js and src/main/bisect.js.
+const dev = require("./dev");
+const bisect = require("./bisect");
 
 const EXIT_OK = 0;
 const EXIT_USER = 1;
@@ -119,6 +123,14 @@ async function run(argv, opts = {}) {
     prompt: opts.prompt || defaultPrompt,
   };
 
+  // v0.7 [dev-tools]: the shared helpers, reachable from ./dev.js and
+  // ./bisect.js without importing this module back (that would close a cycle).
+  ctx.loadApps = (opts2) => loadApps(ctx, opts2);
+  ctx.withStatus = (message, fn) => withStatus(ctx, message, fn);
+  ctx.requireApp = (apps, query) => requireApp(ctx, apps, query);
+  ctx.requireArtifact = (app, query, mode) => requireArtifact(ctx, app, query, mode);
+  ctx.jobHooks = () => jobHooks(ctx);
+
   const handlers = {
     list: cmdList,
     info: cmdInfo,
@@ -133,6 +145,9 @@ async function run(argv, opts = {}) {
     status: cmdStatus,
     stack: cmdStack,
     fleet: cmdFleet,
+    // v0.7 [dev-tools]
+    dev: dev.cmdDev,
+    bisect: bisect.cmdBisect,
     shim: cmdShim,
   };
 
@@ -554,7 +569,7 @@ async function cmdStack(ctx) {
 /* v0.6: the fleet                                                     */
 /* ------------------------------------------------------------------ */
 
-const FLEET_SUBS = ["ls", "list", "pair", "unpair", "install", "update", "launch"];
+const FLEET_SUBS = ["ls", "list", "pair", "unpair", "install", "update", "launch", "wake"];
 
 /** The CLI's fleet client — created on demand so `nx list` never touches it. */
 function fleetOf(ctx) {
@@ -581,7 +596,7 @@ async function cmdFleet(ctx) {
   const sub = String(ctx.args[0] || "ls").toLowerCase();
   if (!FLEET_SUBS.includes(sub)) {
     throw new UserError(`unknown fleet command "${ctx.args[0]}"`, {
-      hint: "nx fleet ls | pair <host> | install <peer> <app> | update <peer> | unpair <peer>",
+      hint: "nx fleet ls | pair <host> | install <peer> <app> | update <peer> | unpair <peer> | wake <peer>",
     });
   }
   const fleet = fleetOf(ctx);
@@ -591,6 +606,7 @@ async function cmdFleet(ctx) {
 
   const peer = requirePeer(ctx, fleet.peers(), ctx.args[1]);
   if (sub === "unpair") return fleetUnpair(ctx, fleet, peer);
+  if (sub === "wake") return fleetWake(ctx, fleet, peer);
   if (sub === "launch") return fleetLaunch(ctx, fleet, peer);
   if (sub === "install") return fleetInstall(ctx, fleet, peer);
   return fleetUpdate(ctx, fleet, peer);
@@ -641,6 +657,36 @@ async function fleetUnpair(ctx, fleet, peer) {
     return removed ? EXIT_OK : EXIT_FAIL;
   }
   ctx.out(`${ctx.st.cyan("✓")} Forgot ${peer.name}. ${ctx.st.dim("Pair again to reconnect — the secret is gone.")}`);
+  return EXIT_OK;
+}
+
+/**
+ * `nx fleet wake <peer>` (SPEC v0.7) — the only fleet command that talks to a
+ * machine which is, by design, not listening. Magic packets go out from this
+ * process; nothing comes back, so the command reports what it SENT and points
+ * at `nx fleet ls` for the answer.
+ */
+async function fleetWake(ctx, fleet, peer) {
+  const result = await fleet.wake(peer);
+  if (ctx.json) {
+    ctx.out(JSON.stringify(Object.assign({ id: peer.id, name: peer.name }, result), null, 2));
+    return result.ok ? EXIT_OK : EXIT_FAIL;
+  }
+  if (result.reason === "no-mac") {
+    ctx.out(
+      `${ctx.st.danger("✗")} No hardware address for ${ctx.st.text(peer.name)} yet. ` +
+        ctx.st.dim("Connect to it once while it is awake — the hub learns the MAC from the session.")
+    );
+    return EXIT_FAIL;
+  }
+  if (!result.ok) {
+    ctx.out(`${ctx.st.danger("✗")} Could not send the wake packets ${ctx.st.dim("(no broadcast permission?)")}`);
+    return EXIT_FAIL;
+  }
+  ctx.out(
+    `${ctx.st.cyan("✓")} Woke ${ctx.st.text(peer.name)} ${ctx.st.dim(`(${result.mac})`)}\n` +
+      ctx.st.muted("  It takes a moment. `nx fleet ls` will show it when it is up.")
+  );
   return EXIT_OK;
 }
 

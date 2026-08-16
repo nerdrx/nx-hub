@@ -22,8 +22,11 @@
 // before the promotion is plain JSON: it has to be, since the whole point of
 // the exchange is to establish which secret (if any) applies.
 
+const fs = require("fs");
+
 const protocol = require("./protocol");
 const wire = require("./wire");
+const assetsMod = require("./assets");
 const { Session } = require("./session");
 
 const frame = wire.frame;
@@ -42,6 +45,7 @@ function noop() {}
  * @param {function} [o.pairCode] () => {code, expiresAt} | null
  * @param {function} [o.onPair]  ({peerId, name, host, port, secret, code}) => peer
  * @param {function} [o.onSession] (session) => void
+ * @param {object} [o.assets]    v0.7 asset index — enables GET /asset/<sha256>
  * @param {function} [o.log]
  * @returns {{ready:Promise, close:function, port:number}}
  */
@@ -53,6 +57,8 @@ function createServer(o = {}) {
   const onPair = typeof o.onPair === "function" ? o.onPair : null;
   const onSession = typeof o.onSession === "function" ? o.onSession : noop;
   const graceMs = Number(o.authGraceMs) > 0 ? Number(o.authGraceMs) : AUTH_GRACE_MS;
+  /** v0.7: the asset index this hub seeds from, or null (no seeding). */
+  const assets = o.assets || null;
   const wantPort = Number.isInteger(o.port) ? o.port : protocol.FLEET_PORT;
   const host = o.host || "0.0.0.0";
 
@@ -279,9 +285,120 @@ function createServer(o = {}) {
     onSession(session);
   }
 
+  /* ---------------- v0.7: GET /asset/<sha256> ---------------- */
+
+  /**
+   * The seeding route (SPEC v0.7). Plain HTTP on the same port, deliberately
+   * NOT a websocket message: the payload is a whole AppImage and it wants a
+   * streamed body with a Content-Length, not a 64 KB-capped frame.
+   *
+   * Order matters and is the security of the thing:
+   *   1. shape — a 64-hex path segment or nothing
+   *   2. AUTH — before any disk access, so an unauthorised caller learns
+   *      nothing about what this hub holds (403 for everyone, always)
+   *   3. the index, revalidated — a stale entry 404s and is dropped
+   *
+   * There is no path anywhere in the request, so there is no traversal to
+   * defend against: a hash is only servable because this hub hashed it itself.
+   */
+  function handleAssetRequest(req, res) {
+    const raw = String(req.url || "");
+    const [pathname, query] = raw.split("?");
+    const m = /^\/asset\/([0-9a-fA-F]{64})$/.exec(pathname);
+    if (!m) return false;
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      end(res, 405, "method not allowed\n");
+      return true;
+    }
+    const sha = m[1].toLowerCase();
+    const auth = readAuth(query);
+    const peer = assetsMod.authorizePeer(peersOf() || [], sha, auth);
+    if (!peer) {
+      log(`fleet: refused an unauthorised /asset request from ${remoteOf(req)}`);
+      end(res, 403, "forbidden\n");
+      return true;
+    }
+    if (!assets) {
+      end(res, 404, "not found\n");
+      return true;
+    }
+    assets
+      .validate(sha)
+      .then((entry) => {
+        if (!entry) {
+          end(res, 404, "not found\n");
+          return;
+        }
+        streamAsset(req, res, entry, peer, sha);
+      })
+      .catch((e) => {
+        log(`fleet: /asset/${sha.slice(0, 12)} failed — ${e.message}`);
+        end(res, 404, "not found\n");
+      });
+    return true;
+  }
+
+  function readAuth(query) {
+    for (const pair of String(query || "").split("&")) {
+      const eq = pair.indexOf("=");
+      if (eq < 0) continue;
+      if (pair.slice(0, eq) !== "auth") continue;
+      try {
+        return decodeURIComponent(pair.slice(eq + 1));
+      } catch (_) {
+        return pair.slice(eq + 1);
+      }
+    }
+    return "";
+  }
+
+  function remoteOf(req) {
+    return protocol.normalizeHost(req.socket && req.socket.remoteAddress);
+  }
+
+  function end(res, code, body) {
+    try {
+      res.writeHead(code, { "Content-Type": "text/plain", Connection: "close" });
+      res.end(body);
+    } catch (_) {
+      /* the caller hung up */
+    }
+  }
+
+  function streamAsset(req, res, entry, peer, sha) {
+    let stream;
+    try {
+      stream = fs.createReadStream(entry.path);
+    } catch (e) {
+      end(res, 404, "not found\n");
+      return;
+    }
+    stream.on("error", () => {
+      // The file vanished between validate() and open — the only honest
+      // answer is 404, and the socket dies with it since the body started.
+      if (!res.headersSent) end(res, 404, "not found\n");
+      else res.destroy();
+    });
+    stream.once("open", () => {
+      res.writeHead(200, {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": String(entry.size),
+        "Cache-Control": "no-store",
+      });
+      if (req.method === "HEAD") {
+        stream.destroy();
+        res.end();
+        return;
+      }
+      log(`fleet: seeding ${sha.slice(0, 12)}… (${entry.size} bytes) to ${peer.name}`);
+      stream.pipe(res);
+    });
+    res.on("close", () => stream.destroy());
+  }
+
   /* ---------------- listening ---------------- */
 
-  const server = wire.createHttpServer(handleUpgrade);
+  const server = wire.createHttpServer(handleUpgrade, handleAssetRequest);
 
   const api = {
     port: wantPort,

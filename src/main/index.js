@@ -459,6 +459,8 @@ function wire() {
     config,
     emit,
     engine: () => ipc.getEngineModule(), // v0.6: adb-device triggers
+    // v0.7: cross-hub steps ride the fleet when it is up
+    fleet: () => (fleetModule && fleetModule.isRunning && fleetModule.isRunning() ? fleetModule : null),
   });
   // v0.6: the fleet last — it reads the discovery model and enqueues jobs, so
   // everything it talks to is already wired by the time it can accept a peer.

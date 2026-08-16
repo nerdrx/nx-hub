@@ -479,6 +479,18 @@ function buildApp({ repo, release, overlay, installedState, adb, primaryOwner, s
   app.launchArgs = Array.isArray(prefs.launchArgs) ? prefs.launchArgs : [];
   app.launchEnv = prefs.launchEnv && typeof prefs.launchEnv === "object" ? prefs.launchEnv : {};
 
+  // ---- v0.7 [dev-tools]: a working tree linked to this id (SPEC "nx dev") ----
+  // A MODEL FLAG and nothing more: discovery never reads, builds or launches
+  // the linked tree. Lazily required and wrapped, so a hub whose dev.json is
+  // missing, unreadable or junk discovers apps exactly as it always did.
+  try {
+    // eslint-disable-next-line global-require
+    const link = require("./devlinks").linkFor(id);
+    if (link) app.devLink = { path: link.path };
+  } catch (_) {
+    /* dev links are strictly optional */
+  }
+
   mergeInstalled(app, installedState, adb, s);
 
   // Can anything in the latest release actually be installed from THIS machine?

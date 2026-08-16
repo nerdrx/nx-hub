@@ -99,6 +99,59 @@ function fakeEngine({ devices = [], available = true } = {}) {
   return eng;
 }
 
+/**
+ * The fleet as far as a peered step cares (v0.7): a mutable peer list, a set of
+ * ports that are open ON THE REMOTE, and a log of everything that was sent over
+ * the fabric. Every verb can be made to nack (`launchAck` / `stopAck` /
+ * `wakeResult`) or to throw (`throws.<verb>`) — a peer refusing and a peer being
+ * unreachable are two different stories, and both have to reach the user.
+ */
+function fakeFleet({ peers = [{ id: "peer-1", name: "Workshop PC", online: true }] } = {}) {
+  const calls = { launch: [], probe: [], stop: [], wake: [] };
+  const open = new Set();
+  const f = {
+    calls,
+    peers: peers.map((p) => Object.assign({ online: true, name: p.id }, p)),
+    launchAck: { ok: true, pid: 4242 },
+    stopAck: { ok: true },
+    wakeResult: true,
+    throws: {},
+    getPeers() {
+      if (f.throws.getPeers) throw new Error(f.throws.getPeers);
+      return f.peers.map((p) => Object.assign({}, p));
+    },
+    async remoteLaunch(peerId, appId, artifactId) {
+      calls.launch.push({ peerId, appId, artifactId });
+      if (f.throws.remoteLaunch) throw new Error(f.throws.remoteLaunch);
+      return f.launchAck;
+    },
+    async probePeerPort(peerId, port, opts) {
+      calls.probe.push({ peerId, port, opts });
+      if (f.throws.probePeerPort) throw new Error(f.throws.probePeerPort);
+      return open.has(`${peerId}:${port}`);
+    },
+    async remoteStop(peerId, appId) {
+      calls.stop.push({ peerId, appId });
+      if (f.throws.remoteStop) throw new Error(f.throws.remoteStop);
+      return f.stopAck;
+    },
+    async wake(peerId) {
+      calls.wake.push(peerId);
+      if (f.throws.wake) throw new Error(f.throws.wake);
+      return f.wakeResult;
+    },
+    /* what the test does to the world on the other side */
+    setOnline(id, online) {
+      const peer = f.peers.find((p) => p.id === id);
+      if (peer) peer.online = Boolean(online);
+    },
+    openPort(peerId, port) {
+      open.add(`${peerId}:${port}`);
+    },
+  };
+  return f;
+}
+
 function collector() {
   const events = [];
   return { events, emit: (e) => events.push(e), phases: () => events.map((e) => `${e.stepIndex == null ? "*" : e.stepIndex}:${e.phase}`) };
@@ -116,7 +169,10 @@ function fakeDiscovery(apps = null) {
   };
 }
 
-function setup(t, { jobs = fakeJobs(), connector = null, engine = null, timing = FAST, discovery = fakeDiscovery() } = {}) {
+function setup(
+  t,
+  { jobs = fakeJobs(), connector = null, engine = null, fleet = null, timing = FAST, discovery = fakeDiscovery() } = {}
+) {
   const env = helpers.useTempEnv();
   const bag = collector();
   const logs = [];
@@ -125,12 +181,12 @@ function setup(t, { jobs = fakeJobs(), connector = null, engine = null, timing =
   // those sentences are part of the contract.
   const cfg = Object.assign({}, config, { log: (m) => logs.push(String(m)) });
   stacks._reset();
-  stacks.init({ jobs, connector, engine, config: cfg, emit: bag.emit, timing, discovery });
+  stacks.init({ jobs, connector, engine, fleet, config: cfg, emit: bag.emit, timing, discovery });
   t.after(() => {
     stacks._reset();
     env.cleanup();
   });
-  return { env, jobs, connector, engine, logs, events: bag.events, phases: bag.phases };
+  return { env, jobs, connector, engine, fleet, logs, events: bag.events, phases: bag.phases };
 }
 
 /** Timing for the adb watcher: poll 40× faster than the 10s the hub ships. */
@@ -816,4 +872,372 @@ test("stacks: a trigger never gatecrashes a run that is already in flight", asyn
   connector.arrive("headset");
   await tick();
   assert.deepStrictEqual(ctx.jobs.launched.map((l) => l.appId), ["ogb", "wivrn-nx"]);
+});
+
+/* -------------------------------------------------- v0.7 cross-hub stacks */
+
+test("stacks: a peered step is sanitized — peer verbatim, and only gates that can reach it", (t) => {
+  const ctx = setup(t);
+  const s = stacks.sanitizeStep;
+
+  // a peer id is trimmed but NEVER slugified: it is opaque identity, and
+  // "A1b2-C3" → "a1b2-c3" would quietly point the step at nobody
+  assert.deepStrictEqual(s({ appId: "  WiVRn NX ", peer: "  A1b2-C3 ", health: { type: "port", port: "9100" } }), {
+    appId: "wivrn-nx",
+    artifactId: null,
+    health: { type: "port", timeoutMs: 30000, port: 9100 },
+    optional: false,
+    peer: "A1b2-C3",
+  });
+
+  // nothing usable in `peer` = an ordinary local step, and the key stays absent
+  for (const junk of [undefined, null, "", "   ", {}, [], true, false]) {
+    const step = s({ appId: "wivrn-nx", peer: junk, health: { type: "delay" } });
+    assert.ok(!("peer" in step), `junk peer: ${JSON.stringify(junk)}`);
+  }
+
+  // SPEC: a connector gate on a peered step is INVALID — the remote's bus is not
+  // visible from here — so it drops to delay, and the hub says so exactly once
+  const dropped = s({ appId: "pulsenx", peer: "peer-1", health: { type: "connector", timeoutMs: 5000 } });
+  assert.deepStrictEqual(dropped.health, { type: "delay", timeoutMs: 0 });
+  assert.strictEqual(dropped.peer, "peer-1", "the step still runs over there — it is just not waited on");
+  s({ appId: "ogb", peer: "peer-2", health: { type: "connector" } }); // a second offender
+  const said = ctx.logs.filter((l) => /connector gate cannot see a peer's bus/.test(l));
+  assert.strictEqual(said.length, 1, "sanitizing happens on every read — the complaint is said once");
+
+  // peer-online is the mirror image: it only means something WITH a peer
+  assert.deepStrictEqual(s({ appId: "pulsenx", peer: "peer-1", health: { type: "peer-online" } }).health, {
+    type: "peer-online",
+    timeoutMs: 30000,
+  });
+  assert.deepStrictEqual(s({ appId: "pulsenx", health: { type: "peer-online", timeoutMs: 5000 } }).health, {
+    type: "delay",
+    timeoutMs: 0,
+  });
+  assert.ok(stacks.HEALTH_TYPES.includes("peer-online"));
+
+  // …and a peered step still round-trips through the store untouched
+  const saved = stacks.save({
+    id: "vr",
+    name: "VR",
+    steps: [step("pulsenx", { type: "port", port: 9100 }, { peer: "peer-1", artifactId: " linux " })],
+  });
+  assert.deepStrictEqual(stacks.get("vr").steps, saved.steps);
+  assert.strictEqual(saved.steps[0].artifactId, "linux");
+});
+
+test("stacks: a wake step is its own shape — no app, always a peer-online gate", (t) => {
+  setup(t);
+  const s = stacks.sanitizeStep;
+
+  // whatever else was asked for is dropped: a wake starts nothing
+  assert.deepStrictEqual(
+    s({ action: "  WAKE ", peer: "peer-1", appId: "wivrn-nx", artifactId: "linux", health: { type: "port", port: 9100 }, optional: 1 }),
+    {
+      appId: null,
+      artifactId: null,
+      health: { type: "peer-online", timeoutMs: 120000 },
+      optional: true,
+      peer: "peer-1",
+      action: "wake",
+    }
+  );
+  assert.strictEqual(stacks.WAKE_TIMEOUT_MS, 120000, "SPEC: a cold boot gets two minutes by default");
+  // …but "how long do I give this machine" is exactly the knob a user needs
+  assert.strictEqual(s({ action: "wake", peer: "peer-1", health: { timeoutMs: 45000 } }).health.timeoutMs, 45000);
+  assert.strictEqual(s({ action: "wake", peer: "peer-1", health: { timeoutMs: 99 * 60 * 1000 } }).health.timeoutMs, 600000);
+
+  // a wake with no peer wakes nothing → dropped like any other junk step
+  assert.strictEqual(s({ action: "wake", appId: "wivrn-nx", health: {} }), null);
+  assert.throws(() => stacks.save({ id: "w", steps: [{ action: "wake" }] }), /at least one step/);
+
+  // every other action is the default, and `action` never appears on it
+  for (const action of ["launch", "  LAUNCH ", "", null, undefined, "boot", 7, {}]) {
+    const step = s({ appId: "wivrn-nx", action, peer: "peer-1", health: {} });
+    assert.ok(!("action" in step), `action: ${JSON.stringify(action)}`);
+  }
+  assert.deepStrictEqual(stacks.STEP_ACTIONS, ["launch", "wake"]);
+
+  const saved = stacks.save({
+    id: "vr",
+    name: "VR",
+    steps: [{ action: "wake", peer: "peer-1" }, step("pulsenx", { type: "peer-online" }, { peer: "peer-1" })],
+  });
+  assert.deepStrictEqual(stacks.get("vr").steps, saved.steps, "a wake step survives the store");
+});
+
+test("stacks: a peered step launches over the fleet and gates on a REMOTE port", async (t) => {
+  const fleet = fakeFleet();
+  const ctx = setup(t, { fleet });
+  stacks.save({
+    id: "vr",
+    name: "VR",
+    steps: [step("pulsenx", { type: "port", port: 9100, timeoutMs: 3000 }, { peer: "peer-1", artifactId: "linux" })],
+  });
+
+  const timer = setTimeout(() => fleet.openPort("peer-1", 9100), 120);
+  t.after(() => clearTimeout(timer));
+
+  const result = await stacks.run("vr");
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(ctx.jobs.launched.length, 0, "nothing was started on THIS hub");
+  assert.deepStrictEqual(fleet.calls.launch, [{ peerId: "peer-1", appId: "pulsenx", artifactId: "linux" }]);
+  assert.ok(fleet.calls.probe.length >= 2, "the port was really polled, over there");
+  assert.deepStrictEqual(fleet.calls.probe[0], { peerId: "peer-1", port: 9100, opts: { timeoutMs: 1000 } });
+  assert.deepStrictEqual(ctx.phases(), ["0:launching", "0:waiting", "0:healthy", "*:done"]);
+
+  // the event shape is unchanged — the peer travels as an extra
+  for (const evt of ctx.events.filter((e) => e.stepIndex != null)) {
+    assert.strictEqual(evt.type, "stack-progress");
+    assert.strictEqual(evt.peer, "peer-1");
+    assert.ok(!("action" in evt), "a peered launch is still a launch");
+  }
+  assert.deepStrictEqual(result.started, [
+    { stepIndex: 0, appId: "pulsenx", artifactId: "linux", pid: null, reached: "healthy", peer: "peer-1" },
+  ]);
+});
+
+test("stacks: a peered step is resolved by the PEER, not by this hub's model", async (t) => {
+  const fleet = fakeFleet();
+  const ctx = setup(t, { fleet, discovery: fakeDiscovery([{ id: "something-else", name: "Else", artifacts: [] }]) });
+  stacks.save({ id: "vr", name: "VR", steps: [step("only-over-there", { type: "delay", timeoutMs: 0 }, { peer: "peer-1" })] });
+
+  const result = await stacks.run("vr");
+  assert.strictEqual(result.ok, true, "an app this hub never heard of is the peer's business");
+  assert.deepStrictEqual(fleet.calls.launch, [{ peerId: "peer-1", appId: "only-over-there", artifactId: undefined }]);
+  assert.strictEqual(ctx.jobs.launched.length, 0);
+});
+
+test("stacks: a peer that refuses — or cannot be reached — says so in its own words", async (t) => {
+  const fleet = fakeFleet();
+  const ctx = setup(t, { fleet });
+  fleet.launchAck = { ok: false, error: 'No app called "pulsenx" on this hub.' };
+  stacks.save({ id: "vr", name: "VR", steps: [step("pulsenx", { type: "delay", timeoutMs: 0 }, { peer: "peer-1" })] });
+
+  const nacked = await stacks.run("vr");
+  assert.strictEqual(nacked.ok, false);
+  assert.match(nacked.failed.message, /No app called "pulsenx"/);
+  assert.deepStrictEqual(ctx.phases(), ["0:launching", "0:failed", "*:failed"]);
+  assert.strictEqual(ctx.events[0].peer, "peer-1", "even the failure names where it was going");
+  assert.strictEqual(ctx.events[1].peer, "peer-1");
+
+  // a nack with nothing to say still gets a sentence with the peer's NAME in it
+  ctx.events.length = 0;
+  fleet.launchAck = { ok: false };
+  assert.match((await stacks.run("vr")).failed.message, /Workshop PC would not launch pulsenx/);
+
+  // and a transport failure travels exactly the same way
+  fleet.throws.remoteLaunch = "Workshop PC did not answer in time.";
+  assert.match((await stacks.run("vr")).failed.message, /did not answer in time/);
+});
+
+test("stacks: a wake step sends the packet, then waits for the peer to come online", async (t) => {
+  const fleet = fakeFleet({ peers: [{ id: "peer-1", name: "Workshop PC", online: false }] });
+  const ctx = setup(t, { fleet });
+  stacks.save({
+    id: "vr",
+    name: "VR",
+    steps: [{ action: "wake", peer: "peer-1", health: { timeoutMs: 3000 } }, step("pulsenx", { type: "delay", timeoutMs: 0 }, { peer: "peer-1" })],
+  });
+
+  const timer = setTimeout(() => fleet.setOnline("peer-1", true), 120);
+  t.after(() => clearTimeout(timer));
+
+  const started = Date.now();
+  const result = await stacks.run("vr");
+  assert.strictEqual(result.ok, true);
+  assert.ok(Date.now() - started >= 100, "it really waited for the machine to boot");
+  assert.deepStrictEqual(fleet.calls.wake, ["peer-1"]);
+  assert.strictEqual(ctx.jobs.launched.length, 0);
+  assert.deepStrictEqual(ctx.phases(), ["0:launching", "0:waiting", "0:healthy", "1:launching", "1:waiting", "1:healthy", "*:done"]);
+
+  const woke = ctx.events.filter((e) => e.stepIndex === 0);
+  for (const evt of woke) {
+    assert.strictEqual(evt.appId, null, "a wake step names no app");
+    assert.strictEqual(evt.peer, "peer-1");
+    assert.strictEqual(evt.action, "wake", "so the UI can say waking, not launching");
+  }
+  assert.strictEqual(woke[1].health, "peer-online");
+  // the launch that followed only went out once the peer was up
+  assert.deepStrictEqual(fleet.calls.launch, [{ peerId: "peer-1", appId: "pulsenx", artifactId: undefined }]);
+});
+
+test("stacks: a wake that cannot be sent fails the step; one that never lands times out by name", async (t) => {
+  const fleet = fakeFleet({ peers: [{ id: "peer-1", name: "Workshop PC", online: false }] });
+  const ctx = setup(t, { fleet });
+  fleet.wakeResult = false; // no mac on file, no socket — the packet never left
+  stacks.save({ id: "vr", name: "VR", steps: [{ action: "wake", peer: "peer-1", health: { timeoutMs: 100 } }] });
+
+  const failed = await stacks.run("vr");
+  assert.strictEqual(failed.ok, false);
+  assert.match(failed.failed.message, /could not send a wake packet to Workshop PC/);
+  assert.deepStrictEqual(ctx.phases(), ["0:launching", "0:failed", "*:failed"], "a failed wake never reaches its gate");
+
+  // the packet going out is not the machine coming up: that is the gate's job
+  ctx.events.length = 0;
+  fleet.wakeResult = true;
+  const timedOut = await stacks.run("vr");
+  assert.strictEqual(timedOut.ok, false);
+  assert.match(timedOut.failed.message, /Workshop PC did not come online/);
+  assert.deepStrictEqual(ctx.phases(), ["0:launching", "0:waiting", "0:failed", "*:failed"]);
+  assert.strictEqual(ctx.events[ctx.events.length - 1].peer, "peer-1", "the run's verdict names the peer too");
+});
+
+test("stacks: with no fleet wired, peered and wake steps fail fast", async (t) => {
+  const ctx = setup(t, { fleet: null });
+  stacks.save({
+    id: "vr",
+    name: "VR",
+    steps: [step("pulsenx", { type: "port", port: 9100, timeoutMs: 30000 }, { peer: "peer-1" }), step("after", { type: "delay", timeoutMs: 0 })],
+  });
+
+  const started = Date.now();
+  const result = await stacks.run("vr");
+  assert.strictEqual(result.ok, false);
+  assert.match(result.failed.message, /the fleet is not available/);
+  assert.ok(Date.now() - started < 2000, "no fabric → no point burning the 30s timeout");
+  assert.deepStrictEqual(ctx.phases(), ["0:launching", "0:failed", "*:failed"]);
+  assert.strictEqual(ctx.jobs.launched.length, 0, "and it never fell back to launching it HERE");
+
+  stacks.save({ id: "w", name: "W", steps: [{ action: "wake", peer: "peer-1" }] });
+  assert.match((await stacks.run("w")).failed.message, /the fleet is not available/);
+
+  // a local stack is completely unaffected — no fleet is a normal hub
+  stacks.save({ id: "local", name: "Local", steps: [step("wivrn-nx", { type: "delay", timeoutMs: 0 })] });
+  assert.strictEqual((await stacks.run("local")).ok, true);
+});
+
+test("stacks: a fleet switched off mid-run is a named failure, not a 30s hang", async (t) => {
+  const fleet = fakeFleet();
+  let live = fleet; // injected as a FACTORY, exactly like the connector
+  const ctx = setup(t, { fleet: () => live });
+  stacks.save({ id: "vr", name: "VR", steps: [step("pulsenx", { type: "port", port: 9100, timeoutMs: 30000 }, { peer: "peer-1" })] });
+
+  fleet.remoteLaunch = async () => {
+    live = null; // the user turns the fabric off in Settings while the app boots
+    return { ok: true };
+  };
+
+  const started = Date.now();
+  const result = await stacks.run("vr");
+  assert.strictEqual(result.ok, false);
+  assert.match(result.failed.message, /the fleet is not available/);
+  assert.ok(Date.now() - started < 2000);
+  assert.deepStrictEqual(ctx.phases(), ["0:launching", "0:waiting", "0:failed", "*:failed"]);
+});
+
+test("stacks: a peer the fleet does not know is named, at RUN time", async (t) => {
+  const fleet = fakeFleet();
+  const ctx = setup(t, { fleet });
+  stacks.save({ id: "vr", name: "VR", steps: [step("pulsenx", { type: "delay", timeoutMs: 0 }, { peer: "ghost" })] });
+
+  // saving it was fine: pairing (and un-pairing) happens under a stored stack
+  assert.strictEqual(stacks.get("vr").steps[0].peer, "ghost");
+  const result = await stacks.run("vr");
+  assert.strictEqual(result.ok, false);
+  assert.match(result.failed.message, /Unknown fleet peer "ghost"/);
+  assert.strictEqual(fleet.calls.launch.length, 0, "nothing was sent anywhere");
+  assert.strictEqual(ctx.events[0].peer, "ghost");
+
+  // a fleet that cannot answer who it knows is not evidence that it knows them
+  stacks.save({ id: "known", name: "Known", steps: [{ action: "wake", peer: "peer-1" }] });
+  fleet.throws.getPeers = "fleet is closing";
+  assert.match((await stacks.run("known")).failed.message, /Unknown fleet peer "peer-1"/);
+  assert.strictEqual(fleet.calls.wake.length, 0);
+});
+
+test("stacks: stop walks a mixed stack back with the right transport for every step", async (t) => {
+  const connector = fakeConnector();
+  const sleeper = spawnSleeper();
+  t.after(() => {
+    try {
+      sleeper.child.kill("SIGKILL");
+    } catch (_) {
+      /* already gone */
+    }
+  });
+  const fleet = fakeFleet({
+    peers: [{ id: "peer-1", name: "Workshop PC", online: true }, { id: "peer-2", name: "Loft", online: true }],
+  });
+  const jobs = fakeJobs({ pids: { "wivrn-nx": sleeper.pid } });
+  const ctx = setup(t, { jobs, connector, fleet });
+
+  stacks.save({
+    id: "vr",
+    name: "VR",
+    steps: [
+      { action: "wake", peer: "peer-1" }, // 0 — started nothing
+      step("wivrn-nx", { type: "delay", timeoutMs: 0 }), // 1 — here
+      step("pulsenx", { type: "delay", timeoutMs: 0 }, { peer: "peer-1" }), // 2 — over there
+      step("ogb", { type: "delay", timeoutMs: 0 }, { peer: "peer-2" }), // 3 — somewhere else again
+    ],
+  });
+  assert.strictEqual((await stacks.run("vr")).ok, true);
+  ctx.events.length = 0;
+
+  const result = await stacks.stop("vr");
+  assert.strictEqual(result.ok, true);
+  assert.deepStrictEqual(
+    result.stopped.map((s) => `${s.appId}=${s.how}`),
+    ["ogb=remote-stop", "pulsenx=remote-stop", "wivrn-nx=sigterm"],
+    "reverse order, and a wake is never un-woken"
+  );
+  assert.deepStrictEqual(fleet.calls.stop, [
+    { peerId: "peer-2", appId: "ogb" },
+    { peerId: "peer-1", appId: "pulsenx" },
+  ]);
+  assert.deepStrictEqual(ctx.phases(), ["3:stopping", "3:stopped", "2:stopping", "2:stopped", "1:stopping", "1:stopped", "*:stopped"]);
+  assert.strictEqual(ctx.events.find((e) => e.stepIndex === 3).peer, "peer-2");
+  assert.ok(!("peer" in ctx.events.find((e) => e.stepIndex === 1)), "a local step carries no peer");
+  assert.deepStrictEqual(connector.shutdowns, [], "the local bus was never asked about a remote app");
+
+  const end = await sleeper.exited;
+  assert.strictEqual(end.signal, "SIGTERM", "the local step is stopped the local way");
+  assert.deepStrictEqual(await stacks.stop("vr"), { ok: true, stackId: "vr", stopped: [] });
+});
+
+test("stacks: a peer that will not stop is logged, and never strands the rest of the walk", async (t) => {
+  const sleeper = spawnSleeper();
+  t.after(() => {
+    try {
+      sleeper.child.kill("SIGKILL");
+    } catch (_) {
+      /* already gone */
+    }
+  });
+  const fleet = fakeFleet();
+  let live = fleet;
+  const jobs = fakeJobs({ pids: { "wivrn-nx": sleeper.pid } });
+  const ctx = setup(t, { jobs, fleet: () => live });
+
+  stacks.save({
+    id: "vr",
+    name: "VR",
+    steps: [
+      step("wivrn-nx", { type: "delay", timeoutMs: 0 }),
+      step("pulsenx", { type: "delay", timeoutMs: 0 }, { peer: "peer-1" }),
+    ],
+  });
+
+  await stacks.run("vr");
+  fleet.stopAck = { ok: false, error: "nothing called pulsenx is running here" };
+  const nacked = await stacks.stop("vr");
+  assert.deepStrictEqual(nacked.stopped.map((s) => `${s.appId}=${s.how}`), ["pulsenx=remote-failed", "wivrn-nx=sigterm"]);
+  assert.match(ctx.logs.find((l) => /nothing called pulsenx/.test(l)), /stop pulsenx on Workshop PC/);
+  assert.strictEqual((await sleeper.exited).signal, "SIGTERM", "the local step was still stopped");
+
+  // a peer that is simply unreachable is the same story
+  await stacks.run("vr");
+  fleet.throws.remoteStop = "Could not reach Workshop PC.";
+  const threw = await stacks.stop("vr");
+  assert.strictEqual(threw.stopped.find((s) => s.appId === "pulsenx").how, "remote-failed");
+  assert.ok(ctx.logs.some((l) => /Could not reach Workshop PC/.test(l)));
+
+  // …and so is a fabric that went away between the run and the stop
+  await stacks.run("vr");
+  live = null;
+  const gone = await stacks.stop("vr");
+  assert.strictEqual(gone.ok, true);
+  assert.strictEqual(gone.stopped.find((s) => s.appId === "pulsenx").how, "remote-failed");
+  assert.ok(ctx.logs.some((l) => /stop pulsenx on peer-1: the fleet is not available/.test(l)));
 });

@@ -130,6 +130,25 @@ export function isDeltaApplied(message) {
   return /delta applied/i.test(String(message === null || message === undefined ? '' : message));
 }
 
+/**
+ * v0.7 LAN asset seeding. SPEC promises the download path says
+ * "from <peer name>" when the bytes came off another hub; the marker the UI
+ * matches on is the parenthesised "(LAN)" that tags exactly those messages.
+ *
+ * The bare word LAN is NOT the trigger and must never become one — a message
+ * naming the app being installed ("Downloading LAN party 2.0") would light the
+ * chip on a GitHub download. The parentheses are the whole contract.
+ */
+export function isLanSeeded(message) {
+  return /\(LAN\)/.test(String(message === null || message === undefined ? '' : message));
+}
+
+/** The hub that served it: "from workshop-pc (LAN)" → "workshop-pc". */
+export function lanSeedPeer(message) {
+  const m = /from\s+(.+?)\s*\(LAN\)/i.exec(String(message === null || message === undefined ? '' : message));
+  return m ? m[1].trim() : '';
+}
+
 const PHASES = {
   download: 'Downloading',
   verify: 'Verifying',
