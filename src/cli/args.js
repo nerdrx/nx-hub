@@ -19,7 +19,10 @@ const BOOL_FLAGS = new Set([
   "version",
 ]);
 
-const VALUE_FLAGS = new Set(["tag"]);
+// v0.6: `--port` lets `nx fleet pair` reach a hub that is not on :9023.
+// There is deliberately no `--code`: a pairing code is a shared-secret seed
+// and command-line arguments land in shell history and in `ps` output.
+const VALUE_FLAGS = new Set(["tag", "port"]);
 
 const SHORT = { h: "help", y: "yes", v: "verbose" };
 

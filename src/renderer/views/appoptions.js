@@ -4,7 +4,7 @@
 // Renders a *draft* — app.js owns it and only calls setAppPref() on save.
 
 import { esc } from '../lib/html.js';
-import { APP_POLICIES, policyLabel, splitArgs } from '../lib/prefs.js';
+import { APP_POLICIES, AUTO_RUN_CHOICES, policyLabel, autoRunLabel, splitArgs } from '../lib/prefs.js';
 import { renderSheet } from './sheet.js';
 import * as icons from './icons.js';
 
@@ -89,6 +89,16 @@ export function renderAppOptions(app, draft, ctx = {}) {
         d.releaseFallback !== false,
         'When off, only files from the newest release are offered.'
       )}
+
+      <label class="lbl" for="opt-autorun">Auto-run post-install command</label>
+      <select id="opt-autorun" class="input" data-pref="autoRunCmd">
+        ${AUTO_RUN_CHOICES.map(
+          (c) =>
+            `<option value="${esc(c)}"${d.autoRunCmd === c ? ' selected' : ''}>${esc(autoRunLabel(c, settings))}</option>`
+        ).join('')}
+      </select>
+      <p class="field-note">Only applies to apps whose overlay declares a command. A privileged one
+        (pkexec/sudo) always asks first — it is never run by a background update.</p>
     </section>
 
     <section class="fieldset">

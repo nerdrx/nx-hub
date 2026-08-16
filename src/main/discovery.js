@@ -14,8 +14,8 @@ const OVERLAY_REF = "main";
 const OVERLAY_FILE = "registry/overrides.json";
 const BUNDLED_OVERLAY = path.join(__dirname, "..", "..", "registry", "overrides.json");
 
-// checksums / signatures / builder metadata — never artifacts
-const IGNORE_RE = /\.(sha256|sha512|md5|sig|asc|yml|yaml|blockmap)$/i;
+// checksums / signatures / builder metadata / v0.6 delta patches — never artifacts
+const IGNORE_RE = /\.(sha256|sha512|md5|sig|asc|yml|yaml|blockmap|zpatch)$/i;
 
 const DEFAULT_LABELS = {
   "apk-adb": "Android APK",
@@ -341,6 +341,25 @@ function buildArtifacts(release, ovl) {
       artifact.checksumUrl = sidecar.url || sidecar.browser_download_url || null;
       artifact.checksumId = sidecar.id != null ? sidecar.id : null;
     }
+    // v0.6 delta updates: sibling `<assetName>.from-<version>.zpatch` assets.
+    // The classifier ignores them (they are not installable on their own); the
+    // download path in jobs.js picks the one matching the INSTALLED version.
+    const patchPrefix = `${name}.from-`;
+    const patches = [];
+    for (const a of assets) {
+      const an = String((a && a.name) || "");
+      if (!an.startsWith(patchPrefix) || !/\.zpatch$/i.test(an)) continue;
+      const fromVersion = an.slice(patchPrefix.length, -".zpatch".length);
+      if (!fromVersion) continue;
+      patches.push({
+        name: an,
+        fromVersion,
+        url: a.url || a.browser_download_url || null,
+        id: a.id != null ? a.id : null,
+        size: Number(a.size || 0),
+      });
+    }
+    if (patches.length) artifact.deltaPatches = patches;
     // overlay pass-through consumed by the install engines
     for (const key of ["packageId", "stripPrefix", "prefix", "binHint", "addonsDir", "launchCmd", "postInstallCmd", "args"]) {
       if (entry && entry[key] != null) artifact[key] = entry[key];
@@ -519,6 +538,7 @@ function mergeInstalled(app, installedState, adb, settings) {
   const state = installedState && typeof installedState === "object" ? installedState : {};
   const st = state.installed ? state.installed : {};
   const downloadsFor = (state.downloads && state.downloads[app.id]) || {};
+  const crashesAll = (state.crashes && typeof state.crashes === "object" && state.crashes) || {};
   const forApp = st[app.id] || {};
   const skippedVersion = app.skippedVersion || null;
   const adbInfo = adb || { available: false, devices: [], apkVersions: {} };
@@ -574,6 +594,18 @@ function mergeInstalled(app, installedState, adb, settings) {
     );
     artifact.readyToInstall = ready;
     artifact.readyPath = ready ? download.path : null;
+
+    // ---- v0.6: crash-aware rollback ----
+    // The counter only speaks for the version that is installed RIGHT NOW: a
+    // record left over from an older build (or from before an uninstall) reads
+    // as zero and is never shown.
+    const crash = crashesAll[`${app.id}::${artifact.id}`] || null;
+    const crashesThisVersion = Boolean(
+      crash && installed && installed.version != null && crash.version != null && norm(crash.version) === norm(installed.version)
+    );
+    artifact.crashCount = crashesThisVersion ? Number(crash.count || 0) : 0;
+    artifact.crashLoop = artifact.crashCount >= 3;
+    artifact.lastCrashAt = crashesThisVersion ? crash.lastAt || null : null;
   }
   return app;
 }

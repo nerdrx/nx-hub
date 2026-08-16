@@ -211,6 +211,27 @@ async function runOk(cmd, args, opts = {}, what) {
 }
 
 /**
+ * v0.6 crash tracking: every detached spawn is announced to whoever asked to
+ * listen (jobs.launch does, around engine.launch) so the core can watch the
+ * process WITHOUT the engines having to hand their ChildProcess back through
+ * every launch() return value.
+ *
+ * Why this is safe: `unref()` only removes the handle from the event loop's
+ * ref count — it does NOT sever the parent/child relationship. An unref'd,
+ * detached child still emits 'exit' with its real exit code as long as the
+ * hub's loop is alive, and still outlives the hub when it is not. So the
+ * listener gets SPEC-exact exit codes with zero change to detachment.
+ */
+const spawnListeners = new Set();
+
+/** Subscribe to detached spawns. @returns {function} unsubscribe */
+function onSpawn(fn) {
+  if (typeof fn !== "function") return () => {};
+  spawnListeners.add(fn);
+  return () => spawnListeners.delete(fn);
+}
+
+/**
  * Spawn a program for the user, fully detached: no stdio inherited from the
  * hub, survives the hub quitting.
  */
@@ -222,6 +243,13 @@ function spawnDetached(cmd, args = [], opts = {}) {
     stdio: "ignore",
   });
   child.unref();
+  for (const fn of [...spawnListeners]) {
+    try {
+      fn(child, { cmd, args, opts });
+    } catch (_) {
+      /* a broken listener must never break a launch */
+    }
+  }
   return child;
 }
 
@@ -573,6 +601,7 @@ module.exports = {
   run,
   runOk,
   spawnDetached,
+  onSpawn,
   manifestPath,
   writeManifest,
   readManifest,

@@ -481,13 +481,14 @@ test('the mock ships a prebuilt stack and saves round-trips', async () => {
   const saved = normalizeStacks(await nxhub.getStacks()).find((s) => s.id === 'studio');
   assert.deepEqual(saved, stack, 'what went in is what comes back');
 
-  // saving the same id again edits in place
+  // saving the same id again edits in place (the roster ships two: VR Night and
+  // the v0.6 triggered "Headset arrives")
   await nxhub.saveStack({ ...stack, name: 'Studio' });
-  assert.equal(normalizeStacks(await nxhub.getStacks()).length, 2);
+  assert.equal(normalizeStacks(await nxhub.getStacks()).length, 3);
 
   assert.equal(await nxhub.deleteStack('studio'), true);
   assert.equal(await nxhub.deleteStack('studio'), false);
-  assert.deepEqual(normalizeStacks(await nxhub.getStacks()).map((s) => s.id), ['vr-night']);
+  assert.deepEqual(normalizeStacks(await nxhub.getStacks()).map((s) => s.id), ['vr-night', 'headset-arrives']);
   assert.equal(await nxhub.saveStack(null), false);
 });
 

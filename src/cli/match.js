@@ -85,6 +85,23 @@ function matchStack(stacks, query) {
   return { stack: null, candidates: [], error: `No stack called "${query}". Try \`nx stack ls\`.` };
 }
 
+/**
+ * v0.6: the same exact → prefix → substring resolution for fleet peers.
+ * A peer answers to its id, its name, or its host — `nx fleet update work`
+ * finds "workshop", and `nx fleet install 192.168` finds it by address.
+ * @returns {{peer:object|null, candidates:object[], error:string|null}}
+ */
+function matchPeer(peers, query) {
+  const list = Array.isArray(peers) ? peers : [];
+  if (!query) return { peer: null, candidates: list, error: "Name a peer — try `nx fleet ls`." };
+  const { match, candidates } = resolve(list, query, (p) => [p.id, p.name, p.host].filter(Boolean));
+  if (match) return { peer: match, candidates: [match], error: null };
+  if (candidates.length > 1) {
+    return { peer: null, candidates, error: `"${query}" matches ${candidates.length} peers — be more specific.` };
+  }
+  return { peer: null, candidates: [], error: `No paired hub called "${query}". Try \`nx fleet ls\`.` };
+}
+
 const ARTIFACT_MODES = {
   /** installable from this machine: same platform, or android (sideloaded over adb) */
   install: (a, host) => a.platform === host || a.platform === "android",
@@ -153,4 +170,14 @@ function emptyMessage(app, mode, host) {
   }
 }
 
-module.exports = { matchApp, matchStack, pickArtifact, resolve, appKeys, artifactKeys, hostPlatform, ARTIFACT_MODES };
+module.exports = {
+  matchApp,
+  matchStack,
+  matchPeer,
+  pickArtifact,
+  resolve,
+  appKeys,
+  artifactKeys,
+  hostPlatform,
+  ARTIFACT_MODES,
+};

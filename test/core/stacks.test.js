@@ -35,9 +35,14 @@ function fakeJobs({ pids = {}, fail = {} } = {}) {
 function fakeConnector(present = []) {
   const set = new Set(present);
   const shutdowns = [];
+  const listeners = new Set();
+  const notify = () => {
+    for (const fn of [...listeners]) fn();
+  };
   return {
     set,
     shutdowns,
+    listeners,
     /** when true, requestShutdown is accepted but the app never leaves */
     stubborn: false,
     isPresent(appId) {
@@ -52,10 +57,46 @@ function fakeConnector(present = []) {
     getClients() {
       return [...set].map((app) => ({ app, version: "1.0.0", pid: 1, since: null, lastSeen: null, fields: {} }));
     },
-    onChange() {
-      return () => {};
+    onChange(cb) {
+      if (typeof cb !== "function") return () => {};
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+    /* the two bus-side events a trigger watcher reacts to */
+    arrive(appId) {
+      set.add(String(appId).toLowerCase());
+      notify();
+    },
+    leave(appId) {
+      set.delete(String(appId).toLowerCase());
+      notify();
     },
   };
+}
+
+/**
+ * The install engine as far as an adb trigger cares: a mutable device list the
+ * test plugs and unplugs, and a call counter so a poll can be waited on.
+ */
+function fakeEngine({ devices = [], available = true } = {}) {
+  const eng = {
+    devices,
+    available,
+    calls: 0,
+    fail: null,
+    async getAdbStatus() {
+      eng.calls += 1;
+      if (eng.fail) throw new Error(eng.fail);
+      return { available: eng.available, devices: eng.devices, apkVersions: {}, selected: null };
+    },
+    plug(serial, state = "device") {
+      eng.devices = [...eng.devices, { serial, model: "quest3", state }];
+    },
+    unplug(serial) {
+      eng.devices = eng.devices.filter((d) => d.serial !== serial);
+    },
+  };
+  return eng;
 }
 
 function collector() {
@@ -75,17 +116,27 @@ function fakeDiscovery(apps = null) {
   };
 }
 
-function setup(t, { jobs = fakeJobs(), connector = null, timing = FAST, discovery = fakeDiscovery() } = {}) {
+function setup(t, { jobs = fakeJobs(), connector = null, engine = null, timing = FAST, discovery = fakeDiscovery() } = {}) {
   const env = helpers.useTempEnv();
   const bag = collector();
+  const logs = [];
+  // The config module, with its log line diverted into an array: the trigger
+  // watcher reports "skipped — cooldown" and "adb unavailable" through it, and
+  // those sentences are part of the contract.
+  const cfg = Object.assign({}, config, { log: (m) => logs.push(String(m)) });
   stacks._reset();
-  stacks.init({ jobs, connector, config, emit: bag.emit, timing, discovery });
+  stacks.init({ jobs, connector, engine, config: cfg, emit: bag.emit, timing, discovery });
   t.after(() => {
     stacks._reset();
     env.cleanup();
   });
-  return { env, jobs, connector, events: bag.events, phases: bag.phases };
+  return { env, jobs, connector, engine, logs, events: bag.events, phases: bag.phases };
 }
+
+/** Timing for the adb watcher: poll 40× faster than the 10s the hub ships. */
+const FAST_ADB = Object.assign({}, FAST, { adbPollMs: 15 });
+
+const tick = (ms = 40) => new Promise((r) => setTimeout(r, ms));
 
 function step(appId, health, extra = {}) {
   return Object.assign({ appId, health }, extra);
@@ -465,4 +516,304 @@ test("stacks: stop aborts a run in flight and reports honestly about unknown sta
   const nothing = await stacks.stop("no-such-stack");
   assert.strictEqual(nothing.ok, false);
   assert.match(nothing.reason, /not running/);
+});
+
+/* ------------------------------------------------------ v0.6 triggers */
+
+const triggered = (id, trigger, extra = {}) =>
+  Object.assign({ id, name: id, steps: [step("wivrn-nx", { type: "delay", timeoutMs: 0 })], trigger }, extra);
+
+test("stacks: a trigger is sanitized — type whitelist, trimmed ids, clamped cooldown", (t) => {
+  setup(t);
+  const s = stacks.sanitizeTrigger;
+
+  // nothing usable → no trigger at all (the stack stays manual)
+  for (const junk of [
+    undefined,
+    null,
+    "adb-device", // a string is not a trigger object
+    [],
+    {},
+    { type: "" },
+    { type: "cron", at: "09:00" },
+    { type: "connector-app" }, // an app trigger with no app watches nothing
+    { type: "connector-app", appId: "   " },
+  ]) {
+    assert.strictEqual(s(junk), null, `junk trigger: ${JSON.stringify(junk)}`);
+  }
+
+  // the type is matched case/space-insensitively, everything else defaults
+  assert.deepStrictEqual(s({ type: "  ADB-Device " }), {
+    type: "adb-device",
+    stopOnLeave: false,
+    cooldownMs: 60000,
+    serial: null, // absent serial = any device
+  });
+  assert.deepStrictEqual(s({ type: "adb-device", serial: "  1WMHH8154Z0K7T  ", stopOnLeave: 1, cooldownMs: "120000" }), {
+    type: "adb-device",
+    stopOnLeave: true,
+    cooldownMs: 120000,
+    serial: "1WMHH8154Z0K7T", // trimmed but NOT slugified — serials are case-sensitive
+  });
+  assert.deepStrictEqual(s({ type: "connector-app", appId: "  WiVRn NX  ", stopOnLeave: "" }), {
+    type: "connector-app",
+    stopOnLeave: false,
+    cooldownMs: 60000,
+    appId: "WiVRn NX", // verbatim: the connector normalizes app ids on its side
+  });
+
+  // cooldown: finite → clamped to [5s, 1h]; junk/absent → the 60s default
+  const cooldown = (v) => s({ type: "adb-device", cooldownMs: v }).cooldownMs;
+  assert.strictEqual(cooldown(0), 5000);
+  assert.strictEqual(cooldown(-90000), 5000);
+  assert.strictEqual(cooldown(4999), 5000);
+  assert.strictEqual(cooldown(5000), 5000);
+  assert.strictEqual(cooldown(90000.6), 90001);
+  assert.strictEqual(cooldown(24 * 60 * 60 * 1000), 3600000);
+  for (const junk of [undefined, null, "soon", NaN, Infinity, {}]) assert.strictEqual(cooldown(junk), 60000);
+});
+
+test("stacks: a junk trigger is dropped and the stack stays manual — nothing watches", (t) => {
+  const ctx = setup(t);
+
+  const saved = stacks.save(triggered("vr", { type: "when-i-say-so", appId: "wivrn-nx" }));
+  assert.ok(!("trigger" in saved), "an unusable trigger never reaches the store");
+  assert.strictEqual(stacks._watching(), null, "a manual stack arms no watcher");
+
+  // and the same is true of a hand-edited stacks.json
+  const file = path.join(ctx.env.dataDir, "stacks.json");
+  const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+  raw.stacks[0].trigger = { type: "connector-app" }; // no appId
+  fs.writeFileSync(file, JSON.stringify(raw));
+  assert.ok(!("trigger" in stacks.get("vr")), "junk never survives a read either");
+  assert.strictEqual(stacks._watching(), null);
+
+  // a usable one, by contrast, survives the round trip intact
+  stacks.save(triggered("vr", { type: "connector-app", appId: "pulsenx", stopOnLeave: true }));
+  assert.deepStrictEqual(stacks.get("vr").trigger, {
+    type: "connector-app",
+    appId: "pulsenx",
+    stopOnLeave: true,
+    cooldownMs: 60000,
+  });
+});
+
+test("stacks: saving a trigger arms the watcher, removing it disarms — both restart it", (t) => {
+  const connector = fakeConnector();
+  setup(t, { connector });
+
+  assert.strictEqual(stacks._watching(), null, "init with an empty store watches nothing");
+
+  stacks.save(triggered("manual", null));
+  assert.strictEqual(stacks._watching(), null);
+
+  stacks.save(triggered("vr", { type: "connector-app", appId: "pulsenx" }));
+  assert.deepStrictEqual(stacks._watching(), ["vr"], "save() restarts the watcher — a trigger appeared");
+  assert.strictEqual(connector.listeners.size, 1, "and it subscribed to the bus exactly once");
+
+  stacks.save(triggered("audio", { type: "adb-device" }));
+  assert.deepStrictEqual(stacks._watching(), ["vr", "audio"]);
+  assert.strictEqual(connector.listeners.size, 1, "the old subscription is dropped on restart, never stacked");
+
+  stacks.save(triggered("vr", null)); // the same stack, trigger taken away
+  assert.deepStrictEqual(stacks._watching(), ["audio"]);
+  assert.strictEqual(connector.listeners.size, 0);
+
+  assert.strictEqual(stacks.remove("audio"), true);
+  assert.strictEqual(stacks._watching(), null, "remove() disarms the last trigger");
+
+  stacks.save(triggered("vr", { type: "connector-app", appId: "pulsenx" }));
+  assert.strictEqual(stacks.stopWatcher(), true);
+  assert.strictEqual(stacks._watching(), null, "stopWatcher() tears it down for good");
+  assert.strictEqual(connector.listeners.size, 0);
+  assert.strictEqual(stacks.stopWatcher(), false, "and is idempotent");
+});
+
+test("stacks: a connector arrival runs the stack once, and the cooldown suppresses the rest", async (t) => {
+  const connector = fakeConnector();
+  const ctx = setup(t, { connector });
+  stacks.save(triggered("vr", { type: "connector-app", appId: "headset" }));
+
+  connector.arrive("headset");
+  await tick();
+
+  assert.deepStrictEqual(ctx.jobs.launched.map((l) => l.appId), ["wivrn-nx"], "the arrival ran the stack");
+  assert.deepStrictEqual(ctx.phases(), ["*:triggered", "0:launching", "0:waiting", "0:healthy", "*:done"]);
+  const evt = ctx.events[0];
+  assert.deepStrictEqual(evt, {
+    type: "stack-progress",
+    stackId: "vr",
+    stepIndex: null,
+    appId: null,
+    phase: "triggered",
+    reason: "connector-app",
+  });
+
+  // a bus change that is not an EDGE is not an arrival
+  connector.arrive("headset");
+  connector.arrive("something-else");
+  await tick();
+  assert.strictEqual(ctx.jobs.launched.length, 1, "still present ≠ arrived again");
+
+  // a real edge, but inside the 60s cooldown
+  connector.leave("headset");
+  connector.arrive("headset");
+  await tick();
+  assert.strictEqual(ctx.jobs.launched.length, 1, "the cooldown holds the second run back");
+  const skipped = ctx.logs.filter((l) => /cooldown/.test(l));
+  assert.strictEqual(skipped.length, 1);
+  assert.match(skipped[0], /trigger vr: connector-app arrived, skipped — cooldown, 6[0-9]s left/);
+});
+
+test("stacks: whatever is already there when the watcher starts is the BASELINE, not an arrival", async (t) => {
+  const connector = fakeConnector(["headset"]); // plugged in before the hub came up
+  const ctx = setup(t, { connector });
+
+  stacks.save(triggered("vr", { type: "connector-app", appId: "headset" }));
+  await tick();
+  assert.strictEqual(ctx.jobs.launched.length, 0, "a hub restart must not re-run the stack");
+
+  // any bus traffic while it stays present is still not an arrival
+  connector.arrive("other-app");
+  await tick();
+  assert.strictEqual(ctx.jobs.launched.length, 0);
+
+  // …but the watcher is alive: unplug, plug back in, and it fires
+  connector.leave("headset");
+  connector.arrive("headset");
+  await tick();
+  assert.deepStrictEqual(ctx.jobs.launched.map((l) => l.appId), ["wivrn-nx"]);
+});
+
+test("stacks: departure with stopOnLeave stops the stack (and without it, nothing happens)", async (t) => {
+  const connector = fakeConnector();
+  const sleeper = spawnSleeper();
+  t.after(() => {
+    try {
+      sleeper.child.kill("SIGKILL");
+    } catch (_) {
+      /* already gone */
+    }
+  });
+
+  const jobs = fakeJobs({ pids: { "wivrn-nx": sleeper.pid } });
+  const ctx = setup(t, { jobs, connector });
+  stacks.save(triggered("vr", { type: "connector-app", appId: "headset", stopOnLeave: true }));
+
+  connector.arrive("headset");
+  await tick();
+  assert.strictEqual(ctx.jobs.launched.length, 1);
+  assert.ok(alive(sleeper.pid), "the launched app is up");
+
+  connector.leave("headset");
+  await tick();
+  const end = await sleeper.exited;
+  assert.strictEqual(end.signal, "SIGTERM", "the headset left, so the stack was stopped");
+  assert.deepStrictEqual(ctx.phases(), [
+    "*:triggered",
+    "0:launching",
+    "0:waiting",
+    "0:healthy",
+    "*:done",
+    "0:stopping",
+    "0:stopped",
+    "*:stopped",
+  ]);
+
+  // the same departure on a stack without stopOnLeave is a non-event
+  ctx.events.length = 0;
+  stacks.save(triggered("keep", { type: "connector-app", appId: "other" }));
+  connector.arrive("other");
+  await tick();
+  ctx.events.length = 0;
+  connector.leave("other");
+  await tick();
+  assert.deepStrictEqual(ctx.phases(), [], "no stopOnLeave, no stop");
+});
+
+test("stacks: an adb device arriving fires the trigger, and the serial has to match", async (t) => {
+  const engine = fakeEngine();
+  const ctx = setup(t, { engine, timing: FAST_ADB });
+  stacks.save(triggered("vr", { type: "adb-device", serial: "1WMHH8154Z0K7T" }));
+
+  await tick(60);
+  assert.ok(engine.calls >= 2, "the watcher polls on its own interval");
+  assert.strictEqual(ctx.jobs.launched.length, 0, "no device, no run");
+
+  engine.plug("SOMEONE-ELSE");
+  await tick(60);
+  assert.strictEqual(ctx.jobs.launched.length, 0, "a different headset is not this stack's trigger");
+
+  engine.plug("1WMHH8154Z0K7T", "unauthorized");
+  await tick(60);
+  assert.strictEqual(ctx.jobs.launched.length, 0, "a device that has not accepted the debugging prompt is not usable");
+
+  engine.unplug("1WMHH8154Z0K7T");
+  engine.plug("1WMHH8154Z0K7T");
+  await tick(60);
+  assert.deepStrictEqual(ctx.jobs.launched.map((l) => l.appId), ["wivrn-nx"]);
+  assert.strictEqual(ctx.events[0].phase, "triggered");
+  assert.strictEqual(ctx.events[0].reason, "adb-device");
+
+  // a poll that cannot answer is UNKNOWN, not "everything unplugged"
+  ctx.events.length = 0;
+  engine.fail = "adb server died";
+  await tick(60);
+  assert.ok(!ctx.phases().includes("*:stopped"), "a failed poll never fakes a departure");
+});
+
+test("stacks: an adb device already plugged in when the watcher starts never fires", async (t) => {
+  const engine = fakeEngine({ devices: [{ serial: "QUEST", model: "quest3", state: "device" }] });
+  const ctx = setup(t, { engine, timing: FAST_ADB });
+  stacks.save(triggered("vr", { type: "adb-device" })); // no serial → any device
+
+  await tick(80);
+  assert.ok(engine.calls >= 3, "it really polled");
+  assert.strictEqual(ctx.jobs.launched.length, 0, "the first poll is the baseline, not an arrival");
+
+  engine.unplug("QUEST");
+  await tick(40);
+  engine.plug("QUEST");
+  await tick(40);
+  assert.deepStrictEqual(ctx.jobs.launched.map((l) => l.appId), ["wivrn-nx"], "a real re-plug does fire");
+});
+
+test("stacks: with no engine wired, adb triggers say so ONCE and stay dormant", async (t) => {
+  const ctx = setup(t, { engine: null, timing: FAST_ADB });
+  stacks.save(triggered("vr", { type: "adb-device" }));
+
+  await tick(80);
+  const said = ctx.logs.filter((l) => /adb unavailable/.test(l));
+  assert.strictEqual(said.length, 1, "one line, not one every poll");
+  assert.match(said[0], /adb unavailable — 1 device trigger\(s\) dormant/);
+  assert.deepStrictEqual(stacks._watching(), ["vr"], "the stack is still armed — it just cannot see a device");
+  assert.strictEqual(ctx.jobs.launched.length, 0);
+  assert.deepStrictEqual(ctx.phases(), []);
+
+  // running it by hand is unaffected — a dormant trigger is not a broken stack
+  assert.strictEqual((await stacks.run("vr")).ok, true);
+});
+
+test("stacks: a trigger never gatecrashes a run that is already in flight", async (t) => {
+  const connector = fakeConnector();
+  const ctx = setup(t, { connector });
+  stacks.save({ id: "slow", name: "Slow", steps: [step("ogb", { type: "delay", timeoutMs: 300 })] });
+  stacks.save(triggered("vr", { type: "connector-app", appId: "headset" }));
+
+  const inFlight = stacks.run("slow");
+  connector.arrive("headset");
+  await tick();
+
+  assert.deepStrictEqual(ctx.jobs.launched.map((l) => l.appId), ["ogb"], "the trigger did not launch anything");
+  const skipped = ctx.logs.filter((l) => /skipped/.test(l));
+  assert.strictEqual(skipped.length, 1);
+  assert.match(skipped[0], /trigger vr: connector-app arrived, skipped — slow is already running/);
+  assert.ok(!ctx.phases().includes("*:triggered"), "a skipped trigger is not announced as a run");
+
+  assert.strictEqual((await inFlight).ok, true);
+  // the skipped fire did NOT burn the cooldown: the next arrival edge runs it
+  connector.leave("headset");
+  connector.arrive("headset");
+  await tick();
+  assert.deepStrictEqual(ctx.jobs.launched.map((l) => l.appId), ["ogb", "wivrn-nx"]);
 });

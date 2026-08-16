@@ -226,6 +226,7 @@ const IDS = [
   'filter',
   'filter-icon',
   'device-chip',
+  'fleet-chip',
   'refresh',
   'settings-btn',
   'stacks-btn',
@@ -276,6 +277,14 @@ export function installDom() {
     },
     setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
     clearTimeout: (t) => globalThis.clearTimeout(t),
+    // The pairing countdown ticks on an interval; unref'd so a forgotten timer
+    // can never be what keeps `node --test` alive.
+    setInterval: (fn, ms) => {
+      const t = globalThis.setInterval(fn, ms);
+      if (t && typeof t.unref === 'function') t.unref();
+      return t;
+    },
+    clearInterval: (t) => globalThis.clearInterval(t),
     requestAnimationFrame: (fn) => globalThis.setTimeout(() => fn(Date.now()), 0),
     cancelAnimationFrame: (t) => globalThis.clearTimeout(t),
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),

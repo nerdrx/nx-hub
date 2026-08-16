@@ -39,6 +39,18 @@ const api = {
   runStack: (id) => ipcRenderer.invoke("nxhub:runStack", id),
   stopStack: (id) => ipcRenderer.invoke("nxhub:stopStack", id),
 
+  // ---- v0.6 (SPEC "Fleet → IPC") ----
+  // Events that come back on onEvent: `fleet-changed` (peers/summaries moved),
+  // `fleet-pair-code` ({code, expiresAt}), `fleet-progress` (a remote job's
+  // progress, tagged with peerId).
+  getFleet: () => ipcRenderer.invoke("nxhub:getFleet"),
+  fleetShowCode: () => ipcRenderer.invoke("nxhub:fleetShowCode"),
+  fleetPair: (host, code, port) => ipcRenderer.invoke("nxhub:fleetPair", host, code, port),
+  fleetUnpair: (peerId) => ipcRenderer.invoke("nxhub:fleetUnpair", peerId),
+  fleetInstall: (peerId, appId, artifactId) => ipcRenderer.invoke("nxhub:fleetInstall", peerId, appId, artifactId),
+  fleetLaunch: (peerId, appId, artifactId) => ipcRenderer.invoke("nxhub:fleetLaunch", peerId, appId, artifactId),
+  fleetUpdateAll: (peerId) => ipcRenderer.invoke("nxhub:fleetUpdateAll", peerId),
+
   onEvent: (cb) => {
     if (typeof cb !== "function") return () => {};
     const handler = (_event, payload) => {

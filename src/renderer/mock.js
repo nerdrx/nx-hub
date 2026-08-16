@@ -68,7 +68,43 @@ function artifact(a) {
     rollbackAvailable: !!a.rollbackAvailable,
     prevVersion: a.prevVersion || '',
     readyToInstall: !!a.readyToInstall,
+    // v0.6 — crash-aware rollback
+    crashCount: a.crashCount || 0,
+    crashLoop: !!a.crashLoop,
+    lastCrashAt: a.lastCrashAt || '',
   };
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function mb(bytes) {
+  return `${Math.max(0.1, bytes / 1_000_000).toFixed(1)} MB`;
+}
+
+/**
+ * The progress messages a delta update produces, in [resilience]'s own words.
+ * The patch is a fifth of the full asset — that ratio is what the Δ chip and
+ * the closing line are advertising.
+ */
+function deltaMessage(phase, art, pct) {
+  const full = art.size || 90_000_000;
+  const patch = Math.round(full * 0.19);
+  const from = (art.installed && art.installed.version) || 'the installed build';
+  if (phase === 'download') {
+    return pct < 30
+      ? `downloading delta patch (${mb(patch)} instead of ${mb(full)})`
+      : `delta patch — ${mb((patch * pct) / 100)} / ${mb(patch)}`;
+  }
+  if (phase === 'extract') return `applying delta patch (zstd, from ${from})`;
+  if (phase === 'verify') return 'verifying the delta result';
+  if (phase === 'cleanup') {
+    return `delta applied — ${mb(patch)} downloaded instead of ${mb(full)} (${Math.round(
+      (1 - patch / full) * 100
+    )}% saved)`;
+  }
+  return '';
 }
 
 function baseApps() {
@@ -213,6 +249,13 @@ function baseApps() {
           },
           // downloaded by the background scheduler, waiting for a click
           readyToInstall: true,
+          // v0.6 — this one keeps dying seconds after launch, and the engine
+          // kept the version it replaced, so the banner can offer a way back.
+          crashCount: 4,
+          crashLoop: true,
+          lastCrashAt: new Date(Date.now() - 4 * 60000).toISOString(),
+          rollbackAvailable: true,
+          prevVersion: '1.4.1',
         }),
         artifact({
           id: 'windows-portable-windows',
@@ -448,6 +491,8 @@ export function createMock() {
         updatePolicy: 'download',
         launchArgs: ['--profile', 'living room'],
         launchEnv: { WIVRN_BITRATE: '80000000' },
+        // v0.6 — this one's setcap line runs itself; the global default is off.
+        autoRunCmd: true,
       },
       wivrn: { hidden: true },
       // strict mode: only artifacts from the newest release are offered
@@ -461,6 +506,8 @@ export function createMock() {
     createDesktopEntries: true,
     maxConcurrentDownloads: 2,
     preferredDeviceSerial: 'PA7HA0M123',
+    // v0.6 — global auto-run stays off; wivrn-nx opts in per app.
+    autoRunPostInstallCmd: false,
   };
 
   const state = {
@@ -549,7 +596,7 @@ export function createMock() {
     return { app, art: app.artifacts.find((a) => a.id === artifactId) };
   }
 
-  function runJob(appId, artifactId, { fail = false, target = '' } = {}) {
+  function runJob(appId, artifactId, { fail = false, target = '', delta = false } = {}) {
     const { app, art } = find(appId, artifactId);
     if (!app || !art) return null;
     const jobId = `job-${++jobSeq}`;
@@ -574,7 +621,10 @@ export function createMock() {
       const speed = (8 + Math.random() * 9).toFixed(1);
       job.phase = p.phase;
       job.pct = Math.round(pct);
-      job.message = p.phase === 'download' ? `${speed} MB/s` : '';
+      // A delta update speaks [resilience]'s exact vocabulary — the renderer
+      // matches "delta patch"/"delta applied", never the bare word (asset names
+      // contain it).
+      job.message = delta ? deltaMessage(p.phase, art, job.pct) : p.phase === 'download' ? `${speed} MB/s` : '';
       emit({
         type: 'job-progress',
         jobId,
@@ -616,6 +666,10 @@ export function createMock() {
             art.rollbackAvailable = true;
           }
           art.readyToInstall = false;
+          // SPEC v0.6: the crash counter belongs to a version — new bytes, fresh
+          // start, and the card's banner re-arms with them.
+          art.crashCount = 0;
+          art.crashLoop = false;
           // Core may or may not extract an icon; the launcher tolerates both.
           if (art.kind === 'apk-adb' && art.packageId) state.adb.versions[art.packageId] = version;
           recompute(state.apps, state.settings);
@@ -709,6 +763,21 @@ export function createMock() {
         { appId: 'pulsenx', artifactId: 'appimage-linux', health: { type: 'connector', timeoutMs: 20000 } },
       ],
     },
+    // v0.6 — a stack that starts itself the moment the headset shows up.
+    {
+      id: 'headset-arrives',
+      name: 'Headset arrives',
+      trigger: {
+        type: 'adb-device',
+        serial: 'PA7HA0M123',
+        stopOnLeave: true,
+        cooldownMs: 90000,
+      },
+      steps: [
+        { appId: 'wivrn-nx', artifactId: 'tarball-prefix-linux', health: { type: 'connector', timeoutMs: 30000 } },
+        { appId: 'pulsenx', artifactId: 'appimage-linux', health: { type: 'delay', timeoutMs: 1200 }, optional: true },
+      ],
+    },
   ];
 
   // Every run walks a different path so the UI can reach all of its states:
@@ -786,6 +855,108 @@ export function createMock() {
       runs.delete(stackId);
     }, 380);
     return true;
+  }
+
+  /* ------------------------------------------------------------------ fleet */
+
+  // The code the fake "other hub" is willing to accept. Anything else takes the
+  // wrong-code path, which is the interesting one to design against.
+  const PAIR_CODE = '482913';
+  const PAIR_WINDOW_MS = 120000;
+  let pairWindow = null; // { code, expiresAt } while this hub is showing one
+
+  let peers = [
+    {
+      id: 'a1b2c3d4e5f60718',
+      name: 'workshop-pc',
+      host: '192.168.1.50',
+      hubVersion: '0.6.0',
+      online: true,
+      lastSeen: new Date().toISOString(),
+      summary: {
+        apps: [
+          { id: 'wivrn-nx', name: 'WiVRn NX', installed: '1.9.0', updates: 1 },
+          { id: 'pulsenx', name: 'PulseNX', installed: '2.3.0', updates: 0 },
+          { id: 'oscgoesbrrr-nx-patches', name: 'OGB NX-Patches', installed: '', updates: 0 },
+          // An app this hub has never discovered — its row still works, and the
+          // quotes and ampersand prove the escaping on a real screen.
+          { id: 'lab-rig', name: 'Lab Rig "beta" & co', installed: '0.4.0', updates: 2 },
+        ],
+      },
+    },
+    {
+      id: '99887766554433aa',
+      name: 'living-room',
+      host: 'living-room.local',
+      hubVersion: '0.5.0',
+      online: false,
+      lastSeen: new Date(Date.now() - 41 * 60000).toISOString(),
+      summary: {
+        apps: [
+          { id: 'wivrn-nx', name: 'WiVRn NX', installed: '1.8.0', updates: 1 },
+          { id: 'pulsenx', name: 'PulseNX', installed: '', updates: 0 },
+        ],
+      },
+    },
+  ];
+
+  const fleetChanged = () => emit({ type: 'fleet-changed' });
+  const findPeer = (id) => peers.find((p) => p.id === id) || null;
+
+  function remoteApp(peerId, appId) {
+    const p = findPeer(peerId);
+    return (p && p.summary.apps.find((a) => a.id === appId)) || null;
+  }
+
+  /** Relay a fake remote job: the same phases, tagged with the peer. */
+  function fleetJobSim(peerId, appId, artifactId, opts = {}) {
+    const p = findPeer(peerId);
+    if (!p) return null;
+    const jobId = `remote-${++jobSeq}`;
+    const phases = ['download', 'verify', 'extract', 'install'];
+    let i = 0;
+    let pct = 0;
+    const delta = !!opts.delta;
+
+    const tick = () => {
+      pct += 32 + Math.random() * 14;
+      if (pct >= 100) {
+        pct = 0;
+        i += 1;
+      }
+      if (i >= phases.length) {
+        emit({ type: 'fleet-progress', peerId, jobId, appId, artifactId, phase: 'done', pct: 100, message: '' });
+        const row = remoteApp(peerId, appId);
+        if (row && opts.version) {
+          row.installed = opts.version;
+          row.updates = 0;
+        }
+        p.lastSeen = new Date().toISOString();
+        fleetChanged();
+        emit({ type: 'toast', level: 'info', message: `${p.name}: ${appId} is up to date` });
+        return;
+      }
+      emit({
+        type: 'fleet-progress',
+        peerId,
+        jobId,
+        appId,
+        artifactId,
+        phase: phases[i],
+        pct: Math.round(pct),
+        message:
+          phases[i] === 'download'
+            ? delta
+              ? 'downloading delta patch (14.2 MB instead of 84.6 MB)'
+              : `${(6 + Math.random() * 8).toFixed(1)} MB/s`
+            : delta && phases[i] === 'extract'
+              ? 'applying delta patch (zstd)'
+              : '',
+      });
+      later(tick, 150);
+    };
+    later(tick, 120);
+    return jobId;
   }
 
   // ?slow=1 delays the very first getState so the loading skeletons are
@@ -894,6 +1065,9 @@ export function createMock() {
       art.installed = { ...(art.installed || {}), version: art.prevVersion, installedAt: new Date().toISOString() };
       art.rollbackAvailable = false;
       art.prevVersion = '';
+      // Rolling back is a version change too — the crash counter starts over.
+      art.crashCount = 0;
+      art.crashLoop = false;
       if (art.kind === 'apk-adb' && art.packageId) state.adb.versions[art.packageId] = art.installed.version;
       recompute(state.apps, state.settings);
       changed();
@@ -1030,6 +1204,70 @@ export function createMock() {
     },
     async stopStack(id) {
       return stopStackSim(id);
+    },
+
+    /* --------------------------------------------------------- v0.6 surface */
+
+    async getFleet() {
+      return JSON.parse(JSON.stringify({ peers }));
+    },
+    async fleetShowCode() {
+      pairWindow = { code: PAIR_CODE, expiresAt: Date.now() + PAIR_WINDOW_MS };
+      // Main arms the window AND announces it, so a hub that was told to pair
+      // by the other side sees the same code without asking.
+      later(() => emit({ type: 'fleet-pair-code', ...pairWindow }), 20);
+      return { ...pairWindow };
+    },
+    async fleetPair(host, code) {
+      await sleep(420);
+      if (String(code) !== PAIR_CODE) {
+        return { ok: false, error: 'That code did not match — ask the other hub to show a fresh one.' };
+      }
+      const id = `paired${String(peers.length + 1).padStart(2, '0')}${Date.now().toString(16).slice(-8)}`;
+      const peer = {
+        id,
+        name: String(host).replace(/:\d+$/, ''),
+        host: String(host),
+        hubVersion: '0.6.0',
+        online: true,
+        lastSeen: new Date().toISOString(),
+        summary: { apps: [{ id: 'nx-hub', name: 'NX Hub', installed: '0.6.0', updates: 0 }] },
+      };
+      peers = [...peers, peer];
+      fleetChanged();
+      return { ok: true, peer: { id: peer.id, name: peer.name } };
+    },
+    async fleetUnpair(id) {
+      const before = peers.length;
+      peers = peers.filter((p) => p.id !== id);
+      fleetChanged();
+      return peers.length !== before;
+    },
+    async fleetInstall(peerId, appId, artifactId) {
+      const row = remoteApp(peerId, appId);
+      const local = state.apps.find((a) => a.id === appId);
+      const version = (local && local.latest && local.latest.version) || (row && row.installed) || '1.0.0';
+      const jobId = fleetJobSim(peerId, appId, artifactId, { version, delta: !!(row && row.installed) });
+      return jobId ? { ok: true, jobId } : false;
+    },
+    async fleetLaunch(peerId, appId) {
+      const p = findPeer(peerId);
+      if (!p) return false;
+      emit({ type: 'toast', level: 'info', message: `${p.name}: launching ${appId}…` });
+      return { ok: true };
+    },
+    async fleetUpdateAll(peerId) {
+      const p = findPeer(peerId);
+      if (!p) return false;
+      const waiting = p.summary.apps.filter((a) => a.updates > 0);
+      for (const row of waiting) {
+        const local = state.apps.find((a) => a.id === row.id);
+        fleetJobSim(peerId, row.id, '', {
+          version: (local && local.latest && local.latest.version) || row.installed,
+          delta: true,
+        });
+      }
+      return { ok: true, jobs: waiting.length };
     },
   };
 
@@ -1182,6 +1420,81 @@ export function createMock() {
     stacks() {
       return JSON.parse(JSON.stringify(stacks));
     },
+
+    /* -------------------------------------------------------- v0.6 helpers */
+
+    /** Take a peer off the network, or bring it back. */
+    togglePeer(peerId = 'a1b2c3d4e5f60718') {
+      const p = findPeer(peerId);
+      if (!p) return false;
+      p.online = !p.online;
+      p.lastSeen = new Date().toISOString();
+      fleetChanged();
+      emit({
+        type: 'toast',
+        level: p.online ? 'info' : 'warn',
+        message: p.online ? `${p.name} is back on the network` : `${p.name} went offline`,
+      });
+      return p.online;
+    },
+    /** A remote job, complete with fleet-progress rows under the peer. */
+    simulateFleetJob(peerId = 'a1b2c3d4e5f60718', appId = 'wivrn-nx') {
+      const local = state.apps.find((a) => a.id === appId);
+      return fleetJobSim(peerId, appId, '', {
+        version: (local && local.latest && local.latest.version) || '',
+        delta: true,
+      });
+    },
+    /** The pairing code the fake other hub accepts — for the wrong-code path. */
+    pairCode() {
+      return PAIR_CODE;
+    },
+    peers() {
+      return JSON.parse(JSON.stringify(peers));
+    },
+    /**
+     * Cycle the crash-loop state of OGB: looping with a rollback → looping with
+     * nothing kept (the banner then only informs) → healthy again.
+     */
+    cycleCrashLoop(appId = 'oscgoesbrrr-nx-patches', artifactId = 'appimage-linux') {
+      const { art } = find(appId, artifactId);
+      if (!art) return null;
+      let stage;
+      if (art.crashLoop && art.rollbackAvailable) stage = 'no-rollback';
+      else if (art.crashLoop) stage = 'healthy';
+      else stage = 'looping';
+
+      if (stage === 'looping') {
+        art.crashLoop = true;
+        art.crashCount = 4;
+        art.rollbackAvailable = true;
+        art.prevVersion = art.prevVersion || '1.4.1';
+      } else if (stage === 'no-rollback') {
+        art.crashLoop = true;
+        art.crashCount = 6;
+        art.rollbackAvailable = false;
+        art.prevVersion = '';
+      } else {
+        art.crashLoop = false;
+        art.crashCount = 0;
+      }
+      changed();
+      emit({
+        type: 'toast',
+        level: stage === 'healthy' ? 'info' : 'warn',
+        message:
+          stage === 'healthy'
+            ? 'Crash counter reset — the app stayed up'
+            : stage === 'no-rollback'
+              ? 'Crash loop with no kept previous install'
+              : 'Crash loop detected',
+      });
+      return stage;
+    },
+    /** A local install that reconstructs the AppImage from a .zpatch. */
+    simulateDeltaJob(appId = 'oscgoesbrrr-nx-patches', artifactId = 'appimage-linux') {
+      return runJob(appId, artifactId, { delta: true });
+    },
     /** Begin drifting the live values (page mode only — see tickFields). */
     startTicking() {
       if (ticking) return;
@@ -1219,7 +1532,11 @@ function toolbar(dev) {
     <button class="btn btn-ghost btn-sm" data-mock="device">fake device info</button>
     <button class="btn btn-ghost btn-sm" data-mock="disk">populate disk usage</button>
     <button class="btn btn-ghost btn-sm" data-mock="bus">toggle bus client</button>
-    <button class="btn btn-ghost btn-sm" data-mock="stack">run mock stack</button>`;
+    <button class="btn btn-ghost btn-sm" data-mock="stack">run mock stack</button>
+    <button class="btn btn-ghost btn-sm" data-mock="peer">toggle peer online</button>
+    <button class="btn btn-ghost btn-sm" data-mock="fleet-job">simulate remote job</button>
+    <button class="btn btn-ghost btn-sm" data-mock="crash">cycle crash loop</button>
+    <button class="btn btn-ghost btn-sm" data-mock="delta">simulate delta update</button>`;
   bar.addEventListener('click', (ev) => {
     const el = ev.target instanceof Element ? ev.target.closest('[data-mock]') : null;
     if (!el) return;
@@ -1234,6 +1551,10 @@ function toolbar(dev) {
     else if (what === 'disk') dev.populateDisk();
     else if (what === 'bus') dev.toggleBusClient();
     else if (what === 'stack') dev.runMockStack();
+    else if (what === 'peer') dev.togglePeer();
+    else if (what === 'fleet-job') dev.simulateFleetJob();
+    else if (what === 'crash') dev.cycleCrashLoop();
+    else if (what === 'delta') dev.simulateDeltaJob();
   });
   document.body.appendChild(bar);
 }

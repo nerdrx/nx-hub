@@ -11,7 +11,7 @@
 [![release](https://img.shields.io/github/v/release/nerdrx/nx-hub?display_name=tag&color=7700FF&labelColor=171028)](https://github.com/nerdrx/nx-hub/releases/latest)
 [![license](https://img.shields.io/badge/license-MIT-00e5ff?labelColor=171028)](LICENSE)
 ![platforms](https://img.shields.io/badge/linux%20·%20windows%20·%20android-efeaff?label=platforms&labelColor=171028)
-![tests](https://img.shields.io/badge/tests-654%20passing-00e5ff?labelColor=171028)
+![tests](https://img.shields.io/badge/tests-871%20passing-00e5ff?labelColor=171028)
 
 <br>
 

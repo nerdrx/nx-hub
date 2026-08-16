@@ -87,6 +87,10 @@ export function launchTiles(apps, ctx = {}) {
         liveCaption: caption,
         liveTitle: client ? `${client.app}${client.version ? ` ${client.version}` : ''} is live on the bus` : '',
         updateAvailable: !!(art.updateAvailable || art.readyToInstall),
+        // v0.6 — a tile whose artifact keeps dying gets an amber corner mark;
+        // the card carries the banner and the roll-back button.
+        crashLoop: !!art.crashLoop,
+        crashCount: Number(art.crashCount) || 0,
         disabled,
         disabledReason: disabled ? 'no device' : '',
         title: disabled

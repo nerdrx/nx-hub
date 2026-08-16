@@ -56,6 +56,15 @@ export function renderTile(tile, ctx = {}) {
     </button>
     ${tile.live ? `<span class="tile-live" title="${esc(tile.liveTitle || 'live on the bus')}" aria-label="live"></span>` : ''}
     ${tile.updateAvailable ? '<span class="tile-dot" title="update available"></span>' : ''}
+    ${
+      tile.crashLoop
+        ? `<span class="tile-crash" title="${esc(
+            tile.crashCount
+              ? `crashed ${tile.crashCount}× right after launching — see the card`
+              : 'crashes right after launching — see the card'
+          )}" aria-label="crashing"></span>`
+        : ''
+    }
     ${tile.favorite ? `<span class="tile-star" title="favorite">${icons.starFilled}</span>` : ''}
     ${menuMarkup(tile, open, ctx.caps)}
   </div>`;

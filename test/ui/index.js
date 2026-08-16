@@ -20,5 +20,9 @@ import './sheets.test.js';
 // v0.5 — the connector bus and stacks
 import './connector.test.js';
 import './stacks.test.js';
+// v0.6 — fleet, triggers, crash-aware rollback, delta savings
+import './fleet.test.js';
+import './triggers.test.js';
+import './crash.test.js';
 // Last on purpose: this one installs a stub DOM on globalThis and boots app.js.
 import './smoke.test.js';

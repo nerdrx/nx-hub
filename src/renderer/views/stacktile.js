@@ -27,7 +27,13 @@ export function renderStackTile(tile, ctx = {}) {
     <button class="tile-hit stack-hit" data-act="stack-run" data-stack="${esc(tile.id)}"
             ${tile.running ? 'disabled' : ''} title="${esc(tile.running ? `${tile.name} is running` : `Run ${tile.name}`)}">
       <span class="st-top">
-        <span class="st-kicker">Stack</span>
+        <span class="st-kicker">Stack${
+          tile.triggered
+            ? `<span class="st-bolt" title="${esc(tile.triggerTitle || 'runs itself')}" aria-hidden="true">${icons.bolt}</span><span class="st-auto" title="${esc(
+                tile.triggerTitle || 'runs itself'
+              )}">auto</span>`
+            : ''
+        }</span>
         <span class="tile-name st-name">${esc(tile.name)}</span>
       </span>
       <span class="st-steps">${steps || '<span class="st-empty">no steps yet</span>'}</span>

@@ -25,6 +25,8 @@ export const DEFAULT_SETTINGS = {
   createDesktopEntries: true,
   maxConcurrentDownloads: 2,
   preferredDeviceSerial: '',
+  // v0.6 — off by default: a post-install command is somebody else's shell line.
+  autoRunPostInstallCmd: false,
 };
 
 function bool(v, fallback) {
@@ -61,6 +63,7 @@ export function normalizeSettings(settings) {
     createDesktopEntries: bool(s.createDesktopEntries, DEFAULT_SETTINGS.createDesktopEntries),
     maxConcurrentDownloads: clampConcurrency(s.maxConcurrentDownloads),
     preferredDeviceSerial: typeof s.preferredDeviceSerial === 'string' ? s.preferredDeviceSerial : '',
+    autoRunPostInstallCmd: bool(s.autoRunPostInstallCmd, DEFAULT_SETTINGS.autoRunPostInstallCmd),
   };
 }
 
@@ -91,7 +94,32 @@ export function normalizeArtifact(artifact, latestVersion) {
     rollbackAvailable: !!(a.rollbackAvailable && a.installed),
     prevVersion: a.prevVersion ? String(a.prevVersion) : '',
     readyToInstall: !!a.readyToInstall,
+    // v0.6 — discovery counts launches that died within 30s and flags the third
+    // one as a loop. An older main process sets neither field; a newer one may
+    // set the count without the flag, so the threshold is applied here too.
+    crashCount: crashCount(a),
+    crashLoop: crashLooping(a),
+    lastCrashAt: a.lastCrashAt || '',
   };
+}
+
+/** SPEC v0.6: crashLoop = count ≥ 3 at the installed version. */
+export const CRASH_LOOP_AT = 3;
+
+/** Crash count, defensively: absent → 0, and never negative or fractional. */
+function crashCount(a) {
+  const n = Math.round(Number(a && a.crashCount));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * An explicit flag from main wins; otherwise the count decides. Either way a
+ * crash loop needs something installed to have crashed.
+ */
+function crashLooping(a) {
+  if (!a || !a.installed) return false;
+  if (typeof a.crashLoop === 'boolean') return a.crashLoop;
+  return crashCount(a) >= CRASH_LOOP_AT;
 }
 
 export function normalizeApp(app) {

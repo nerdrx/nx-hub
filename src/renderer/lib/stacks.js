@@ -18,13 +18,27 @@ export const DEFAULT_TIMEOUT_MS = 30000;
 export const DEFAULT_DELAY_MS = 2000;
 export const MAX_TIMEOUT_MS = 600000;
 
-export const PHASES = ['launching', 'waiting', 'healthy', 'failed', 'done', 'stopping', 'stopped'];
+/**
+ * v0.6 automation. SPEC: `trigger: { type: "adb-device"|"connector-app",
+ * serial?, appId?, stopOnLeave?: bool, cooldownMs?: 60000 }` — absent means the
+ * stack only ever runs when somebody presses Run.
+ */
+export const TRIGGER_TYPES = ['adb-device', 'connector-app'];
+export const DEFAULT_COOLDOWN_MS = 60000;
+export const MIN_COOLDOWN_S = 5;
+export const MAX_COOLDOWN_S = 3600;
+
+// v0.6: the trigger watcher announces itself with `triggered` (stepIndex null,
+// reason = the trigger type) BEFORE the first `launching` — it is the opening
+// state of a run nobody clicked.
+export const PHASES = ['triggered', 'launching', 'waiting', 'healthy', 'failed', 'done', 'stopping', 'stopped'];
 const TERMINAL = new Set(['done', 'failed', 'stopped']);
 
 /** How long a finished run stays on its tile before the tile goes quiet. */
 export const CLEAR_AFTER_MS = 4000;
 
 const GLYPHS = {
+  triggered: '↯',
   launching: '▸',
   waiting: '◌',
   healthy: '✓',
@@ -74,15 +88,48 @@ export function normalizeStep(raw) {
   return step;
 }
 
+/**
+ * A trigger, or null for "Manual".
+ *
+ * A `connector-app` trigger with no app id could never fire, so it degrades to
+ * Manual rather than pretending the stack is automated — the editor refuses to
+ * save that shape in the first place.
+ */
+export function normalizeTrigger(raw) {
+  const t = raw && typeof raw === 'object' ? raw : null;
+  if (!t || !TRIGGER_TYPES.includes(t.type)) return null;
+  const out = { type: t.type };
+  if (t.type === 'adb-device') {
+    const serial = String(t.serial || '').trim();
+    if (serial) out.serial = serial;
+  } else {
+    // Verbatim (trimmed only): [triggers] matches the bus id as it was written,
+    // and never slugifies it. Lower-casing happens at LOOKUP time, not here.
+    const appId = String(t.appId || '').trim();
+    if (!appId) return null;
+    out.appId = appId;
+  }
+  if (t.stopOnLeave) out.stopOnLeave = true;
+  const cooldown = Math.round(Number(t.cooldownMs));
+  out.cooldownMs = Number.isFinite(cooldown) && cooldown > 0
+    ? Math.max(MIN_COOLDOWN_S * 1000, Math.min(MAX_COOLDOWN_S * 1000, cooldown))
+    : DEFAULT_COOLDOWN_MS;
+  return out;
+}
+
 export function normalizeStack(raw) {
   const s = raw && typeof raw === 'object' ? raw : {};
   const name = String(s.name || '').trim();
   const id = String(s.id || '').trim() || slugify(name);
-  return {
+  const trigger = normalizeTrigger(s.trigger);
+  const out = {
     id,
     name: name || id,
     steps: asArray(s.steps).map(normalizeStep).filter((st) => st.appId),
   };
+  // Absent for Manual — the key never appears in what reaches saveStack().
+  if (trigger) out.trigger = trigger;
+  return out;
 }
 
 export function normalizeStacks(list) {
@@ -97,12 +144,35 @@ export function blankStep() {
   return { appId: '', artifactId: '', healthType: 'connector', port: '', timeoutMs: '', optional: false };
 }
 
+/** Trigger fields of a blank draft — Manual, with the default cooldown shown. */
+export function blankTriggerFields() {
+  return {
+    triggerType: '',
+    triggerSerial: '',
+    triggerAppId: '',
+    triggerStopOnLeave: false,
+    triggerCooldown: String(DEFAULT_COOLDOWN_MS / 1000),
+  };
+}
+
+function triggerFieldsFrom(trigger) {
+  if (!trigger) return blankTriggerFields();
+  return {
+    triggerType: trigger.type,
+    triggerSerial: trigger.serial || '',
+    triggerAppId: trigger.appId || '',
+    triggerStopOnLeave: !!trigger.stopOnLeave,
+    triggerCooldown: String(Math.round((trigger.cooldownMs || DEFAULT_COOLDOWN_MS) / 1000)),
+  };
+}
+
 /** Stack → editor draft (every value a string, the way an input holds it). */
 export function draftFromStack(stack) {
   const s = normalizeStack(stack);
   return {
     originalId: s.id,
     name: s.name,
+    ...triggerFieldsFrom(s.trigger || null),
     steps: s.steps.length
       ? s.steps.map((st) => ({
           appId: st.appId,
@@ -117,16 +187,33 @@ export function draftFromStack(stack) {
 }
 
 export function blankDraft() {
-  return { originalId: '', name: '', steps: [blankStep()] };
+  return { originalId: '', name: '', ...blankTriggerFields(), steps: [blankStep()] };
+}
+
+/** Editor draft → the trigger object (or null when the user picked Manual). */
+export function triggerFromDraft(draft) {
+  const d = draft && typeof draft === 'object' ? draft : {};
+  if (!TRIGGER_TYPES.includes(d.triggerType)) return null;
+  const seconds = Number(String(d.triggerCooldown === undefined ? '' : d.triggerCooldown).trim());
+  const raw = {
+    type: d.triggerType,
+    serial: d.triggerSerial,
+    appId: d.triggerAppId,
+    stopOnLeave: !!d.triggerStopOnLeave,
+    cooldownMs: Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : DEFAULT_COOLDOWN_MS,
+  };
+  return normalizeTrigger(raw);
 }
 
 /** Editor draft → the frozen stack model. Ids are slugified from the name. */
 export function stackFromDraft(draft) {
   const d = draft && typeof draft === 'object' ? draft : {};
   const name = String(d.name || '').trim();
+  const trigger = triggerFromDraft(d);
   return normalizeStack({
     id: slugify(name),
     name,
+    ...(trigger ? { trigger } : {}),
     steps: asArray(d.steps).map((step) => {
       const s = step && typeof step === 'object' ? step : {};
       const type = HEALTH_TYPES.includes(s.healthType) ? s.healthType : 'connector';
@@ -167,6 +254,23 @@ export function validateDraft(draft, stacks = []) {
   else {
     const clash = normalizeStacks(stacks).find((s) => s.id === id && s.id !== d.originalId);
     if (clash) errors.name = `Another stack already uses the id “${id}” — pick a different name.`;
+  }
+
+  // Automation. Manual (no type) skips all of it.
+  if (TRIGGER_TYPES.includes(d.triggerType)) {
+    if (d.triggerType === 'connector-app' && !String(d.triggerAppId || '').trim()) {
+      errors.triggerAppId = 'Pick the app whose arrival starts this stack.';
+    }
+    const serial = String(d.triggerSerial || '').trim();
+    if (d.triggerType === 'adb-device' && serial && /\s/.test(serial)) {
+      errors.triggerSerial = 'A device serial has no spaces — leave it empty to match any device.';
+    }
+    const cooldown = numberish(d.triggerCooldown);
+    if (cooldown === null) {
+      errors.triggerCooldown = `A cooldown is required — ${MIN_COOLDOWN_S} to ${MAX_COOLDOWN_S} seconds.`;
+    } else if (!Number.isInteger(cooldown) || cooldown < MIN_COOLDOWN_S || cooldown > MAX_COOLDOWN_S) {
+      errors.triggerCooldown = `Use ${MIN_COOLDOWN_S} to ${MAX_COOLDOWN_S} seconds.`;
+    }
   }
 
   const steps = asArray(d.steps);
@@ -224,6 +328,7 @@ export function stepStateClass(phase) {
       return 'ok';
     case 'failed':
       return 'bad';
+    case 'triggered':
     case 'launching':
       return 'go';
     case 'waiting':
@@ -247,6 +352,8 @@ export function newRun(stackId) {
     failedIndex: -1,
     skipped: [],
     finishedAt: 0,
+    // Set by a `triggered` event: which watcher started this run.
+    reason: '',
   };
 }
 
@@ -276,14 +383,23 @@ export function applyStackProgress(run, ev, ctx = {}) {
     : { ...run, stackId, steps: run.steps.slice(), skipped: (run.skipped || []).slice() };
 
   const idx = Number(ev.stepIndex);
-  const hasIdx = Number.isInteger(idx) && idx >= 0;
+  // SPEC: a run-level verdict (and the v0.6 `triggered` event) carries
+  // stepIndex: null — and Number(null) is 0, which would silently light up the
+  // first step. Reject the empty cases before the numeric check.
+  const hasIdx =
+    ev.stepIndex !== null && ev.stepIndex !== undefined && ev.stepIndex !== '' && Number.isInteger(idx) && idx >= 0;
   if (hasIdx) {
     next.steps[idx] = phase === 'done' ? 'healthy' : phase;
     next.stepIndex = idx;
   }
   if (ev.appId) next.appId = String(ev.appId);
 
-  if (phase === 'done') {
+  if (phase === 'triggered') {
+    // The watcher fired: the run exists before anything launched. Keep the
+    // reason so the tile can say WHY it started on its own.
+    next.phase = 'triggered';
+    if (ev.reason) next.reason = String(ev.reason);
+  } else if (phase === 'done') {
     next.phase = 'done';
     next.finishedAt = now;
   } else if (phase === 'stopped') {
@@ -308,6 +424,13 @@ export function applyStackProgress(run, ev, ctx = {}) {
   return next;
 }
 
+/** Why a run started itself, for the tile's status line. */
+export function triggerReasonLabel(reason) {
+  if (reason === 'adb-device') return 'A device connected — starting…';
+  if (reason === 'connector-app') return 'An app joined the bus — starting…';
+  return 'Triggered — starting…';
+}
+
 export function nameMap(apps) {
   const map = new Map();
   for (const app of asArray(apps)) {
@@ -326,6 +449,8 @@ export function runLabel(run, stack, names) {
   const appName = lookup.get(String(appId).toLowerCase()) || appId || 'the app';
 
   switch (run.phase) {
+    case 'triggered':
+      return triggerReasonLabel(run.reason);
     case 'done':
       return 'Every step is up';
     case 'failed':
@@ -343,6 +468,31 @@ export function runLabel(run, stack, names) {
   if (phase === 'healthy') return `${appName} is up`;
   if (phase === 'failed') return `${appName} timed out — carrying on`;
   return 'Running…';
+}
+
+/**
+ * One line describing when a stack starts itself. Sentence case, concrete.
+ * `null` (Manual) has nothing to say.
+ */
+export function triggerLabel(trigger, names) {
+  const t = normalizeTrigger(trigger);
+  if (!t) return '';
+  if (t.type === 'adb-device') {
+    return t.serial ? `Runs when ${t.serial} connects` : 'Runs when a device connects';
+  }
+  const lookup = names instanceof Map ? names : nameMap(names);
+  const name = lookup.get(String(t.appId).toLowerCase()) || t.appId;
+  return `Runs when ${name} joins the bus`;
+}
+
+/** The cooldown as a plain English tail: "at most once a minute". */
+export function cooldownLabel(trigger) {
+  const t = normalizeTrigger(trigger);
+  if (!t) return '';
+  const secs = Math.round((t.cooldownMs || DEFAULT_COOLDOWN_MS) / 1000);
+  if (secs === 60) return 'at most once a minute';
+  if (secs % 60 === 0) return `at most once every ${secs / 60} minutes`;
+  return `at most once every ${secs} seconds`;
 }
 
 /**
@@ -364,6 +514,13 @@ export function stackTiles(stacks, ctx = {}) {
       running,
       phase: run ? run.phase : '',
       status: runLabel(run, stack, names),
+      // v0.6 — a stack that starts itself says so with a bolt and an "auto" chip.
+      triggered: !!stack.trigger,
+      triggerTitle: stack.trigger
+        ? `${triggerLabel(stack.trigger, names)} — ${cooldownLabel(stack.trigger)}${
+            stack.trigger.stopOnLeave ? ', and stops when it leaves' : ''
+          }`
+        : '',
       steps: stack.steps.map((step, i) => {
         const name = names.get(step.appId) || step.appId;
         const phase = run ? run.steps[i] || '' : '';

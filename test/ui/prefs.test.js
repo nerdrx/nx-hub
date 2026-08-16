@@ -20,8 +20,17 @@ import {
   prefFor,
   splitArgs,
   validateEnvKey,
+  // v0.6 — auto-run post-install commands
+  autoRunChoice,
+  autoRunFromChoice,
+  autoRunLabel,
+  effectiveAutoRun,
+  globalAutoRun,
 } from '../../src/renderer/lib/prefs.js';
 import { renderAppOptions } from '../../src/renderer/views/appoptions.js';
+import { renderSettingsPanel } from '../../src/renderer/views/settings.js';
+import { DEFAULT_SETTINGS, normalizeState } from '../../src/renderer/lib/model.js';
+import { createMock } from '../../src/renderer/mock.js';
 
 /* -------------------------------------------------------------- normalizing */
 
@@ -190,4 +199,74 @@ test('parseEnvLine splits on the first equals sign only', () => {
   assert.deepEqual(parseEnvLine('KEY=a=b'), { key: 'KEY', value: 'a=b' });
   assert.deepEqual(parseEnvLine(' KEY = v'), { key: 'KEY', value: ' v' });
   assert.deepEqual(parseEnvLine('KEY'), { key: 'KEY', value: '' });
+});
+
+/* ------------------------------------- v0.6: auto-run post-install commands */
+
+test('the auto-run tri-state is boolean-or-absent, and inherits when absent', () => {
+  assert.equal(autoRunChoice(normalizeAppPref({})), 'inherit');
+  assert.equal(autoRunChoice(normalizeAppPref({ autoRunCmd: true })), 'on');
+  assert.equal(autoRunChoice(normalizeAppPref({ autoRunCmd: false })), 'off');
+  // Junk and null are "no per-app choice", never a silent true.
+  assert.equal(autoRunChoice(normalizeAppPref({ autoRunCmd: null })), 'inherit');
+  assert.equal(autoRunChoice(normalizeAppPref({ autoRunCmd: 'yes' })), 'inherit');
+  assert.ok(!('autoRunCmd' in normalizeAppPref({})), 'absent stays absent');
+  assert.equal(normalizeAppPref({ autoRunCmd: false }).autoRunCmd, false);
+
+  assert.equal(autoRunFromChoice('on'), true);
+  assert.equal(autoRunFromChoice('off'), false);
+  assert.equal(autoRunFromChoice('inherit'), null, 'null clears a per-app choice over IPC');
+  assert.equal(autoRunFromChoice('nonsense'), null);
+
+  // Resolution against the global switch (SPEC default: off).
+  assert.equal(globalAutoRun({}), false);
+  assert.equal(globalAutoRun({ autoRunPostInstallCmd: true }), true);
+  assert.equal(effectiveAutoRun(normalizeAppPref({}), {}), false);
+  assert.equal(effectiveAutoRun(normalizeAppPref({}), { autoRunPostInstallCmd: true }), true);
+  assert.equal(effectiveAutoRun(normalizeAppPref({ autoRunCmd: false }), { autoRunPostInstallCmd: true }), false);
+  assert.equal(effectiveAutoRun(normalizeAppPref({ autoRunCmd: true }), {}), true);
+
+  assert.match(autoRunLabel('inherit', {}), /global setting \(off\)/);
+  assert.match(autoRunLabel('inherit', { autoRunPostInstallCmd: true }), /global setting \(on\)/);
+  assert.equal(autoRunLabel('on'), 'Always run it');
+  assert.equal(autoRunLabel('off'), 'Never run it');
+});
+
+test('the settings panel carries the global auto-run switch beside the CLI shim', () => {
+  const off = renderSettingsPanel({ ...DEFAULT_SETTINGS, autoRunPostInstallCmd: false }, { caps: {} });
+  assert.match(off, /data-field="autoRunPostInstallCmd"/);
+  assert.match(off, /Auto-run post-install commands/);
+  assert.match(off, /privileged commands are never auto-run by background updates/);
+  assert.ok(off.indexOf('data-field="cliShim"') < off.indexOf('data-field="autoRunPostInstallCmd"'), 'next to the shim');
+  assert.ok(!/data-field="autoRunPostInstallCmd"[^>]*checked/.test(off), 'off by default');
+
+  const on = renderSettingsPanel({ ...DEFAULT_SETTINGS, autoRunPostInstallCmd: true }, { caps: {} });
+  assert.match(on, /data-field="autoRunPostInstallCmd"[^>]*checked/);
+});
+
+test('the app-options sheet offers Inherit / On / Off for the command', () => {
+  const app = { id: 'wivrn-nx', name: 'WiVRn NX', latest: { version: '1.9.2' }, artifacts: [] };
+  const draft = { ...normalizeAppPref({ autoRunCmd: true }), autoRunCmd: 'on', launchArgsText: '', envRows: [] };
+  const out = renderAppOptions(app, draft, { settings: { autoRunPostInstallCmd: false } });
+  assert.match(out, /data-pref="autoRunCmd"/);
+  assert.match(out, /<option value="inherit">Use the global setting \(off\)<\/option>/);
+  assert.match(out, /<option value="on" selected>Always run it<\/option>/);
+  assert.match(out, /<option value="off">Never run it<\/option>/);
+
+  const inherited = renderAppOptions(app, { ...draft, autoRunCmd: 'inherit' }, { settings: { autoRunPostInstallCmd: true } });
+  assert.match(inherited, /<option value="inherit" selected>Use the global setting \(on\)<\/option>/);
+});
+
+test('the mock seeds the global switch off and one app opted in', async () => {
+  const { nxhub, dev } = createMock();
+  const state = normalizeState(await nxhub.getState());
+  assert.equal(state.settings.autoRunPostInstallCmd, false);
+  assert.equal(state.settings.appPrefs['wivrn-nx'].autoRunCmd, true, 'the setcap line runs itself');
+  assert.equal(effectiveAutoRun(state.settings.appPrefs['wivrn-nx'], state.settings), true);
+  assert.equal(effectiveAutoRun(state.settings.appPrefs.pulsenx, state.settings), false);
+
+  await nxhub.setAppPref('wivrn-nx', { autoRunCmd: null });
+  const cleared = normalizeState(await nxhub.getState());
+  assert.equal(autoRunChoice(cleared.settings.appPrefs['wivrn-nx']), 'inherit', 'the per-app choice can be cleared');
+  dev.stop();
 });

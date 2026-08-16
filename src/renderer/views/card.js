@@ -9,6 +9,8 @@ import {
   relativeTime,
   progressLabel,
   versionLabel,
+  hasDelta,
+  isDeltaApplied,
 } from '../lib/version.js';
 import { artifactActions, platformLabel } from '../lib/actions.js';
 import { showOwnerBadge, ownerOf, githubUrl, releaseUrl } from '../lib/model.js';
@@ -118,6 +120,24 @@ function appMenuMarkup(app, pref, caps, open) {
     </div>`;
 }
 
+/**
+ * The Δ microchip: SPEC v0.6 only promises that a delta update's progress
+ * message contains the word "delta", so that word is the whole trigger. Cyan,
+ * because it is a live property of this transfer — not an alarm.
+ */
+export const DELTA_CHIP =
+  '<span class="delta-chip" title="delta update — only the changed bytes are downloaded">Δ</span>';
+
+/** The phase label of a progress row, plus the Δ chip when this is a delta. */
+export function renderPhaseLabel(job) {
+  if (!job) return '';
+  const pct = Number(job.pct);
+  const known = Number.isFinite(pct) && pct >= 0;
+  return `<span class="job-phase">${esc(
+    progressLabel(job.phase, known ? pct : undefined, job.message)
+  )}${hasDelta(job.message) ? DELTA_CHIP : ''}</span>`;
+}
+
 export function renderJobBar(job, opts = {}) {
   if (!job) return '';
   const pct = Number(job.pct);
@@ -126,11 +146,73 @@ export function renderJobBar(job, opts = {}) {
   return `
     <div class="job" data-job="${esc(job.id)}">
       <div class="job-row">
-        <span class="job-phase">${esc(progressLabel(job.phase, known ? pct : undefined, job.message))}</span>
+        ${renderPhaseLabel(job)}
         ${opts.label ? `<span class="job-target">${esc(opts.label)}</span>` : ''}
         <button class="btn btn-icon job-cancel" data-act="cancel" data-job="${esc(job.id)}" title="Cancel">${icons.close}</button>
       </div>
       <div class="bar ${known ? '' : 'bar-indeterminate'}"><span style="width:${width}%"></span></div>
+      ${
+        isDeltaApplied(job.message)
+          ? `<div class="job-note">${esc(job.message)}</div>`
+          : ''
+      }
+    </div>`;
+}
+
+/* ----------------------------------------------------- v0.6 crash banner */
+
+/**
+ * Dismissal key. The version is IN the key on purpose: a new install re-arms
+ * the banner, which is the whole point — the old warning was about old bytes.
+ */
+export function crashKey(appId, artifactId, version) {
+  return `${appId}::${artifactId}@${version || ''}`;
+}
+
+/** Artifacts of this app that main flagged as crash-looping. */
+export function crashingArtifacts(app) {
+  return ((app && app.artifacts) || []).filter((a) => a && a.crashLoop && a.installed);
+}
+
+/** "Crashed 4 times since updating to 2.3.0." — [resilience]'s wording. */
+export function crashBannerText(artifact) {
+  const version = (artifact && artifact.installed && artifact.installed.version) || 'this version';
+  const n = Number(artifact && artifact.crashCount);
+  const times = Number.isFinite(n) && n > 0 ? `${n} time${n === 1 ? '' : 's'}` : 'repeatedly';
+  return `Crashed ${times} since updating to ${version}.`;
+}
+
+/**
+ * The amber banner. With a kept `.prev` the primary action rolls back; without
+ * one there is still something to do — reinstall the same version over a
+ * possibly half-written install — so the banner is never a dead end.
+ */
+export function renderCrashBanner(app, artifact, ctx = {}) {
+  if (!app || !artifact) return '';
+  const caps = ctx.caps || {};
+  const version = (artifact.installed && artifact.installed.version) || '';
+  const canRollBack = !!(artifact.rollbackAvailable && artifact.prevVersion && caps.rollback !== false);
+  const many = (app.artifacts || []).length > 1;
+  return `
+    <div class="banner banner-crash" role="alert" data-crash="${esc(crashKey(app.id, artifact.id, version))}">
+      <span class="crash-icon" aria-hidden="true">${icons.warn}</span>
+      <span class="crash-text">${esc(crashBannerText(artifact))}${
+        many ? `<span class="crash-art">${esc(artifact.label)}</span>` : ''
+      }</span>
+      <span class="banner-actions">
+        ${
+          canRollBack
+            ? `<button class="btn btn-amber btn-sm" data-act="rollback" data-app="${esc(app.id)}" data-art="${esc(
+                artifact.id
+              )}">${icons.rollback}<span>Roll back to ${esc(artifact.prevVersion)}</span></button>`
+            : `<button class="btn btn-amber btn-sm" data-act="install" data-app="${esc(app.id)}" data-art="${esc(
+                artifact.id
+              )}" title="no previous install was kept — write this version again">${icons.download}<span>Reinstall</span></button>`
+        }
+        <button class="btn btn-ghost btn-sm" data-act="dismiss-crash" data-app="${esc(app.id)}" data-art="${esc(
+          artifact.id
+        )}" data-version="${esc(version)}">Dismiss</button>
+      </span>
     </div>`;
 }
 
@@ -244,6 +326,13 @@ export function renderAppCard(app, ctx = {}) {
 
   const orphanJob = job && !(app.artifacts || []).some((a) => a.id === job.artifactId);
 
+  // v0.6 — an artifact that keeps dying seconds after launch says so at the top
+  // of its card, until the user dismisses it or a new version replaces it.
+  const crashBanners = crashingArtifacts(app)
+    .filter((a) => !has(ctx.dismissedCrashes, crashKey(app.id, a.id, a.installed && a.installed.version)))
+    .map((a) => renderCrashBanner(app, a, { caps }))
+    .join('');
+
   return `
   <article class="card ${isHub ? 'card-self' : ''}${pref.favorite ? ' card-fav' : ''}" data-app-card="${esc(app.id)}">
     <div class="card-head">
@@ -283,6 +372,7 @@ export function renderAppCard(app, ctx = {}) {
       </div>
       ${renderStatusStrip(client, app.connectorFields, { now: ctx.now })}
     </div>
+    ${crashBanners}
 
     ${
       notes

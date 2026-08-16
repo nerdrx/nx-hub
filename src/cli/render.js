@@ -551,6 +551,111 @@ function stacksJson(stacks) {
   return { stacks: (Array.isArray(stacks) ? stacks : []).map((s) => ({ id: s.id, name: s.name, steps: s.steps || [] })) };
 }
 
+/* ------------------------------------------------------------------ */
+/* v0.6: the fleet                                                     */
+/* ------------------------------------------------------------------ */
+
+/** Rows for `nx fleet ls --json`. Pure: peer rows in, plain JSON out. */
+function fleetJson(rows, { identity = null } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  return {
+    hub: identity ? { id: identity.id, name: identity.name } : null,
+    peers: list.map((row) => ({
+      id: row.id,
+      name: row.name,
+      host: row.host,
+      port: row.port,
+      online: Boolean(row.online),
+      hubVersion: row.hubVersion || null,
+      error: row.error || null,
+      updates: Number(row.updates) || 0,
+      apps: (row.apps || []).map((a) => ({
+        id: a.id,
+        name: a.name,
+        latest: a.latest || null,
+        updates: Number(a.updates) || 0,
+        installed: (a.installed || []).map((i) => ({
+          artifactId: i.artifactId,
+          label: i.label || i.artifactId,
+          version: i.version || null,
+        })),
+      })),
+    })),
+  };
+}
+
+/** One peer's apps as "wivrn-nx 0.6.0 ↑, facenx 1.2.0" — the tail of a row. */
+function fleetAppSummary(row, { limit = 3 } = {}) {
+  const apps = (row && row.apps) || [];
+  if (!apps.length) return "";
+  const parts = apps.slice(0, limit).map((a) => {
+    const version = (a.installed || []).map((i) => i.version).filter(Boolean)[0];
+    return `${a.id}${version ? ` ${version}` : ""}${a.updates ? " ↑" : ""}`;
+  });
+  if (apps.length > limit) parts.push(`+${apps.length - limit}`);
+  return parts.join(", ");
+}
+
+/**
+ * `nx fleet ls` — one line per paired hub.
+ *
+ * The status glyph reuses the app table's vocabulary on purpose: `↑` means
+ * "something over there wants updating", `✓` means "reachable and current",
+ * `·` means "not answering".
+ */
+function renderFleet(rows, { style, identity = null } = {}) {
+  const st = style || createStyle(false);
+  const list = Array.isArray(rows) ? rows : [];
+  const lines = ["", st.section("Fleet"), ""];
+
+  if (identity) {
+    lines.push(...kv([["this hub", `${identity.name} ${DASH} ${identity.id}`, st.dim]], st), "");
+  }
+
+  if (!list.length) {
+    lines.push(
+      `  ${st.muted("No paired hubs yet.")}`,
+      `  ${st.dim("open the hub on the other machine, press Pair, then: nx fleet pair <host>")}`,
+      ""
+    );
+    return lines.join("\n");
+  }
+
+  const tableRows = list.map((row) => {
+    const glyph = !row.online ? GLYPH.available : row.updates ? GLYPH.update : GLYPH.installed;
+    const paint = !row.online ? st.muted : row.updates ? st.amber : st.cyan;
+    const apps = fleetAppSummary(row);
+    return [
+      T(glyph, paint),
+      T(row.name || row.id, row.online ? st.text : st.muted),
+      T(row.port && row.port !== 9023 ? `${row.host}:${row.port}` : row.host, st.muted),
+      T(row.online ? "online" : "offline", paint),
+      T(row.hubVersion || DASH, st.dim),
+      T(row.updates ? String(row.updates) : row.online ? "0" : DASH, row.updates ? st.amber : st.dim),
+      T(apps || (row.online ? "nothing installed" : DASH), apps ? st.muted : st.dim),
+    ];
+  });
+  lines.push(...table(["", "name", "host", "state", "hub", "upd", "apps"], tableRows, st));
+
+  const failed = list.filter((r) => r.error);
+  for (const row of failed) {
+    lines.push(`  ${st.dim(`${row.name}: ${row.error}`)}`);
+  }
+  lines.push("", `  ${st.dim("nx fleet install <peer> <app>  ·  nx fleet update <peer>")}`, "");
+  return lines.join("\n");
+}
+
+/** One relayed remote job event, as a single line for stderr. */
+function renderFleetEvent(evt, { style } = {}) {
+  const st = style || createStyle(false);
+  const e = evt || {};
+  const where = e.appId ? `${e.appId}${e.artifactId ? `/${e.artifactId}` : ""}` : "";
+  if (e.event === "job-done") return `  ${st.cyan(GLYPH.installed)} ${st.text(where)} ${st.dim(e.message || "done")}`;
+  if (e.event === "job-error") return `  ${st.danger("✗")} ${st.text(where)} ${st.dim(e.message || "failed")}`;
+  const pct = typeof e.pct === "number" ? `${Math.round(e.pct)}%` : "";
+  return `  ${st.violet("·")} ${st.text(where)} ${st.muted(e.phase || "")} ${st.dim([pct, e.message].filter(Boolean).join(" "))}`.trimEnd();
+}
+
 function renderStacks(stacks, { style, running = null } = {}) {
   const st = style || createStyle(false);
   const list = Array.isArray(stacks) ? stacks : [];
@@ -623,6 +728,7 @@ const COMMANDS = [
   ["doctor", "[--offline] [--json]", "environment: adb, token, paths, rate limit"],
   ["status", "[--json]", "the NX Connector bus: who is live right now"],
   ["stack", "ls | run <id> | stop <id>", "multi-app stacks"],
+  ["fleet", "ls | pair <host> | install <peer> <app> | update <peer>", "the other NX Hubs on your LAN"],
   ["help", "", "this text"],
 ];
 
@@ -669,6 +775,11 @@ module.exports = {
   statusJson,
   renderStacks,
   stacksJson,
+  // v0.6
+  renderFleet,
+  fleetJson,
+  fleetAppSummary,
+  renderFleetEvent,
   renderStackPhase,
   stackFlow,
   healthText,

@@ -11,7 +11,7 @@ const readline = require("readline");
 
 const { parseArgv } = require("./args");
 const { styleFor } = require("./ansi");
-const { matchApp, matchStack, pickArtifact, hostPlatform } = require("./match");
+const { matchApp, matchStack, matchPeer, pickArtifact, hostPlatform } = require("./match");
 const { createProgress } = require("./progress");
 const render = require("./render");
 const shim = require("./shim");
@@ -37,6 +37,7 @@ const ALIASES = {
   // additions": `nx status` = bus clients). The environment report kept its
   // own name, `nx doctor`, which is what every doc and every script used.
   stacks: "stack",
+  peers: "fleet", // v0.6
   "--help": "help",
   "-h": "help",
 };
@@ -108,9 +109,14 @@ async function run(argv, opts = {}) {
     json,
     stdout,
     stderr,
+    stdin: opts.stdin || process.stdin,
     env,
     platform: opts.platform || process.platform,
     confirm: opts.confirm || defaultConfirm,
+    // v0.6: `nx fleet` talks to peers directly, so it gets its own tiny
+    // runtime rather than the hub-shaped one. Injectable for tests.
+    fleet: opts.fleet || null,
+    prompt: opts.prompt || defaultPrompt,
   };
 
   const handlers = {
@@ -126,6 +132,7 @@ async function run(argv, opts = {}) {
     doctor: cmdDoctor,
     status: cmdStatus,
     stack: cmdStack,
+    fleet: cmdFleet,
     shim: cmdShim,
   };
 
@@ -208,6 +215,20 @@ async function defaultConfirm(question, { stdin = process.stdin, stdout = proces
   try {
     const answer = await new Promise((resolve) => rl.question(`${question} [y/N] `, resolve));
     return /^y(es)?$/i.test(String(answer).trim());
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * Read one line from stdin. Used by `nx fleet pair` for the six digits the
+ * other hub is showing — a secret typed by a human, never a command-line
+ * argument (those land in shell history and in `ps`).
+ */
+async function defaultPrompt(question, { stdin = process.stdin, stdout = process.stdout } = {}) {
+  const rl = readline.createInterface({ input: stdin, output: stdout });
+  try {
+    return await new Promise((resolve) => rl.question(question, resolve));
   } finally {
     rl.close();
   }
@@ -527,6 +548,162 @@ async function cmdStack(ctx) {
   } finally {
     off();
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* v0.6: the fleet                                                     */
+/* ------------------------------------------------------------------ */
+
+const FLEET_SUBS = ["ls", "list", "pair", "unpair", "install", "update", "launch"];
+
+/** The CLI's fleet client — created on demand so `nx list` never touches it. */
+function fleetOf(ctx) {
+  if (!ctx.fleet) ctx.fleet = require("./fleet").createFleetCli();
+  return ctx.fleet;
+}
+
+function requirePeer(ctx, peers, query) {
+  const { peer, candidates, error } = matchPeer(peers, query);
+  if (peer) return peer;
+  throw new UserError(error, {
+    hint: candidates.length ? `did you mean: ${candidates.map((p) => p.name).join(", ")}` : "nx fleet ls",
+  });
+}
+
+/**
+ * `nx fleet ls | pair <host> | install <peer> <app> [artifact] | update <peer>
+ *  | unpair <peer> | launch <peer> <app> [artifact]`
+ *
+ * Every one of these dials the peer DIRECTLY from this process (secrets come
+ * from fleet.json), so none of them needs the local hub to be running.
+ */
+async function cmdFleet(ctx) {
+  const sub = String(ctx.args[0] || "ls").toLowerCase();
+  if (!FLEET_SUBS.includes(sub)) {
+    throw new UserError(`unknown fleet command "${ctx.args[0]}"`, {
+      hint: "nx fleet ls | pair <host> | install <peer> <app> | update <peer> | unpair <peer>",
+    });
+  }
+  const fleet = fleetOf(ctx);
+
+  if (sub === "ls" || sub === "list") return fleetList(ctx, fleet);
+  if (sub === "pair") return fleetPair(ctx, fleet);
+
+  const peer = requirePeer(ctx, fleet.peers(), ctx.args[1]);
+  if (sub === "unpair") return fleetUnpair(ctx, fleet, peer);
+  if (sub === "launch") return fleetLaunch(ctx, fleet, peer);
+  if (sub === "install") return fleetInstall(ctx, fleet, peer);
+  return fleetUpdate(ctx, fleet, peer);
+}
+
+async function fleetList(ctx, fleet) {
+  const identity = fleet.identity();
+  const rows = await withStatus(ctx, "asking the fleet…", () => fleet.list({ probe: !ctx.flags.offline }));
+  if (ctx.json) {
+    ctx.out(JSON.stringify(render.fleetJson(rows, { identity }), null, 2));
+    return EXIT_OK;
+  }
+  ctx.out(render.renderFleet(rows, { style: ctx.st, identity }));
+  return EXIT_OK;
+}
+
+async function fleetPair(ctx, fleet) {
+  const host = ctx.args[1];
+  if (!host) throw new UserError("Name the other hub's address.", { hint: "nx fleet pair 192.168.1.20" });
+  const port = Number(ctx.flags.port) > 0 ? Number(ctx.flags.port) : undefined;
+
+  // The code is READ from stdin, never taken as an argument: arguments end up
+  // in shell history and in `ps` output, and this one seeds a shared secret.
+  ctx.err(ctx.stErr.dim(`On ${host}, open NX Hub → Fleet → Pair. It shows a six-digit code.`));
+  const code = String(await ctx.prompt("code: ", { stdin: ctx.stdin, stdout: ctx.stderr })).trim();
+  if (!/^[0-9]{6}$/.test(code)) throw new UserError("A pairing code is six digits.");
+
+  const peer = await withStatus(ctx, "pairing…", () => fleet.pair(host, code, port));
+  if (ctx.json) {
+    ctx.out(JSON.stringify({ ok: true, peer: { id: peer.id, name: peer.name, host: peer.host, port: peer.port } }, null, 2));
+    return EXIT_OK;
+  }
+  ctx.out(`${ctx.st.cyan("✓")} Paired with ${ctx.st.text(peer.name)} ${ctx.st.dim(`(${peer.host} · ${peer.id})`)}`);
+  return EXIT_OK;
+}
+
+async function fleetUnpair(ctx, fleet, peer) {
+  if (!ctx.flags.yes) {
+    const okay = await ctx.confirm(`Forget ${peer.name} (${peer.host})?`);
+    if (!okay) {
+      ctx.err(ctx.stErr.muted("Nothing changed."));
+      return EXIT_OK;
+    }
+  }
+  const removed = fleet.unpair(peer.id);
+  if (ctx.json) {
+    ctx.out(JSON.stringify({ ok: removed, id: peer.id }, null, 2));
+    return removed ? EXIT_OK : EXIT_FAIL;
+  }
+  ctx.out(`${ctx.st.cyan("✓")} Forgot ${peer.name}. ${ctx.st.dim("Pair again to reconnect — the secret is gone.")}`);
+  return EXIT_OK;
+}
+
+async function fleetLaunch(ctx, fleet, peer) {
+  const appId = ctx.args[2];
+  if (!appId) throw new UserError("Name an app to launch.", { hint: `nx fleet launch ${peer.name} <app>` });
+  const ack = await withStatus(ctx, "asking…", () => fleet.launch(peer, appId, ctx.args[3]));
+  if (ctx.json) {
+    ctx.out(JSON.stringify(ack, null, 2));
+    return EXIT_OK;
+  }
+  ctx.out(`${ctx.st.cyan("✓")} Launched ${ack.appId}${ack.artifactId ? `/${ack.artifactId}` : ""} on ${peer.name}`);
+  return EXIT_OK;
+}
+
+/** Progress from a remote job streams to stderr, so stdout stays pipeable. */
+function fleetEventSink(ctx) {
+  const events = [];
+  return {
+    events,
+    onEvent: (evt) => {
+      events.push(evt);
+      if (!ctx.json) ctx.err(render.renderFleetEvent(evt, { style: ctx.stErr }));
+    },
+  };
+}
+
+async function fleetInstall(ctx, fleet, peer) {
+  const appId = ctx.args[2];
+  if (!appId) throw new UserError("Name an app to install.", { hint: `nx fleet install ${peer.name} <app>` });
+  const sink = fleetEventSink(ctx);
+  ctx.err(`${ctx.stErr.violet("installing")} ${ctx.stErr.text(appId)} ${ctx.stErr.dim(`on ${peer.name}`)}`);
+  const result = await fleet.install(peer, appId, ctx.args[3], { onEvent: sink.onEvent });
+  if (ctx.json) {
+    ctx.out(JSON.stringify(Object.assign({ ok: result.ok !== false }, result, { events: sink.events }), null, 2));
+    return result.ok === false ? EXIT_FAIL : EXIT_OK;
+  }
+  if (result.ok === false) {
+    ctx.out(`${ctx.st.danger("✗")} ${appId} failed on ${peer.name}`);
+    return EXIT_FAIL;
+  }
+  ctx.out(`${ctx.st.cyan("✓")} ${result.appName || appId} installed on ${peer.name}`);
+  return EXIT_OK;
+}
+
+async function fleetUpdate(ctx, fleet, peer) {
+  const sink = fleetEventSink(ctx);
+  const result = await fleet.updateAll(peer, { onEvent: sink.onEvent });
+  if (ctx.json) {
+    ctx.out(JSON.stringify(Object.assign({ ok: result.ok !== false }, result, { events: sink.events }), null, 2));
+    return result.ok === false ? EXIT_FAIL : EXIT_OK;
+  }
+  if (!result.count) {
+    ctx.out(`${ctx.st.cyan("✓")} ${peer.name} is up to date.`);
+    return EXIT_OK;
+  }
+  const failed = (result.failures || []).length;
+  if (failed) {
+    ctx.out(`${ctx.st.danger("✗")} ${peer.name}: ${failed} of ${result.count} updates failed`);
+    return EXIT_FAIL;
+  }
+  ctx.out(`${ctx.st.cyan("✓")} ${peer.name}: ${result.count} update${result.count > 1 ? "s" : ""} installed`);
+  return EXIT_OK;
 }
 
 /** Hidden helper: `nx shim` reports (and with --force rewrites) ~/.local/bin/nx. */

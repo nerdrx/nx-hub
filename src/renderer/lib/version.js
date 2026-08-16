@@ -110,6 +110,26 @@ export function extractSpeed(message) {
   return `${m[1].replace(',', '.')} ${m[2]}/s`;
 }
 
+/**
+ * v0.6 delta updates: jobs reconstruct an AppImage from a `.zpatch` instead of
+ * downloading the whole asset.
+ *
+ * The bare word "delta" is NOT the trigger — app and asset names contain it
+ * ([resilience] hit exactly that). The engine's own phrases are: "downloading
+ * delta patch …", "delta patch — a / b", "applying delta patch …", "verifying
+ * the delta result", "delta applied — …".
+ */
+export function hasDelta(message) {
+  return /delta patch|delta applied|delta result/i.test(
+    String(message === null || message === undefined ? '' : message)
+  );
+}
+
+/** The closing line of a delta job: "delta applied — 18 MB instead of 96 MB". */
+export function isDeltaApplied(message) {
+  return /delta applied/i.test(String(message === null || message === undefined ? '' : message));
+}
+
 const PHASES = {
   download: 'Downloading',
   verify: 'Verifying',

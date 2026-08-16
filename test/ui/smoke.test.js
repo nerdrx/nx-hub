@@ -319,6 +319,185 @@ test('the stacks sheet edits, saves, runs and stops a stack', async () => {
   await clickAndSettle({ 'data-act': 'close-sheet' });
 });
 
+/* ------------------------------------------------------------------ v0.6 */
+
+/** Stand-in inputs for the fields a sheet just rendered (innerHTML is a string). */
+function sheetField(attrs, value) {
+  const sheet = doc.getElementById('sheet-root');
+  const el = doc.createElement('input');
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  el.value = value;
+  sheet.appendChild(el);
+  return el;
+}
+
+test('the header carries a peer chip once the bridge has a fleet', async () => {
+  await tick(40);
+  const chip = dom.html('fleet-chip');
+  assert.ok(chip.includes('data-act="fleet"'), chip);
+  assert.match(chip, /peer-chip peer-on/, 'one of the two mock hubs is online');
+  assert.match(chip, /1 hub</);
+});
+
+test('the fleet sheet opens, shows a code and survives a wrong one', async () => {
+  await clickAndSettle({ 'data-act': 'fleet' }, 160);
+  let sheet = dom.html('sheet-root');
+  assert.ok(sheet.includes('aria-label="Fleet"'), 'the sheet opened');
+  assert.ok(sheet.includes('workshop-pc'), 'the online peer is listed');
+  assert.ok(sheet.includes('living-room'), 'and the offline one');
+  assert.ok(sheet.includes('data-act="fleet-update-all"'), 'a hub with updates can be updated wholesale');
+
+  // Direction 1: this hub shows a code.
+  await clickAndSettle({ 'data-act': 'fleet-show-code' }, 160);
+  sheet = dom.html('sheet-root');
+  assert.match(sheet, /pair-group">482</, sheet.slice(sheet.indexOf('Pairing'), 900));
+  assert.match(sheet, /expires in [12]:\d\d/, 'the countdown started');
+
+  // Direction 2: this hub types the other one's code — wrong first.
+  await clickAndSettle({ 'data-act': 'fleet-pair-open' });
+  const host = sheetField({ 'data-fleet-field': 'host' }, '192.168.1.99');
+  const code = sheetField({ 'data-fleet-field': 'code' }, '000000');
+  await clickAndSettle({ 'data-act': 'fleet-pair-submit' }, 700);
+  assert.match(dom.html('sheet-root'), /did not match/, 'the wrong code says so, inline');
+  assert.equal(mock().peers().length, 2, 'and pairs nothing');
+
+  // A malformed code never reaches the bridge at all.
+  code.value = '12';
+  await clickAndSettle({ 'data-act': 'fleet-pair-submit' }, 120);
+  assert.match(dom.html('sheet-root'), /A pairing code has 6 digits/);
+
+  // …then the real one.
+  code.value = mock().pairCode();
+  await clickAndSettle({ 'data-act': 'fleet-pair-submit' }, 700);
+  assert.equal(mock().peers().length, 3, 'the peer joined the fleet');
+  assert.ok(dom.html('toasts').includes('Paired with'), 'and it said so');
+  assert.ok(dom.html('sheet-root').includes('192.168.1.99'), 'the list picked it up');
+
+  host.remove();
+  code.remove();
+});
+
+test('unpairing confirms, and a remote job draws a row under its peer', async () => {
+  const peerId = mock().peers()[0].id;
+  mock().simulateFleetJob(peerId, 'wivrn-nx');
+  await tick(300);
+  assert.ok(dom.html('sheet-root').includes('class="fleet-job"'), 'the relayed progress rendered');
+  assert.match(dom.html('sheet-root'), /delta-chip/, 'and it is a delta transfer');
+
+  globalThis.window.__confirm = false;
+  await clickAndSettle({ 'data-act': 'fleet-unpair', 'data-peer': peerId }, 120);
+  assert.equal(mock().peers().length, 3, 'a declined confirm unpairs nothing');
+
+  globalThis.window.__confirm = true;
+  const spare = mock().peers()[2].id;
+  await clickAndSettle({ 'data-act': 'fleet-unpair', 'data-peer': spare }, 200);
+  assert.equal(mock().peers().length, 2, 'a confirmed one does');
+
+  await clickAndSettle({ 'data-act': 'close-sheet' }, 60);
+  assert.equal(dom.html('sheet-root'), '', 'the sheet (and its countdown) closed');
+});
+
+test('installing on a peer goes through the compact picker', async () => {
+  await clickAndSettle({ 'data-act': 'fleet' }, 160);
+  const peerId = mock().peers()[0].id;
+  // The picker the sheet rendered, standing in for the real <select>.
+  const pick = sheetField({ 'data-fleet-art': `${peerId}::wivrn-nx` }, 'tarball-prefix-linux');
+  await clickAndSettle({ 'data-act': 'fleet-install', 'data-peer': peerId, 'data-app': 'wivrn-nx' }, 200);
+  assert.ok(dom.html('toasts').includes('Installing wivrn-nx on workshop-pc'), dom.html('toasts'));
+  pick.remove();
+  await clickAndSettle({ 'data-act': 'close-sheet' }, 60);
+});
+
+test('the stacks editor saves a trigger and the tile grows a bolt', async () => {
+  await clickAndSettle({ 'data-act': 'stacks' }, 140);
+  assert.ok(dom.html('sheet-root').includes('Headset arrives'), 'the triggered stack is listed');
+  assert.ok(dom.html('sheet-root').includes('st-auto'), 'and already marked auto');
+
+  await clickAndSettle({ 'data-act': 'stack-edit', 'data-stack': 'headset-arrives' }, 120);
+  assert.ok(dom.html('sheet-root').includes('data-stack-field="triggerType"'), 'the Automation section rendered');
+  assert.ok(dom.html('sheet-root').includes('value="PA7HA0M123"'), 'the serial round-tripped');
+
+  const fields = [
+    sheetField({ 'data-stack-field': 'name' }, 'Headset arrives'),
+    sheetField({ 'data-stack-field': 'triggerType' }, 'connector-app'),
+    sheetField({ 'data-stack-field': 'triggerCooldown' }, '30'),
+  ];
+  // Switching the type swaps the serial box for the app picker.
+  doc.dispatch('change', { target: fields[1] });
+  await tick(40);
+  assert.ok(dom.html('sheet-root').includes('data-stack-field="triggerAppId"'), 'the app picker appeared');
+  assert.ok(!dom.html('sheet-root').includes('data-stack-field="triggerSerial"'), 'and the serial box left');
+
+  // Saving with no app on a bus trigger is refused, inline.
+  await clickAndSettle({ 'data-act': 'stack-save' }, 140);
+  assert.ok(dom.html('sheet-root').includes('Pick the app whose arrival starts this stack'), 'it said what is missing');
+  assert.equal(
+    mock().stacks().find((s) => s.id === 'headset-arrives').trigger.type,
+    'adb-device',
+    'and saved nothing'
+  );
+
+  fields.push(sheetField({ 'data-stack-field': 'triggerAppId' }, 'pulsenx'));
+  await clickAndSettle({ 'data-act': 'stack-save' }, 200);
+  const saved = mock().stacks().find((s) => s.id === 'headset-arrives');
+  assert.deepEqual(saved.trigger, { type: 'connector-app', appId: 'pulsenx', stopOnLeave: true, cooldownMs: 30000 });
+  for (const el of fields) el.remove();
+  await clickAndSettle({ 'data-act': 'close-sheet' });
+
+  await clickAndSettle({ 'data-act': 'view', 'data-view': 'launch' }, 80);
+  const launch = dom.html('launch');
+  assert.ok(launch.includes('st-auto'), 'the tile wears the auto chip');
+  assert.ok(launch.includes('st-bolt'), 'and the bolt');
+});
+
+test('a triggered run opens on the tile before anything launches', async () => {
+  app.onHubEvent({ type: 'stack-progress', stackId: 'headset-arrives', stepIndex: null, phase: 'triggered', reason: 'connector-app' });
+  await tick(60);
+  const launch = dom.html('launch');
+  assert.ok(launch.includes('phase-triggered'), launch.slice(launch.indexOf('headset-arrives'), 400));
+  assert.ok(launch.includes('An app joined the bus — starting…'));
+  assert.ok(!launch.includes('st-glyph'), 'no step has been reached yet');
+});
+
+test('a crash-looping app banners its card, and the dismissal sticks per version', async () => {
+  await clickAndSettle({ 'data-act': 'view', 'data-view': 'manage' }, 80);
+  let grid = dom.html('grid');
+  assert.ok(grid.includes('banner-crash'), 'the amber banner is on the card');
+  assert.ok(grid.includes('Crashed 4 times since updating to 1.4.2.'), grid.slice(grid.indexOf('banner-crash'), 600));
+  assert.ok(grid.includes('Roll back to 1.4.1'), 'with a way out');
+
+  await clickAndSettle({
+    'data-act': 'dismiss-crash',
+    'data-app': 'oscgoesbrrr-nx-patches',
+    'data-art': 'appimage-linux',
+    'data-version': '1.4.2',
+  });
+  grid = dom.html('grid');
+  assert.ok(!grid.includes('banner-crash'), 'dismissed');
+  const saved = JSON.parse(dom.store.get('nxhub.ui.v1'));
+  assert.deepEqual(saved.dismissedCrashes, ['oscgoesbrrr-nx-patches::appimage-linux@1.4.2']);
+
+  // Without a rollback target the banner still offers a reinstall.
+  mock().cycleCrashLoop();
+  await tick(80);
+  assert.ok(!dom.html('grid').includes('banner-crash'), 'still dismissed — same version');
+});
+
+test('a delta install shows the Δ chip and its closing line', async () => {
+  mock().simulateDeltaJob();
+  await tick(500);
+  const grid = dom.html('grid');
+  assert.ok(grid.includes('delta-chip'), grid.slice(grid.indexOf('data-job'), 600));
+  assert.ok(/Downloading \d+%<span class="delta-chip"/.test(grid), 'the chip sits on the phase label');
+
+  // Let it finish: the install re-arms the (dismissed) crash banner because the
+  // version changed underneath it.
+  await tick(4200);
+  const after = dom.html('grid');
+  assert.ok(!after.includes('data-job'), 'the job bar cleared');
+  assert.ok(!after.includes('banner-crash'), 'and the fresh install has no crash history');
+});
+
 test('the controller never throws on a junk event', () => {
   for (const ev of [null, 'nope', {}, { type: 'unknown' }, { type: 'update-available' }]) {
     app.onHubEvent(ev);

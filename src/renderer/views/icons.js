@@ -135,3 +135,24 @@ export const search = `
 <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
   <circle cx="11" cy="11" r="6"/><path d="m20 20-3.6-3.6"/>
 </svg>`;
+
+/* ------------------------------------------------------------------ v0.6 */
+
+/** Fleet — this hub linked to two others on the same network. */
+export const fleet = `
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+  <rect x="9.5" y="3" width="5" height="5"/><rect x="3" y="16" width="5" height="5"/><rect x="16" y="16" width="5" height="5"/>
+  <path d="M12 8v3.5M5.5 16v-2a1.5 1.5 0 0 1 1.5-1.5h10a1.5 1.5 0 0 1 1.5 1.5v2"/>
+</svg>`;
+
+/** Bolt — a stack that runs itself when its trigger fires. */
+export const bolt = `
+<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true" fill="currentColor">
+  <path d="M13.4 2 5 13.2h5.2L9.8 22 19 10.4h-5.4z"/>
+</svg>`;
+
+/** Warning triangle — the crash-loop banner. */
+export const warn = `
+<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 4.2 21 19.5H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/>
+</svg>`;

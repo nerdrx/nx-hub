@@ -36,7 +36,7 @@ function str(v) {
 export function normalizeAppPref(pref) {
   const p = pref && typeof pref === 'object' ? pref : {};
   const policy = APP_POLICIES.includes(p.updatePolicy) ? p.updatePolicy : 'inherit';
-  return {
+  const out = {
     updatePolicy: policy,
     includePrereleases: !!p.includePrereleases,
     skippedVersion: str(p.skippedVersion).trim(),
@@ -47,6 +47,50 @@ export function normalizeAppPref(pref) {
     launchArgs: Array.isArray(p.launchArgs) ? p.launchArgs.map(str).filter((a) => a !== '') : [],
     launchEnv: normalizeEnv(p.launchEnv),
   };
+  // v0.6 auto-run: boolean or ABSENT — absent means "inherit the global
+  // setting", and null/undefined/junk all read as absent.
+  if (typeof p.autoRunCmd === 'boolean') out.autoRunCmd = p.autoRunCmd;
+  return out;
+}
+
+/* --------------------------------------------- v0.6: auto-run post-install */
+
+/** Tri-state, mirroring updatePolicy's inherit pattern. */
+export const AUTO_RUN_CHOICES = ['inherit', 'on', 'off'];
+
+/** Pref → the value the editor's select holds. */
+export function autoRunChoice(pref) {
+  if (!pref || typeof pref.autoRunCmd !== 'boolean') return 'inherit';
+  return pref.autoRunCmd ? 'on' : 'off';
+}
+
+/**
+ * Select value → what setAppPref should store. `null` (not undefined) is the
+ * "inherit" write: it survives IPC as an explicit "no per-app choice", and
+ * every normalizer here and in main reads a non-boolean as absent.
+ */
+export function autoRunFromChoice(choice) {
+  if (choice === 'on') return true;
+  if (choice === 'off') return false;
+  return null;
+}
+
+/** Global default for auto-running post-install commands (SPEC default: off). */
+export function globalAutoRun(settings) {
+  return !!(settings && settings.autoRunPostInstallCmd);
+}
+
+/** Resolve the tri-state against the global setting. */
+export function effectiveAutoRun(pref, settings) {
+  if (pref && typeof pref.autoRunCmd === 'boolean') return pref.autoRunCmd;
+  return globalAutoRun(settings);
+}
+
+/** Human label for one choice — "inherit" spells out what it resolves to. */
+export function autoRunLabel(choice, settings) {
+  if (choice === 'on') return 'Always run it';
+  if (choice === 'off') return 'Never run it';
+  return `Use the global setting (${globalAutoRun(settings) ? 'on' : 'off'})`;
 }
 
 /** The whole appPrefs map, normalized. Tolerates junk and missing entries. */

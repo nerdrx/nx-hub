@@ -11,6 +11,7 @@ const jobs = require("./jobs");
 const stateStore = require("./state");
 const housekeeping = require("./housekeeping");
 const stacks = require("./stacks");
+const fleet = require("./fleet");
 
 /**
  * v0.5: the NX Connector bus module, once index.js managed to start it — or
@@ -37,7 +38,10 @@ function init(d = {}) {
   // v0.5: the stacks orchestrator drives the same jobs the GUI does and emits
   // through the same fan-out. The connector is passed as a getter so a bus that
   // only boots later (or not at all) still resolves correctly at run time.
-  stacks.init({ jobs, connector: getConnectorModule, config, emit });
+  // v0.6: `engine` joins it on the same terms — the install engine is another
+  // agent's module, so it is resolved lazily and a build without one simply
+  // gets null (adb-device triggers then stay quiet instead of crashing).
+  stacks.init({ jobs, connector: getConnectorModule, config, emit, engine: getEngineModule });
   register();
   return module.exports;
 }
@@ -203,6 +207,20 @@ function getConnectorModule() {
   return connector;
 }
 
+/**
+ * v0.6: the install engine, resolved lazily and never fatally. jobs.getEngine()
+ * already does the lazy require and throws a tagged error when the module is
+ * not in this build; the trigger watcher only wants "is there one, and what
+ * does getAdbStatus say", so null is a perfectly good answer.
+ */
+function getEngineModule() {
+  try {
+    return jobs.getEngine();
+  } catch (_) {
+    return null;
+  }
+}
+
 /** `getConnector()` — SPEC IPC addition. Empty-safe with no bus at all. */
 function getConnector() {
   return { clients: clients() };
@@ -260,6 +278,51 @@ function liveSuffix(appId, clientList) {
   if (!client) return "";
   const text = formatFields(connectorOverlayFields(appId), client.fields);
   return text ? ` · ${text}` : " ·";
+}
+
+/* ------------------------------------------------------------------ */
+/* v0.6: the fleet, as seen from the renderer                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * SPEC v0.6 `getFleet()`.
+ *
+ * Empty-safe in three separate ways, because all three happen: the setting is
+ * off, the module never started (busy port, no network), or the hub is a unit
+ * test with no fleet at all. The renderer gets the same shape every time and
+ * only has to look at `enabled` / `running` to word the empty state.
+ *
+ *   {
+ *     enabled, running,          // the setting, and whether it actually came up
+ *     id, name, port, hubVersion,
+ *     peers: [{ id, name, host, port, online, connected, beacon, lastSeen,
+ *               hubVersion, apps, updates, dialsUs, summary }],
+ *     pairing: { code, expiresAt } | null,   // a window this hub has open
+ *     summary                                // what WE would push to a peer
+ *   }
+ */
+function getFleet() {
+  const enabled = config.load().fleet !== false;
+  let snap = null;
+  try {
+    snap = fleet.snapshot();
+  } catch (e) {
+    config.log(`fleet.snapshot failed: ${e.message}`);
+  }
+  if (!snap) {
+    return {
+      enabled,
+      running: false,
+      id: null,
+      name: null,
+      port: null,
+      hubVersion: hubVersion(),
+      peers: [],
+      pairing: null,
+      summary: null,
+    };
+  }
+  return Object.assign({ enabled, running: true }, snap);
 }
 
 /** SPEC: getState() → { apps, settings, jobs, adb, hubVersion, refreshing } */
@@ -530,6 +593,35 @@ function register() {
 
   handle("nxhub:stopStack", (id) => stacks.stop(id));
 
+  /* ---------------- v0.6: fleet ---------------- */
+
+  handle("nxhub:getFleet", () => getFleet());
+
+  // Arms the 120s pairing window on THIS hub and returns the six digits the
+  // human has to read out. The same code also goes out as `fleet-pair-code`,
+  // so a second window (or the tray) can show it without asking again.
+  handle("nxhub:fleetShowCode", () => fleet.showCode());
+
+  handle("nxhub:fleetPair", async (host, code, port) => {
+    const peer = await fleet.pair(host, code, port);
+    emit({ type: "toast", level: "info", message: `Paired with ${peer.name}` });
+    return { ok: true, peer: { id: peer.id, name: peer.name, host: peer.host, port: peer.port }, fleet: getFleet() };
+  });
+
+  handle("nxhub:fleetUnpair", async (peerId) => {
+    const removed = fleet.unpair(peerId);
+    return { ok: removed, fleet: getFleet() };
+  });
+
+  // The three remote actions all resolve to the REMOTE's ack — {jobId} for an
+  // install, {count, jobIds} for update-all — and the job's progress then
+  // arrives as `fleet-progress` events, exactly like a local job's.
+  handle("nxhub:fleetInstall", (peerId, appId, artifactId) => fleet.remoteInstall(peerId, appId, artifactId));
+
+  handle("nxhub:fleetLaunch", (peerId, appId, artifactId) => fleet.remoteLaunch(peerId, appId, artifactId));
+
+  handle("nxhub:fleetUpdateAll", (peerId) => fleet.remoteUpdateAll(peerId));
+
   handle("nxhub:openExternal", async (url) => {
     const safe = safeExternal(url);
     if (!safe) throw new Error("Refusing to open a non-web URL");
@@ -587,4 +679,7 @@ module.exports = {
   connectorSnapshotPath,
   readConnectorSnapshot,
   writeConnectorSnapshot,
+  // v0.6: fleet
+  getFleet,
+  getEngineModule,
 };

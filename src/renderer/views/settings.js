@@ -176,6 +176,7 @@ export function renderSettingsPanel(draft, ctx = {}) {
         ${check('startMinimized', 'Start minimized to the tray', !!d.startMinimized)}
         ${check('createDesktopEntries', 'Create desktop entries for installed apps', d.createDesktopEntries !== false, 'menu entries + icons under ~/.local/share/applications')}
         ${check('cliShim', 'Install the nx terminal command', d.cliShim !== false, 'keeps ~/.local/bin/nx pointing at this hub — list, install, update and launch from any shell')}
+        ${check('autoRunPostInstallCmd', 'Auto-run post-install commands', !!d.autoRunPostInstallCmd, 'runs an app’s declared command right after install; privileged commands are never auto-run by background updates')}
       </section>
 
       <section class="fieldset">

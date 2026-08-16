@@ -2298,6 +2298,248 @@ select.input option {
 .step-cell .input-num { width: 100%; }
 .stack-step .check { margin-top: 11px; }
 
+/* ------------------------------------------------------ v0.6: automation */
+
+/* The bolt says "this one starts itself". Violet: it is an identity, not an
+   alarm — amber stays reserved for things that want attention. */
+.st-bolt {
+  display: inline-flex;
+  align-items: center;
+  color: var(--violet-soft);
+  margin-left: 5px;
+  vertical-align: -1px;
+}
+.st-auto {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  border: 1px solid rgba(154, 60, 255, 0.34);
+  background: var(--glass-chip);
+  color: var(--violet-soft);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.stack-row-name .st-auto { letter-spacing: 0.12em; }
+.trg-grid { display: flex; gap: var(--sp-1); flex-wrap: wrap; align-items: flex-start; }
+.trg-cell { display: flex; flex-direction: column; flex: 1 1 200px; min-width: 150px; }
+.trg-cell .lbl { margin: 11px 0 5px; }
+.trg-cool { flex: 0 1 150px; }
+.lbl-opt { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
+.trg-preview {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 11px;
+  color: var(--violet-soft);
+}
+
+/* --------------------------------------------------- v0.6: crash banner */
+
+.banner-crash {
+  background: linear-gradient(180deg, rgba(255, 179, 0, 0.15), rgba(255, 179, 0, 0.05));
+  border: 1px solid rgba(255, 179, 0, 0.36);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  color: #ffdc9a;
+  margin: 0 0 var(--sp-2);
+  gap: 9px;
+}
+.crash-icon { display: inline-flex; color: var(--amber); flex: 0 0 auto; }
+.crash-text { flex: 1 1 220px; min-width: 0; }
+.crash-art {
+  display: block;
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-top: 2px;
+}
+/* A tile whose artifact keeps dying: one amber notch in the corner, no more —
+   the card carries the sentence and the button. */
+.tile-crash {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 0;
+  height: 0;
+  border-top: 14px solid var(--amber);
+  border-left: 14px solid transparent;
+  border-top-right-radius: var(--radius-sm);
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------- v0.6: delta chip */
+
+/* Cyan = a live property of this transfer (DESIGN §1): fewer bytes moved. */
+.delta-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: var(--radius-xs);
+  border: 1px solid rgba(0, 229, 255, 0.34);
+  background: rgba(0, 229, 255, 0.1);
+  color: var(--cyan);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+/* The closing "delta applied — X instead of Y" line, under its own bar. */
+.job-note {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--cyan);
+  opacity: 0.9;
+}
+
+/* --------------------------------------------------------- v0.6: fleet */
+
+.peer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border-radius: var(--pill);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: var(--glass-chip);
+  backdrop-filter: var(--blur-chip);
+  -webkit-backdrop-filter: var(--blur-chip);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  transition: color var(--dur-fast) var(--ease-soft), border-color var(--dur-fast) var(--ease-soft),
+    transform var(--dur-fast) var(--ease-spring), box-shadow var(--dur) var(--ease-soft);
+}
+.peer-chip:hover {
+  color: var(--text);
+  border-color: rgba(154, 60, 255, 0.5);
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 6px 18px -8px rgba(119, 0, 255, 0.8);
+}
+.peer-chip-text { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Violet dot: the fleet is identity, not live telemetry — cyan stays with the bus. */
+.peer-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4a3d6b;
+  flex: 0 0 auto;
+}
+.peer-on { color: var(--text); border-color: rgba(154, 60, 255, 0.34); }
+.peer-on .peer-dot { background: var(--violet-soft); box-shadow: 0 0 10px 1px rgba(154, 60, 255, 0.85); }
+.peer-updates {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 0 4px;
+  border-radius: var(--radius-xs);
+  background: rgba(255, 179, 0, 0.16);
+  border: 1px solid rgba(255, 179, 0, 0.34);
+  color: var(--amber);
+}
+
+.pair-actions { gap: var(--sp-1); }
+.pair-code {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--sp-2);
+  padding: var(--sp-2);
+  border-radius: var(--radius-sm);
+  background: var(--well-deep);
+  border: 1px solid var(--line);
+}
+.pair-digits { display: flex; align-items: center; gap: 10px; }
+.pair-group {
+  font-family: var(--mono);
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--text);
+  text-shadow: 0 0 22px rgba(154, 60, 255, 0.5);
+}
+.pair-gap { width: 10px; height: 2px; background: var(--violet-soft); opacity: 0.5; }
+.pair-count { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pair-count.is-soon { color: var(--amber); }
+.pair-code.is-expired .pair-group { color: var(--muted); text-shadow: none; }
+.pair-form { margin-top: var(--sp-2); display: flex; flex-direction: column; }
+.pair-form .row { margin-top: 11px; gap: var(--sp-1); }
+.pair-input { letter-spacing: 0.28em; font-size: 16px; }
+
+.peer-list { display: flex; flex-direction: column; gap: var(--sp-1); padding-top: var(--sp-1); }
+.peer {
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--well);
+  padding: 11px var(--sp-2) var(--sp-2);
+}
+.peer.is-offline { opacity: 0.72; }
+.peer-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.peer-state {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4a3d6b;
+  flex: 0 0 auto;
+}
+.peer.is-online .peer-state { background: var(--violet-soft); box-shadow: 0 0 10px 1px rgba(154, 60, 255, 0.8); }
+.peer-ident { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.peer-name { font-size: 13.5px; font-weight: 640; letter-spacing: -0.008em; }
+.peer-host { font-size: 11px; color: var(--muted); }
+.peer-seen { font-size: 11.5px; color: var(--muted); }
+.peer-tools { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+
+.peer-apps { width: 100%; border-collapse: collapse; margin-top: 11px; font-size: 12.5px; }
+.peer-apps th {
+  text-align: left;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0 8px 5px 0;
+}
+.peer-apps td { padding: 5px 8px 5px 0; border-top: 1px solid rgba(255, 255, 255, 0.05); vertical-align: middle; }
+.pa-title { font-weight: 560; }
+.pa-unknown {
+  margin-left: 5px;
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pa-ver { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.pa-none { color: var(--muted); opacity: 0.6; }
+.pa-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  padding: 0 4px;
+  margin-left: 5px;
+  border-radius: var(--radius-xs);
+  background: rgba(255, 179, 0, 0.16);
+  border: 1px solid rgba(255, 179, 0, 0.34);
+  color: var(--amber);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+.pa-upd .pa-badge { margin-left: 0; }
+.pa-act { text-align: right; white-space: nowrap; }
+.pa-act > * + * { margin-left: 5px; }
+.fleet-pick { display: inline-block; width: auto; min-width: 120px; padding: 4px 7px; font-size: 11.5px; }
+.input-sm { padding: 4px 7px; font-size: 11.5px; }
+.fleet-jobs { display: flex; flex-direction: column; gap: 6px; margin-top: 11px; }
+.fleet-job .job-row { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
+.fleet-job .job-target { margin-left: auto; color: var(--muted); font-size: 11px; }
+
 /* ------------------------------------------------------- reduced motion */
 
 @media (prefers-reduced-motion: reduce) {
@@ -2312,6 +2554,7 @@ select.input option {
   .card:hover,
   .btn:hover:not([disabled]),
   .dev-chip:hover,
+  .peer-chip:hover,
   .tile-hit:hover:not([disabled]),
   .btn:active:not([disabled]),
   .tile-hit:active:not([disabled]) {

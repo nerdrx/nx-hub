@@ -11,7 +11,9 @@ function normalize(raw) {
   // pre-downloaded by the "download" update policy.
   const notified = s.notified && typeof s.notified === "object" ? s.notified : {};
   const downloads = s.downloads && typeof s.downloads === "object" ? s.downloads : {};
-  return { version: 1, installed, notified, downloads };
+  // v0.6: crash-aware rollback — { "<app>::<artifact>": {version, count, lastAt} }
+  const crashes = s.crashes && typeof s.crashes === "object" ? s.crashes : {};
+  return { version: 1, installed, notified, downloads, crashes };
 }
 
 function load() {
@@ -143,6 +145,50 @@ function clearDownloads() {
   return s;
 }
 
+/* ------------------------------------------------------------------ */
+/* v0.6: crash bookkeeping (crash-aware rollback)                      */
+/* ------------------------------------------------------------------ */
+
+function crashKey(appId, artifactId) {
+  return `${appId}::${artifactId}`;
+}
+
+/** @returns {{version:string|null,count:number,lastAt:string}|null} */
+function getCrashes(appId, artifactId, state) {
+  const s = state || load();
+  return s.crashes[crashKey(appId, artifactId)] || null;
+}
+
+/**
+ * Count one crash AT `version`. A crash at a different version than the one on
+ * record starts the count over — the counter is always "how often has THIS
+ * build crashed", never a lifetime total.
+ */
+function recordCrash(appId, artifactId, version) {
+  const s = load();
+  const key = crashKey(appId, artifactId);
+  const v = version == null ? null : String(version);
+  const prev = s.crashes[key];
+  const sameVersion = prev && String(prev.version) === String(v);
+  s.crashes[key] = {
+    version: v,
+    count: sameVersion ? Number(prev.count || 0) + 1 : 1,
+    lastAt: new Date().toISOString(),
+  };
+  save(s);
+  return s.crashes[key];
+}
+
+/** Forget the counter (healthy run, version change, rollback, reinstall). */
+function resetCrashes(appId, artifactId) {
+  const s = load();
+  const key = crashKey(appId, artifactId);
+  if (!(key in s.crashes)) return null; // nothing to write — keep state.json quiet
+  delete s.crashes[key];
+  save(s);
+  return s.crashes;
+}
+
 module.exports = {
   load,
   save,
@@ -158,4 +204,8 @@ module.exports = {
   getDownload,
   removeDownload,
   clearDownloads,
+  getCrashes,
+  recordCrash,
+  resetCrashes,
+  crashKey,
 };

@@ -27,6 +27,7 @@ import {
   renderHiddenSection,
   renderEmpty,
   artifactKey,
+  crashKey,
 } from './views/card.js';
 import { detectPlatform } from './lib/actions.js';
 import { launchTiles, orderTiles, defaultView } from './lib/launcher.js';
@@ -41,6 +42,8 @@ import {
   envRows,
   envFromRows,
   validateEnvKey,
+  autoRunChoice,
+  autoRunFromChoice,
 } from './lib/prefs.js';
 import { normalizeReleases, isDowngrade, downgradeConfirmText, rollbackConfirmText, rollbackTargets } from './lib/releases.js';
 import { clientsByApp } from './lib/connector.js';
@@ -59,6 +62,23 @@ import {
   CLEAR_AFTER_MS,
 } from './lib/stacks.js';
 import { renderStacksSheet } from './views/stacks.js';
+import {
+  normalizeFleet,
+  fleetCounts,
+  peerById,
+  blankPairState,
+  pairShowStart,
+  pairCodeArrived,
+  pairEnterStart,
+  pairSubmitStart,
+  pairResult,
+  pairCancel,
+  validatePairForm,
+  foldFleetProgress,
+  pruneFleetJobs,
+  isCodeLive,
+} from './lib/fleet.js';
+import { renderPeerChip, renderFleetSheet } from './views/fleet.js';
 import { parseHostPort } from './lib/devices.js';
 import { freedLabel, normalizeImportResult } from './lib/storage.js';
 import { esc } from './lib/html.js';
@@ -86,6 +106,17 @@ const V02_METHODS = [
 
 /** Optional v0.5 (connector + stacks) bridge methods — same probe, same rule. */
 const V05_METHODS = ['getConnector', 'getStacks', 'saveStack', 'deleteStack', 'runStack', 'stopStack'];
+
+/** Optional v0.6 (fleet) bridge methods. No getFleet → no fleet UI at all. */
+const V06_METHODS = [
+  'getFleet',
+  'fleetShowCode',
+  'fleetPair',
+  'fleetUnpair',
+  'fleetInstall',
+  'fleetLaunch',
+  'fleetUpdateAll',
+];
 
 const ui = {
   loaded: false,
@@ -132,6 +163,14 @@ const ui = {
   stackDraft: null,
   stackErrors: {},
   stackBusy: false,
+  // v0.6 — the fleet, the pairing flow and remote job progress
+  fleet: { peers: [] },
+  fleetSeen: false, // a peer was in the list at least once this session
+  fleetBusy: false,
+  fleetJobs: {}, // peerId → { key → job } folded from fleet-progress
+  pair: blankPairState(),
+  pairTimer: 0,
+  dismissedCrashes: new Set(),
 };
 
 let state = normalizeState(null);
@@ -145,6 +184,7 @@ function loadUiPrefs() {
     const saved = JSON.parse(window.localStorage.getItem(LS_KEY) || '{}');
     if (Array.isArray(saved.dismissedNotes)) ui.dismissedNotes = new Set(saved.dismissedNotes);
     if (Array.isArray(saved.dismissedHints)) ui.dismissedHints = new Set(saved.dismissedHints);
+    if (Array.isArray(saved.dismissedCrashes)) ui.dismissedCrashes = new Set(saved.dismissedCrashes);
     if (Array.isArray(saved.recents)) ui.recents = saved.recents.filter((x) => typeof x === 'string').slice(0, RECENTS_MAX);
     if (typeof saved.unpubOpen === 'boolean') ui.unpubOpen = saved.unpubOpen;
     if (typeof saved.showHidden === 'boolean') ui.showHidden = saved.showHidden;
@@ -164,6 +204,8 @@ function saveUiPrefs() {
       JSON.stringify({
         dismissedNotes: [...ui.dismissedNotes],
         dismissedHints: [...ui.dismissedHints],
+        // Keyed by app + artifact + version, so a new install re-arms the banner.
+        dismissedCrashes: [...ui.dismissedCrashes],
         unpubOpen: ui.unpubOpen,
         showHidden: ui.showHidden,
         recents: ui.recents,
@@ -192,7 +234,9 @@ function api() {
 function detectCaps() {
   const nx = api();
   const caps = {};
-  for (const m of [...V02_METHODS, ...V05_METHODS]) caps[m] = !!(nx && typeof nx[m] === 'function');
+  for (const m of [...V02_METHODS, ...V05_METHODS, ...V06_METHODS]) {
+    caps[m] = !!(nx && typeof nx[m] === 'function');
+  }
   return caps;
 }
 
@@ -353,12 +397,34 @@ function renderDeviceSlot() {
   host.innerHTML = show ? renderDeviceChip(state.adb, ui.deviceInfo, { busy: ui.adbBusy }) : '';
 }
 
+/**
+ * The header peer chip. It only exists once the bridge HAS a fleet and that
+ * fleet has ever contained a peer — an unpaired hub shows nothing at all.
+ */
+function renderFleetSlot() {
+  const host = document.getElementById('fleet-chip');
+  if (!host) return;
+  const peers = ui.fleet.peers || [];
+  const show = !!ui.caps.getFleet && (peers.length > 0 || ui.fleetSeen);
+  host.innerHTML = show ? renderPeerChip(peers, { busy: ui.fleetBusy }) : '';
+}
+
 function renderSheet() {
   const host = document.getElementById('sheet-root');
   if (!host) return;
   const sheet = ui.sheet;
   if (!sheet) {
     host.innerHTML = '';
+    return;
+  }
+  if (sheet.kind === 'fleet') {
+    host.innerHTML = renderFleetSheet({
+      peers: ui.fleet.peers,
+      apps: state.apps,
+      pair: ui.pair,
+      jobs: ui.fleetJobs,
+      now: Date.now(),
+    });
     return;
   }
   if (sheet.kind === 'stacks') {
@@ -422,6 +488,7 @@ function render() {
 
   renderTabs();
   renderDeviceSlot();
+  renderFleetSlot();
   renderSheet();
   const launchView = ui.view === 'launch';
   if (launchHost) launchHost.hidden = !launchView;
@@ -437,6 +504,7 @@ function render() {
     platform: state.platform || ui.platform,
     expandedNotes: ui.expandedNotes,
     dismissedNotes: ui.dismissedNotes,
+    dismissedCrashes: ui.dismissedCrashes,
     openMenu: ui.openMenu,
     clients: busClients(),
     now: Date.now(),
@@ -563,6 +631,7 @@ async function saveSettings() {
     startMinimized: !!d.startMinimized,
     createDesktopEntries: d.createDesktopEntries !== false,
     cliShim: d.cliShim !== false,
+    autoRunPostInstallCmd: !!d.autoRunPostInstallCmd,
     maxConcurrentDownloads: clampConcurrency(d.maxConcurrentDownloads),
   };
   const ok = await call('setSettings', patch);
@@ -582,6 +651,8 @@ function openOptions(appId) {
   const pref = normalizeAppPref(prefsMap()[appId]);
   ui.prefDraft = {
     ...pref,
+    // The tri-state lives in the draft as the select's own value.
+    autoRunCmd: autoRunChoice(pref),
     launchArgsText: joinArgs(pref.launchArgs),
     envRows: envRows(pref.launchEnv),
   };
@@ -634,6 +705,8 @@ async function saveAppPrefs(appId) {
     favorite: !!d.favorite,
     hidden: !!d.hidden,
     releaseFallback: d.releaseFallback !== false,
+    // null = inherit the global setting (an explicit "no per-app choice").
+    autoRunCmd: autoRunFromChoice(d.autoRunCmd),
     launchArgs: parsed.args,
     launchEnv: envFromRows(d.envRows),
   };
@@ -724,8 +797,13 @@ function editStack(stackId) {
 function readStackDraft() {
   const root = document.getElementById('sheet-root');
   if (!root || !ui.stackDraft) return;
-  const nameEl = root.querySelector('[data-stack-field="name"]');
-  if (nameEl) ui.stackDraft.name = nameEl.value;
+  // Stack-level fields: the name and everything in the Automation section.
+  for (const el of root.querySelectorAll('[data-stack-field]')) {
+    const field = el.getAttribute('data-stack-field');
+    if (!field) continue;
+    if (el.type === 'checkbox') ui.stackDraft[field] = !!el.checked;
+    else ui.stackDraft[field] = el.value;
+  }
 
   const steps = (ui.stackDraft.steps || []).map((s) => ({ ...s }));
   const wasApp = steps.map((s) => s.appId);
@@ -855,6 +933,124 @@ function onStackProgress(ev) {
     ui.runTimers.set(stackId, timer);
   }
   schedule();
+}
+
+/* ------------------------------------------------------------------ fleet */
+
+async function loadFleet() {
+  if (!ui.caps.getFleet) return;
+  try {
+    ui.fleet = normalizeFleet(await maybeCall('getFleet'));
+    if (ui.fleet.peers.length) ui.fleetSeen = true;
+  } catch (err) {
+    ui.fleet = { peers: [] };
+    toast('error', `Could not read the fleet: ${(err && err.message) || err}`);
+  }
+  // A peer that vanished takes its job rows with it.
+  ui.fleetJobs = pruneFleetJobs(ui.fleetJobs, Date.now());
+  schedule();
+}
+
+function openFleet() {
+  ui.sheet = { kind: 'fleet' };
+  ui.openMenu = '';
+  ui.pair = blankPairState();
+  clearPairTimer();
+  schedule();
+  return loadFleet();
+}
+
+function clearPairTimer() {
+  if (ui.pairTimer) {
+    window.clearInterval(ui.pairTimer);
+    ui.pairTimer = 0;
+  }
+}
+
+/** While a code is on screen its countdown has to move — one timer, no more. */
+function armPairTimer() {
+  clearPairTimer();
+  ui.pairTimer = window.setInterval(() => {
+    if (!ui.sheet || ui.sheet.kind !== 'fleet' || !isCodeLive(ui.pair, Date.now())) {
+      clearPairTimer();
+      // One last render so "expired" replaces the last tick.
+      schedule();
+      return;
+    }
+    schedule();
+  }, 1000);
+}
+
+/** Read the pairing form back out of the DOM (same contract as readPrefDraft). */
+function readPairInputs() {
+  const root = document.getElementById('sheet-root');
+  if (!root) return;
+  for (const el of root.querySelectorAll('[data-fleet-field]')) {
+    const field = el.getAttribute('data-fleet-field');
+    if (field === 'host') ui.pair = { ...ui.pair, host: el.value };
+    else if (field === 'code') ui.pair = { ...ui.pair, input: el.value };
+  }
+}
+
+async function showPairCode() {
+  ui.pair = pairShowStart(ui.pair);
+  schedule();
+  if (!ui.caps.fleetShowCode) {
+    ui.pair = { ...ui.pair, busy: false, error: 'This build cannot show a pairing code.' };
+    schedule();
+    return;
+  }
+  try {
+    const res = await maybeCall('fleetShowCode');
+    ui.pair = pairCodeArrived(ui.pair, res, Date.now());
+  } catch (err) {
+    ui.pair = { ...ui.pair, busy: false, error: `Could not arm pairing: ${(err && err.message) || err}` };
+  }
+  if (isCodeLive(ui.pair, Date.now())) armPairTimer();
+  schedule();
+}
+
+async function submitPair() {
+  readPairInputs();
+  const { ok, errors, host, code } = validatePairForm(ui.pair.host, ui.pair.input);
+  if (!ok) {
+    ui.pair = { ...ui.pair, errors, error: '' };
+    schedule();
+    return;
+  }
+  ui.pair = { ...pairSubmitStart(ui.pair, host, ui.pair.input), errors: {} };
+  schedule();
+  let res = null;
+  try {
+    res = await maybeCall('fleetPair', host, code);
+  } catch (err) {
+    res = { ok: false, error: (err && err.message) || String(err) };
+  }
+  ui.pair = pairResult(ui.pair, res, { host });
+  if (!ui.pair.error) {
+    toast('info', ui.pair.ok || 'Paired');
+    await loadFleet();
+  }
+  schedule();
+}
+
+/** The artifact a fleet row asks for: the compact picker wins, else the row's. */
+function fleetArtifact(el, peerId, appId) {
+  const root = document.getElementById('sheet-root');
+  const pick = root ? root.querySelector(`[data-fleet-art="${CSS_ESCAPE(`${peerId}::${appId}`)}"]`) : null;
+  if (pick && pick.value) return pick.value;
+  return el.getAttribute('data-art') || '';
+}
+
+async function fleetAction(method, el, verb) {
+  const peerId = el.getAttribute('data-peer') || '';
+  const appId = el.getAttribute('data-app') || '';
+  if (!peerId || !appId) return;
+  const peer = peerById(ui.fleet.peers, peerId);
+  const artifactId = fleetArtifact(el, peerId, appId);
+  const res = await call(method, peerId, appId, artifactId);
+  if (res === null) return;
+  toast('info', `${verb} ${appId} on ${peer ? peer.name : 'that hub'}…`);
 }
 
 /* ---------------------------------------------------------------- devices */
@@ -1481,6 +1677,76 @@ async function onAction(act, el, ev) {
       break;
     }
 
+    /* ------------------------------------------------------------- v0.6 */
+
+    case 'fleet':
+      await openFleet();
+      break;
+    case 'fleet-show-code':
+      await showPairCode();
+      break;
+    case 'fleet-pair-open':
+      clearPairTimer();
+      ui.pair = pairEnterStart(ui.pair);
+      schedule();
+      break;
+    case 'fleet-pair-cancel':
+      clearPairTimer();
+      ui.pair = pairCancel();
+      schedule();
+      break;
+    case 'fleet-pair-submit':
+      await submitPair();
+      break;
+    case 'fleet-install':
+      await fleetAction('fleetInstall', el, 'Installing');
+      break;
+    case 'fleet-launch':
+      await fleetAction('fleetLaunch', el, 'Launching');
+      break;
+    case 'fleet-update-all': {
+      const peerId = el.getAttribute('data-peer') || '';
+      const peer = peerById(ui.fleet.peers, peerId);
+      if (!peer) break;
+      const counts = fleetCounts([peer]);
+      if (
+        !window.confirm(
+          `Install ${counts.updates} update${counts.updates === 1 ? '' : 's'} on ${peer.name}?\n\n` +
+            'The other hub downloads and installs them on its own machine.'
+        )
+      ) {
+        break;
+      }
+      const res = await call('fleetUpdateAll', peerId);
+      if (res !== null) toast('info', `${peer.name} is updating…`);
+      break;
+    }
+    case 'fleet-unpair': {
+      const peerId = el.getAttribute('data-peer') || '';
+      const peer = peerById(ui.fleet.peers, peerId);
+      if (!peer) break;
+      if (
+        !window.confirm(
+          `Unpair ${peer.name}?\n\nThe shared secret is deleted on this side. ` +
+            'Pairing again needs a fresh six-digit code.'
+        )
+      ) {
+        break;
+      }
+      const res = await call('fleetUnpair', peerId);
+      if (res === null) break;
+      toast('info', `${peer.name} unpaired`);
+      await loadFleet();
+      break;
+    }
+    case 'dismiss-crash': {
+      const version = el.getAttribute('data-version') || '';
+      ui.dismissedCrashes.add(crashKey(appId, artId, version));
+      saveUiPrefs();
+      schedule();
+      break;
+    }
+
     case 'update-app': {
       ui.toasts = ui.toasts.filter((t) => t.id !== el.getAttribute('data-id'));
       renderToasts();
@@ -1506,6 +1772,9 @@ function closeSheet() {
   ui.prefError = '';
   ui.stackDraft = null;
   ui.stackErrors = {};
+  // The pairing countdown must never outlive the sheet that shows it.
+  clearPairTimer();
+  ui.pair = blankPairState();
   schedule();
 }
 
@@ -1564,6 +1833,23 @@ function onHubEvent(ev) {
       break;
     case 'stack-progress':
       onStackProgress(ev);
+      break;
+
+    /* ------------------------------------------------------------- v0.6 */
+
+    case 'fleet-changed':
+      loadFleet();
+      break;
+    case 'fleet-pair-code':
+      // The target hub armed its window — show the code even if this side did
+      // not ask for it (the other hub may have started the flow).
+      ui.pair = pairCodeArrived(ui.pair, ev, Date.now());
+      if (isCodeLive(ui.pair, Date.now()) && ui.sheet && ui.sheet.kind === 'fleet') armPairTimer();
+      schedule();
+      break;
+    case 'fleet-progress':
+      ui.fleetJobs = foldFleetProgress(ui.fleetJobs, ev, Date.now());
+      schedule();
       break;
     case 'update-available': {
       const app = (state.apps || []).find((a) => a.id === ev.appId);
@@ -1663,6 +1949,12 @@ function wireDom() {
       schedule();
       return;
     }
+    // Switching the trigger type swaps the serial box for the app picker.
+    if (el.getAttribute && el.getAttribute('data-stack-field') === 'triggerType' && ui.stackDraft) {
+      readStackDraft();
+      schedule();
+      return;
+    }
     if (el.id === 'import-file') {
       const file = el.files && el.files[0];
       if (!file) return;
@@ -1706,6 +1998,11 @@ function wireDom() {
           ui.stackDraft = null;
           ui.stackErrors = {};
           schedule();
+        } else if (ui.sheet.kind === 'fleet' && ui.pair && ui.pair.mode !== 'idle') {
+          // …and inside the fleet sheet it backs out of the pairing flow first.
+          clearPairTimer();
+          ui.pair = pairCancel();
+          schedule();
         } else {
           closeSheet();
         }
@@ -1731,6 +2028,8 @@ function wireDom() {
       if (field === 'ownerInput') onAction('add-owner', el, ev);
       if (field === 'repoInput') onAction('add-repo', el, ev);
       if (field === 'adbHost') onAction('adb-connect', el, ev);
+      const fleetField = el.getAttribute('data-fleet-field');
+      if (fleetField === 'host' || fleetField === 'code') onAction('fleet-pair-submit', el, ev);
     }
   });
 }
@@ -1881,6 +2180,7 @@ async function boot() {
   }
   await pullState();
   await loadStacks();
+  await loadFleet();
   // First run: open the launcher when there is anything to launch.
   if (!ui.viewRemembered) {
     ui.view = ui.stacks.length ? 'launch' : defaultView(currentTiles());

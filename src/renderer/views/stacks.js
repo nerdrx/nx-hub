@@ -9,12 +9,17 @@ import {
   HEALTH_TYPES,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_DELAY_MS,
+  MIN_COOLDOWN_S,
+  MAX_COOLDOWN_S,
+  DEFAULT_COOLDOWN_MS,
+  TRIGGER_TYPES,
   normalizeStacks,
   isFinished,
   nameMap,
   pickableApps,
   stepArtifacts,
   healthLabel,
+  triggerLabel,
 } from '../lib/stacks.js';
 import * as icons from './icons.js';
 
@@ -22,6 +27,12 @@ const HEALTH_TEXT = {
   connector: 'The app reports in on the bus',
   port: 'A TCP port answers',
   delay: 'A fixed wait',
+};
+
+const TRIGGER_TEXT = {
+  '': 'Manual — only when I press Run',
+  'adb-device': 'When a device connects (adb)',
+  'connector-app': 'When an app joins the bus',
 };
 
 /* -------------------------------------------------------------------- list */
@@ -43,7 +54,13 @@ function stackRow(stack, ctx) {
   return `
     <div class="stack-row" data-stack-row="${esc(stack.id)}">
       <div class="stack-row-main">
-        <span class="stack-row-name">${esc(stack.name)}</span>
+        <span class="stack-row-name">${esc(stack.name)}${
+          stack.trigger
+            ? `<span class="st-bolt" aria-hidden="true">${icons.bolt}</span><span class="st-auto" title="${esc(
+                triggerLabel(stack.trigger, ctx.names)
+              )}">auto</span>`
+            : ''
+        }</span>
         <span class="stack-row-steps">${stepChain(stack, ctx.names)}</span>
         <span class="stack-row-id">${esc(stack.id)}</span>
       </div>
@@ -157,6 +174,96 @@ function stepMarkup(step, index, ctx) {
     </div>`;
 }
 
+/* -------------------------------------------------------------- automation */
+
+function stackSelect(field, options, value, label) {
+  return `<select class="input" data-stack-field="${esc(field)}" aria-label="${esc(label)}">
+      ${options
+        .map(
+          (o) =>
+            `<option value="${esc(o.value)}"${String(o.value) === String(value) ? ' selected' : ''}>${esc(o.label)}</option>`
+        )
+        .join('')}
+    </select>`;
+}
+
+/**
+ * The Automation block of the editor. Manual is the default and shows nothing
+ * else — the whole section stays one line until the user opts in.
+ */
+function automationBody(draft, ctx) {
+  const errors = ctx.errors || {};
+  const type = TRIGGER_TYPES.includes(draft.triggerType) ? draft.triggerType : '';
+  const apps = ctx.apps;
+  const names = ctx.names;
+
+  const typeSelect = stackSelect(
+    'triggerType',
+    [{ value: '', label: TRIGGER_TEXT[''] }, ...TRIGGER_TYPES.map((t) => ({ value: t, label: TRIGGER_TEXT[t] }))],
+    type,
+    'When this stack starts'
+  );
+
+  if (!type) {
+    return `
+      <label class="lbl" for="trigger-type">Start this stack</label>
+      ${typeSelect}
+      <p class="field-note">A trigger lets the stack start itself — when the headset shows up, or when
+        another NX app announces itself on the bus.</p>`;
+  }
+
+  const target =
+    type === 'adb-device'
+      ? `<div class="trg-cell">
+           <label class="lbl" for="trg-serial">Device serial <span class="lbl-opt">optional</span></label>
+           <input id="trg-serial" class="input mono${errors.triggerSerial ? ' invalid' : ''}" type="text"
+                  spellcheck="false" autocomplete="off" placeholder="any device"
+                  data-stack-field="triggerSerial" value="${esc(draft.triggerSerial || '')}">
+           ${errorMarkup(errors, 'triggerSerial')}
+         </div>`
+      : `<div class="trg-cell">
+           <label class="lbl">App on the bus</label>
+           ${stackSelect(
+             'triggerAppId',
+             [{ value: '', label: 'Pick an app…' }, ...apps.map((a) => ({ value: a.id, label: a.name }))],
+             draft.triggerAppId || '',
+             'Which app starts this stack'
+           )}
+           ${errorMarkup(errors, 'triggerAppId')}
+         </div>`;
+
+  const preview = triggerLabel(
+    {
+      type,
+      serial: draft.triggerSerial,
+      appId: draft.triggerAppId,
+      cooldownMs: Number(draft.triggerCooldown) * 1000,
+    },
+    names
+  );
+
+  return `
+    <label class="lbl" for="trigger-type">Start this stack</label>
+    ${typeSelect}
+    <div class="trg-grid">
+      ${target}
+      <div class="trg-cell trg-cool">
+        <label class="lbl" for="trg-cool">Cooldown (seconds)</label>
+        <input id="trg-cool" class="input input-num${errors.triggerCooldown ? ' invalid' : ''}" type="number"
+               min="${MIN_COOLDOWN_S}" max="${MAX_COOLDOWN_S}" inputmode="numeric"
+               data-stack-field="triggerCooldown" value="${esc(draft.triggerCooldown || '')}"
+               placeholder="${DEFAULT_COOLDOWN_MS / 1000}" aria-label="Cooldown in seconds">
+        ${errorMarkup(errors, 'triggerCooldown')}
+      </div>
+    </div>
+    <label class="check">
+      <input type="checkbox" data-stack-field="triggerStopOnLeave"${draft.triggerStopOnLeave ? ' checked' : ''}>
+      <span class="check-box" aria-hidden="true"></span>
+      <span class="check-text">Stop the stack when it leaves<span class="check-note">the apps are asked to quit, in reverse order</span></span>
+    </label>
+    ${preview ? `<p class="field-note trg-preview">${icons.bolt}<span>${esc(preview)}.</span></p>` : ''}`;
+}
+
 function editorBody(draft, ctx) {
   const errors = ctx.errors || {};
   const apps = pickableApps(ctx.apps);
@@ -182,6 +289,11 @@ function editorBody(draft, ctx) {
       </div>
       ${errorMarkup(errors, 'steps')}
       <button class="btn btn-ghost btn-sm" data-act="stack-step-add">Add step</button>
+    </section>
+
+    <section class="fieldset">
+      <h3>Automation</h3>
+      ${automationBody(draft, { apps, errors, names: nameMap(ctx.apps) })}
     </section>`;
 }
 

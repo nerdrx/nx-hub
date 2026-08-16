@@ -25,6 +25,8 @@ let refreshTimer = null;
 let quitting = false;
 let connectorHandle = null; // {close} from the bus's init(), when it started
 let trayRefreshTimer = null;
+let fleetModule = null; // src/main/fleet, once it loaded (v0.6)
+let fleetHandle = null; // {close} from fleet.init(), when the setting allowed it
 
 /* ------------------------------------------------------------------ */
 /* v0.2: autostart + start-minimized                                   */
@@ -327,10 +329,86 @@ function stopConnector() {
   connectorHandle = null;
 }
 
+/**
+ * v0.6: hub-to-hub on the LAN (SPEC "Fleet"), gated by settings.fleet.
+ *
+ * Same defensive shape as the connector: required lazily, a busy port or a
+ * missing module leaves the rest of the hub entirely unaffected. This is the
+ * ONE listener the hub opens to the network rather than to loopback, so it is
+ * also the one the user can switch off — and turning it off has to stop both
+ * halves, the beacon and the :9023 server.
+ */
+function startFleet(emit) {
+  const settings = config.load();
+  if (settings.fleet === false) {
+    config.log("fleet: disabled in settings");
+    return null;
+  }
+  if (!fleetModule) {
+    try {
+      // eslint-disable-next-line global-require
+      fleetModule = require("./fleet");
+    } catch (e) {
+      config.log(`fleet: not in this build — ${e.message}`);
+      return null;
+    }
+  }
+  try {
+    fleetHandle = fleetModule.init({
+      config,
+      jobs,
+      discovery,
+      emit,
+      log: (m) => config.log(`[fleet] ${m}`),
+      hubVersion: ipc.hubVersion(),
+    });
+    fleetHandle.ready
+      .then((r) => config.log(`fleet: ${r.ok ? `listening on :${r.port}` : "did not start"} (id ${r.id})`))
+      .catch(() => {});
+    return fleetModule;
+  } catch (e) {
+    config.log(`fleet: could not start — ${e.message}`);
+    fleetHandle = null;
+    return null;
+  }
+}
+
+function stopFleet() {
+  try {
+    if (fleetModule && typeof fleetModule.close === "function") fleetModule.close();
+  } catch (e) {
+    config.log(`fleet close failed: ${e.message}`);
+  }
+  fleetHandle = null;
+}
+
+/** settings.fleet flipped → bring the fleet up or take it down, in place. */
+function syncFleet(settings, emit) {
+  const wanted = (settings || config.load()).fleet !== false;
+  const running = Boolean(fleetHandle);
+  if (wanted === running) return;
+  if (wanted) startFleet(emit);
+  else {
+    stopFleet();
+    config.log("fleet: stopped (setting turned off)");
+  }
+  ipc.emit({ type: "fleet-changed" });
+}
+
 function wire() {
   const emit = (evt) => {
     ipc.emit(evt);
     if (!evt) return;
+    // v0.6: the fleet relays the progress of jobs a PEER asked this hub to run
+    // back over that peer's session. This is the only place the whole hub's
+    // event stream is visible, so the tap lives here rather than inside jobs.
+    if (fleetModule) {
+      try {
+        fleetModule.onHubEvent(evt);
+      } catch (e) {
+        config.log(`fleet: relaying ${evt.type} failed — ${e.message}`);
+      }
+    }
     if (evt.type === "state-changed") updateTray();
     // v0.5: live status and stack phases both change what the tray should say
     if (evt.type === "connector-changed" || evt.type === "stack-progress") updateTraySoon();
@@ -368,13 +446,23 @@ function wire() {
       scheduleRefresh(settings);
       syncAutostart(settings); // v0.2: XDG autostart follows the setting
       syncCliShim(settings); // v0.3: ~/.local/bin/nx follows the setting
+      syncFleet(settings, emit); // v0.6: the LAN listener follows the setting
     },
   });
 
   // v0.5: the bus first (so the very first getState() already knows about it),
   // then the stacks orchestrator on top of the same jobs/emit the GUI uses.
   startConnector(emit);
-  stacks.init({ jobs, connector: () => ipc.getConnectorModule(), config, emit });
+  stacks.init({
+    jobs,
+    connector: () => ipc.getConnectorModule(),
+    config,
+    emit,
+    engine: () => ipc.getEngineModule(), // v0.6: adb-device triggers
+  });
+  // v0.6: the fleet last — it reads the discovery model and enqueues jobs, so
+  // everything it talks to is already wired by the time it can accept a peer.
+  startFleet(emit);
 }
 
 function main() {
@@ -396,6 +484,7 @@ function main() {
     quitting = true;
     e2e.stop();
     stopConnector();
+    stopFleet(); // v0.6
   });
 
   // Closing the last window must not quit — we live in the tray.
