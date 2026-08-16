@@ -472,7 +472,7 @@ downloaded file AND the repo owner is a pinned-key owner (map {nerdrx: <pub>}
 in provenance.js), verify after hash-check; mismatch = hard fail (no
 fallback); absent sig = allowed (log "unsigned"). Setting
 `requireSignatures` (default false) → unsigned pinned-owner assets refuse.
-`.sig` already classifier-ignored. Badge field artifact.signed: true|false|null.
+`.sig` already classifier-ignored. Model field: artifact.hasSignature (bool — a .sig sibling exists) + signatureName/Url/Id; verification outcomes live in job messages.
 
 ### Flight recorder ([recorder])
 src/main/recorder.js: init({emit-tap}) — the ipc emit fan-out calls
