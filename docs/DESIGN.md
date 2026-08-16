@@ -1,7 +1,7 @@
 # The NX Design Language
 
-**Version 1.2 · extracted from NX Hub v0.3.6 · amendments from PulseNX v1.2.1
-(the second full implementation)**
+**Version 1.3 · extracted from NX Hub v0.3.6 · amendments from PulseNX v1.2.1
+and the pointer-bound specular rule (2026-08-16)**
 
 This document is the canonical specification of the NX visual language —
 "liquid glass on deep space." It is written to be dropped into any project's
@@ -40,6 +40,14 @@ Rules that make it feel expensive:
   dots and spinners only.
 - One light source: **upper-left**, in every gradient, bevel, and edge. Light
   consistency is why surfaces read as one physical world.
+- **Light rides motion — it never flashes on command.** A specular sheen is a
+  *function of position*, not a time-triggered animation: bind it to the
+  pointer, the tilt, the scroll or the progress value that is actually moving,
+  so the highlight slides across the glass as the thing moves. A one-shot
+  sweep fired on hover/attention reads as an effect; light that tracks input
+  reads as material. Triggered sweeps are permitted only where no continuous
+  driver exists (indeterminate progress), and everything decorative still
+  freezes under reduced motion.
 - **The identity accent stays in its lane.** If an app has a domain signal
   color, it marks *only* that signal (the live BPM, the recording dot). It
   never becomes an action color, never doubles as danger or any generic
@@ -188,8 +196,12 @@ element translated between equal-width tab slots with `--ease-spring`, never
 per-tab background toggles. (CSS-only via `:has()` on the active tab.)
 
 **Cards**: tier-1 glass, `--radius`, `--sp-3` internal padding. Hover: lift
-`translateY(-2px)`, `--shadow-lift`, and slide the `--sheen` band across via a
-masked pseudo-element (background-position or transform only). Card grids flow
+`translateY(-2px)` and `--shadow-lift`. The `--sheen` band is **pointer-bound**
+(see the light-rides-motion rule): a delegated pointermove writes a normalized
+CSS custom property (e.g. `--mx: 0..1`) on the hovered surface and the sheen's
+position derives from it — the highlight slides with the cursor instead of
+sweeping once on entry. Keep it one rAF-throttled listener per grid, not one
+per card; a soft opacity fade on enter/leave keeps the appearance calm. Card grids flow
 as **masonry** (CSS `columns`, `break-inside: avoid`) so mixed heights pack
 tightly — top-aligned grid rows with ragged holes read as fragmentation.
 
@@ -339,6 +351,8 @@ are invisible in a diff. Before shipping any NX-branded surface, verify:
 - [ ] Violet leads, cyan accents, amber only means "attention."
 - [ ] All spacing lands on the 8px grid.
 - [ ] Hover lifts, press scales, springs only where identity lives.
+- [ ] Every sheen is position-driven (pointer/tilt/progress), never a one-shot
+      triggered sweep — except where nothing continuous exists to bind to.
 - [ ] `prefers-reduced-motion` fully honored.
 - [ ] Text contrast comfortable over every fill it sits on.
 - [ ] Mixed-height collections pack (masonry), never leave ragged holes.
