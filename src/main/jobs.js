@@ -4,6 +4,8 @@
 
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
+const { execFile } = require("child_process");
 
 const config = require("./config");
 const githubMod = require("./github");
@@ -369,9 +371,178 @@ function retargetArtifact(app, artifact, tag) {
     checksumName: match.checksumName || null,
     checksumUrl: match.checksumUrl || null,
     checksumId: match.checksumId || null,
+    // v0.6: the delta patches belong to the TARGET release's asset, not to the
+    // live one — carry them across with the rest of the asset fields.
+    deltaPatches: match.deltaPatches || null,
     version,
   });
   return { target, release, version };
+}
+
+/* ------------------------------------------------------------------ */
+/* v0.6: delta updates                                                 */
+/* ------------------------------------------------------------------ */
+
+// zstd needs the same window size on both ends; release.sh patches with it too.
+const ZSTD_LONG = "--long=27";
+
+/** First executable `zstd` on PATH, or null. No subprocess, no cache. */
+function findZstd() {
+  const raw = process.env.PATH || "";
+  for (const dir of raw.split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, "zstd");
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch (_) {
+      /* next */
+    }
+  }
+  return null;
+}
+
+function sha256File(file) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const stream = fs.createReadStream(file);
+    stream.on("error", reject);
+    stream.on("data", (c) => hash.update(c));
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
+}
+
+function runProcess(cmd, args, { signal, timeout } = {}) {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { signal, timeout: timeout || 10 * 60 * 1000, maxBuffer: 1 << 20 }, (err, stdout, stderr) => {
+      resolve({ code: err ? (typeof err.code === "number" ? err.code : 1) : 0, stdout, stderr: stderr || (err && err.message) || "" });
+    });
+  });
+}
+
+/**
+ * Everything SPEC requires before a delta is even considered. Returns the plan
+ * or a one-line reason why not (logged at debug volume, never shown).
+ */
+function planDelta({ app, artifact, liveArtifact, version }) {
+  if (artifact.kind !== "appimage") return { skip: `kind ${artifact.kind} is not delta-capable` };
+
+  const rec = stateStore.getInstall(app.id, liveArtifact.id);
+  const from = rec && rec.version != null ? String(rec.version) : null;
+  if (!from) return { skip: "nothing installed to patch from" };
+  const norm = (v) => String(discovery.parseVersion(v) ?? v);
+  if (norm(from) === norm(version)) return { skip: "already at this version" };
+
+  const patches = Array.isArray(artifact.deltaPatches) ? artifact.deltaPatches : [];
+  const patch = patches.find((p) => p && norm(p.fromVersion) === norm(from));
+  if (!patch) return { skip: `release has no patch from ${from}` };
+  if (!patch.url && patch.id == null) return { skip: "patch asset has no download url" };
+
+  // Mandatory for delta: the FULL asset's sidecar is what proves the
+  // reconstruction is byte-identical to what everyone else downloads.
+  if (!artifact.checksumUrl && artifact.checksumId == null) return { skip: "full asset has no .sha256 sidecar" };
+
+  const zstd = findZstd();
+  if (!zstd) return { skip: "zstd not on PATH" };
+
+  // The kept original .AppImage the appimage engine records in its manifest.
+  const installDir = rec.path || null;
+  if (!installDir) return { skip: "install path unknown" };
+  let manifest = null;
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(installDir, ".nx-manifest.json"), "utf8"));
+  } catch (e) {
+    return { skip: `no install manifest (${e.code || e.message})` };
+  }
+  const keptName = manifest && manifest.appImageFile;
+  if (!keptName) return { skip: "manifest records no kept AppImage" };
+  const kept = path.join(installDir, keptName);
+  if (!fs.existsSync(kept)) return { skip: `kept original missing (${keptName})` };
+
+  return { patch, kept, zstd, from };
+}
+
+/**
+ * Download `<assetName>.from-<installed>.zpatch` and rebuild the full asset at
+ * `filePath`. Returns true only when the result is verified byte-for-byte
+ * against the full asset's sidecar; ANY failure returns false and the caller
+ * does the ordinary full download.
+ */
+async function tryDelta(job, { app, artifact, liveArtifact, version, filePath }) {
+  let plan;
+  try {
+    plan = planDelta({ app, artifact, liveArtifact, version });
+  } catch (e) {
+    config.log(`delta: unavailable for ${app.id}/${artifact.id} — ${e.message}`);
+    return false;
+  }
+  if (plan.skip) {
+    config.log(`delta: skipped for ${app.id}/${artifact.id} — ${plan.skip}`);
+    return false;
+  }
+
+  const { patch, kept, zstd, from } = plan;
+  const patchPath = `${filePath}.zpatch`;
+  const fmt = githubMod.fmtBytes;
+  const fullSize = Number(artifact.size || 0);
+  try {
+    progress(
+      job,
+      "download",
+      0,
+      `downloading delta patch (${fmt(patch.size)}${fullSize ? ` instead of ${fmt(fullSize)}` : ""})`
+    );
+    await withDownloadSlot(() =>
+      gh().downloadAsset({ name: patch.name, url: patch.url, id: patch.id, size: patch.size }, patchPath, {
+        signal: job.controller.signal,
+        onProgress: (p) => progress(job, p.phase || "download", p.pct, `delta patch — ${p.message}`),
+      })
+    );
+    if (job.cancelRequested) throw new Error("aborted");
+
+    progress(job, "verify", 20, `applying delta patch (zstd, from ${from})`);
+    safeUnlink(filePath);
+    const res = await runProcess(
+      zstd,
+      ["-d", "-f", "-q", ZSTD_LONG, `--patch-from=${kept}`, patchPath, "-o", filePath],
+      { signal: job.controller.signal }
+    );
+    if (res.code !== 0) {
+      throw new Error(`zstd exited ${res.code}${res.stderr ? `: ${String(res.stderr).trim().split("\n").pop()}` : ""}`);
+    }
+
+    progress(job, "verify", 70, "verifying the delta result");
+    const sidecar = {
+      name: artifact.checksumName || `${artifact.assetName}.sha256`,
+      url: artifact.checksumUrl,
+      id: artifact.checksumId,
+    };
+    const text = await gh().fetchAssetText(sidecar, { signal: job.controller.signal });
+    const m = String(text).match(/\b[a-fA-F0-9]{64}\b/);
+    if (!m) throw new Error("sidecar has no sha256");
+    const got = await sha256File(filePath);
+    if (got !== m[0].toLowerCase()) {
+      throw new Error(`checksum mismatch (expected ${m[0].toLowerCase()}, got ${got})`);
+    }
+
+    const patchBytes = fs.statSync(patchPath).size;
+    const saved = fullSize > 0 ? Math.max(0, Math.round((1 - patchBytes / fullSize) * 100)) : 0;
+    safeUnlink(patchPath);
+    progress(
+      job,
+      "verify",
+      100,
+      `delta applied — ${fmt(patchBytes)} downloaded instead of ${fmt(fullSize)}${saved ? ` (${saved}% saved)` : ""}`
+    );
+    config.log(`delta: rebuilt ${artifact.assetName} from ${from} (${patchBytes} of ${fullSize} bytes)`);
+    return true;
+  } catch (e) {
+    safeUnlink(patchPath);
+    safeUnlink(filePath);
+    if (job.cancelRequested || e.name === "AbortError") throw e; // a cancel is not a fallback
+    config.log(`delta: falling back to the full download for ${app.id}/${artifact.id} — ${e.message}`);
+    return false;
+  }
 }
 
 async function runInstall(job) {
@@ -404,6 +575,8 @@ async function runInstall(job) {
 
   if (reusable) {
     progress(job, "download", 100, `using the downloaded ${artifact.assetName}`);
+  } else if (await tryDelta(job, { app, artifact, liveArtifact, version, filePath })) {
+    // reconstructed from a patch — filePath now holds the verified full asset
   } else {
     progress(job, "download", 0, `downloading ${artifact.assetName}`);
     await withDownloadSlot(() =>
@@ -449,6 +622,8 @@ async function runInstall(job) {
     iconPath: result.iconPath || null,
     installedAt: new Date().toISOString(),
   });
+  // v0.6: a fresh install (or reinstall) is a clean slate for crash counting
+  stateStore.resetCrashes(app.id, artifact.id);
 
   // 4. cleanup
   progress(job, "cleanup", 100, "cleaning up");
@@ -463,7 +638,37 @@ async function runInstall(job) {
   const note = result.postInstallNote || artifact.postInstallNote || null;
   job.message = note ? `Installed. ${note}` : `Installed ${app.name} ${version}`;
   if (note) emit({ type: "toast", level: "info", message: note });
+  maybeAutoRunCmd(job, app, artifact, settings);
   return result;
+}
+
+/**
+ * Opt-in: run the artifact's overlay postInstallCmd right after a successful
+ * install (settings.autoRunPostInstallCmd, per-app appPrefs.autoRunCmd). One
+ * carve-out: a PRIVILEGED command (sudo→pkexec) on a BACKGROUND policy install
+ * would pop an auth dialog unattended — skip it and leave the note instead.
+ * Fire-and-forget: never blocks or fails the install job itself.
+ */
+function maybeAutoRunCmd(job, app, artifact, settings) {
+  try {
+    const cmd = artifact.postInstallCmd;
+    if (!cmd) return;
+    if (!config.effectiveAutoRunCmd(settings, app.id)) return;
+    const runcmd = require("./runcmd");
+    const spec = runcmd.rewriteForPrivilege(cmd);
+    if (!spec) return;
+    if (spec.privileged && job.origin === "policy") {
+      config.log(`auto-run skipped for ${app.id}: privileged command on a background install`);
+      return;
+    }
+    config.log(`auto-run post-install cmd for ${app.id}/${artifact.id}: ${spec.cmd}`);
+    runcmd.runShell(spec.cmd).then((res) => {
+      if (res.ok) emit({ type: "toast", level: "info", message: `Auto-ran: ${cmd}` });
+      else emit({ type: "toast", level: "error", message: `Auto-run failed (exit ${res.code}): ${cmd}` });
+    });
+  } catch (e) {
+    config.log(`auto-run error: ${e.message}`);
+  }
 }
 
 /**
@@ -554,6 +759,7 @@ async function runUninstall(job) {
   if (engine) await engine.uninstall({ app, artifact, installedPath, ctx: makeCtx(job, settings) });
   else if (installedPath) safeUnlink(installedPath);
   stateStore.removeInstall(job.appId, job.artifactId);
+  stateStore.resetCrashes(job.appId, job.artifactId);
   try {
     discovery.remerge();
   } catch (_) {
@@ -588,6 +794,9 @@ async function runRollback(job) {
     launchable: result.launchable !== false,
     installedAt: new Date().toISOString(),
   });
+  // v0.6: rolling back is the cure for a crash loop — clear the counter so the
+  // banner disappears the moment the older build is back.
+  stateStore.resetCrashes(app.id, artifact.id);
   try {
     discovery.remerge();
   } catch (_) {
@@ -596,6 +805,144 @@ async function runRollback(job) {
   progress(job, "cleanup", 100, "restored");
   job.message = `Restored ${app.name}${version ? ` ${version}` : ""}`;
   return result;
+}
+
+/* ------------------------------------------------------------------ */
+/* v0.6: crash-aware rollback — the launch watchdog                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * SPEC: crash = exit code ≠ 0 && uptime < 30s; the counter resets on a run
+ * ≥ 120s (or a version change / rollback / reinstall). At most 10 processes
+ * are watched at once — a launcher, not a supervisor.
+ *
+ * How we see the exit at all: the engines spawn through `util.spawnDetached`,
+ * which announces every child to `util.onSpawn`. `launch()` listens across the
+ * engine call and keeps the ChildProcess. `unref()` (which spawnDetached still
+ * does, unchanged) only drops the handle from the event loop's ref count — the
+ * hub still receives 'exit' with the real exit code while it is running, and
+ * the child still outlives the hub when it is not. Detachment is untouched.
+ *
+ * Fallback: if a launch reports a pid we never saw spawned (an engine that
+ * shells out through some other path), we poll liveness with signal 0 instead.
+ * That mode cannot know the exit CODE, so a process that vanishes inside 30s
+ * counts as a crash — see `onWatchedExit`.
+ */
+const CRASH_DEFAULTS = { crashMs: 30000, healthyMs: 120000, pollMs: 5000, max: 10 };
+let crashCfg = Object.assign({}, CRASH_DEFAULTS);
+const tracked = new Map(); // pid → {appId, artifactId, version, startedAt, timer, mode}
+
+function untrack(pid) {
+  const entry = tracked.get(pid);
+  if (!entry) return null;
+  if (entry.timer) clearInterval(entry.timer);
+  tracked.delete(pid);
+  return entry;
+}
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e && e.code === "EPERM"; // running, just not ours to signal
+  }
+}
+
+/**
+ * Start watching one launched process.
+ * @returns {object|null} the tracking entry (tests read it)
+ */
+function trackLaunch({ appId, artifactId, version, pid, child }) {
+  const id = Number(pid);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  untrack(id); // a recycled pid always starts fresh
+
+  // Cap the watch list: drop the OLDEST watch rather than refusing the newest,
+  // so the process the user just started is always the one being observed.
+  while (tracked.size >= crashCfg.max) {
+    const oldest = [...tracked.values()].sort((a, b) => a.startedAt - b.startedAt)[0];
+    if (!oldest) break;
+    untrack(oldest.pid);
+  }
+
+  const entry = {
+    appId,
+    artifactId,
+    version: version == null ? null : String(version),
+    pid: id,
+    startedAt: Date.now(),
+    mode: child ? "child" : "poll",
+    timer: null,
+  };
+  tracked.set(id, entry);
+
+  if (child) {
+    child.once("exit", (code, signal) => {
+      if (tracked.get(id) !== entry) return;
+      onWatchedExit(entry, { code, signal });
+    });
+    child.once("error", () => untrack(id));
+  } else {
+    entry.timer = setInterval(() => {
+      if (tracked.get(id) !== entry) return;
+      if (alive(id)) return;
+      onWatchedExit(entry, { code: null, signal: null, unknownExit: true });
+    }, crashCfg.pollMs);
+    // never hold the hub (or `nx launch`) open just to keep watching
+    if (typeof entry.timer.unref === "function") entry.timer.unref();
+  }
+  return entry;
+}
+
+/** A watched process ended: score it, update the counter, tell the UI. */
+function onWatchedExit(entry, { code, signal, unknownExit } = {}) {
+  untrack(entry.pid);
+  const uptime = Date.now() - entry.startedAt;
+  const label = `${entry.appId}/${entry.artifactId}`;
+  let changed = false;
+
+  if (uptime >= crashCfg.healthyMs) {
+    // SPEC: a run of ≥120s clears the counter — whatever happened after that
+    // is the app's own business, not a failed update.
+    changed = Boolean(stateStore.resetCrashes(entry.appId, entry.artifactId));
+    if (changed) config.log(`crash counter reset for ${label} — ran ${Math.round(uptime / 1000)}s`);
+  } else {
+    // Exit code semantics. With a ChildProcess we have the real thing (a
+    // signal death — SIGSEGV & friends — is "≠ 0" too). In poll mode there is
+    // no code at all: a short-lived process is scored as a crash, which also
+    // catches "the user opened it and quit again immediately". That is
+    // acceptable because the counter is advisory, needs THREE of them, and any
+    // single ≥120s run wipes it.
+    const badExit = unknownExit ? true : code !== 0;
+    if (badExit && uptime < crashCfg.crashMs) {
+      const rec = stateStore.recordCrash(entry.appId, entry.artifactId, entry.version);
+      changed = true;
+      config.log(
+        `crash #${rec.count} for ${label} ${entry.version || "?"} — ` +
+          `exit ${unknownExit ? "unknown (polled)" : signal || code} after ${uptime}ms`
+      );
+    }
+  }
+
+  if (!changed) return;
+  try {
+    discovery.remerge();
+  } catch (_) {
+    /* cache may be empty (CLI, tests) */
+  }
+  emit({ type: "state-changed" });
+}
+
+/** Engines announce their detached children here; require lazily like the engine. */
+function spawnHook() {
+  if (deps.spawnHook) return deps.spawnHook; // test hook
+  try {
+    // eslint-disable-next-line global-require
+    return require("./install/util");
+  } catch (_) {
+    return null;
+  }
 }
 
 /** Launch is immediate (not queued) — SPEC: window.nxhub.launch → engine.launch. */
@@ -618,7 +965,36 @@ async function launch(appId, artifactId) {
     signal: undefined,
   };
   config.log(`launch ${app.id}/${artifact.id}`);
-  return engine.launch({ app, artifact, installedPath, ctx });
+
+  // v0.6: collect whatever the engine spawns while it is launching, so the
+  // watchdog below can attach to the real ChildProcess (exit code + uptime).
+  const util = spawnHook();
+  const spawned = [];
+  const off =
+    util && typeof util.onSpawn === "function" ? util.onSpawn((child) => child && spawned.push(child)) : null;
+  let result;
+  try {
+    result = await engine.launch({ app, artifact, installedPath, ctx });
+  } finally {
+    if (off) off();
+  }
+
+  const pid = result && result.pid;
+  if (pid) {
+    // Match by pid: an engine may spawn helpers (adb, a wrapper) — only the
+    // process it reports as the app is worth watching.
+    const child = spawned.find((c) => c && c.pid === pid) || null;
+    trackLaunch({
+      appId: app.id,
+      artifactId: artifact.id,
+      // the version we are watching is the INSTALLED one, which is what the
+      // crash counter is keyed on
+      version: (rec && rec.version) || (artifact.installed && artifact.installed.version) || null,
+      pid,
+      child,
+    });
+  }
+  return result;
 }
 
 /* ------------------------------------------------------------------ */
@@ -765,6 +1141,14 @@ function _reset() {
   downloads.limit = 0;
   downloads.active = 0;
   downloads.waiters.length = 0;
+  for (const pid of [...tracked.keys()]) untrack(pid);
+  crashCfg = Object.assign({}, CRASH_DEFAULTS);
+}
+
+/** test hook: shrink the 30s/120s/5s windows so the suite stays fast. */
+function _setCrashConfig(next = {}) {
+  crashCfg = Object.assign({}, crashCfg, next);
+  return crashCfg;
 }
 
 module.exports = {
@@ -783,6 +1167,10 @@ module.exports = {
   setDownloadLimit,
   downloadStats,
   withDownloadSlot,
+  trackLaunch,
+  findZstd,
   _reset,
+  _setCrashConfig,
   _jobs: jobs,
+  _tracked: tracked,
 };

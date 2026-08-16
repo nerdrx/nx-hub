@@ -40,3 +40,55 @@ test("runShell reports success, failure with output tail, and timeouts", async (
   assert.strictEqual(slow.ok, false);
   assert.strictEqual(slow.timedOut, true);
 });
+
+test("auto-run: fires on install when enabled, skips privileged on policy installs, off by default", async (t) => {
+  const helpers = require("./helpers");
+  const env = helpers.useTempEnv();
+  t.after(() => env.cleanup());
+  const config = require("../../src/main/config");
+  const jobsMod = require("../../src/main/jobs");
+  const fs = require("fs");
+  const path = require("path");
+  const marker = path.join(env.root, "ran.txt");
+
+  const events = [];
+  jobsMod._reset();
+  const app = { id: "demo", name: "Demo", latest: { version: "2.0" } };
+  const artifact = {
+    id: "a", kind: "archive-dir", platform: "linux", label: "A",
+    assetName: "a.zip", assetUrl: "u", sourceVersion: "2.0",
+    postInstallCmd: `touch ${marker}`,
+  };
+  jobsMod.init({
+    emit: (e) => events.push(e),
+    engine: { install: async () => ({ version: "2.0", path: env.root, launchable: false }) },
+    github: { downloadAsset: async () => ({ sha256: "x", verified: false }) },
+    resolve: () => ({ app, artifact }),
+  });
+
+  // default off → no marker
+  config.save({});
+  jobsMod.install("demo", "a");
+  await new Promise((r) => setTimeout(r, 250));
+  assert.strictEqual(fs.existsSync(marker), false, "off by default");
+
+  // enabled → runs
+  config.save({ autoRunPostInstallCmd: true });
+  jobsMod.install("demo", "a");
+  await new Promise((r) => setTimeout(r, 400));
+  assert.strictEqual(fs.existsSync(marker), true, "auto-ran when enabled");
+  fs.rmSync(marker, { force: true });
+
+  // privileged + policy origin → skipped
+  artifact.postInstallCmd = `sudo touch ${marker}`;
+  jobsMod.install("demo", "a", { origin: "policy" });
+  await new Promise((r) => setTimeout(r, 400));
+  assert.strictEqual(fs.existsSync(marker), false, "privileged background install leaves the note");
+
+  // per-app override wins over global
+  config.save({ autoRunPostInstallCmd: true, appPrefs: { demo: { autoRunCmd: false } } });
+  artifact.postInstallCmd = `touch ${marker}`;
+  jobsMod.install("demo", "a");
+  await new Promise((r) => setTimeout(r, 400));
+  assert.strictEqual(fs.existsSync(marker), false, "per-app off overrides global on");
+});

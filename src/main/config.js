@@ -54,6 +54,7 @@ const APP_PREF_KEYS = [
   "launchEnv",
   "hidden",
   "releaseFallback",
+  "autoRunCmd",
 ];
 
 function defaults() {
@@ -76,6 +77,13 @@ function defaults() {
     preferredDeviceSerial: null,
     // CLI: keep ~/.local/bin/nx pointing at this install (src/cli/shim.js)
     cliShim: true,
+    // Run an artifact's overlay postInstallCmd automatically after a
+    // successful install/update (privileged cmds skip on background installs)
+    autoRunPostInstallCmd: false,
+    // v0.6: hub-to-hub on the LAN — gates the UDP beacon AND the :9023 server
+    // (src/main/fleet). Off means this hub is neither discoverable nor
+    // reachable; already-paired peers simply go offline.
+    fleet: true,
   };
 }
 
@@ -129,6 +137,8 @@ function sanitizeAppPref(raw) {
   if (typeof raw.hidden === "boolean") out.hidden = raw.hidden;
   // false = latest-release-only (the pre-0.2.6 behavior), per user request
   if (typeof raw.releaseFallback === "boolean") out.releaseFallback = raw.releaseFallback;
+  // absent = inherit the global autoRunPostInstallCmd setting
+  if (typeof raw.autoRunCmd === "boolean") out.autoRunCmd = raw.autoRunCmd;
 
   if (typeof raw.skippedVersion === "string" && raw.skippedVersion.trim()) {
     out.skippedVersion = raw.skippedVersion.trim();
@@ -223,6 +233,8 @@ function sanitize(raw) {
   s.startMinimized = bool(s.startMinimized, false);
   s.createDesktopEntries = bool(s.createDesktopEntries, true);
   s.cliShim = bool(s.cliShim, true);
+  s.autoRunPostInstallCmd = bool(s.autoRunPostInstallCmd, false);
+  s.fleet = bool(s.fleet, true); // v0.6
   const maxDl = Math.floor(Number(s.maxConcurrentDownloads));
   s.maxConcurrentDownloads = Number.isFinite(maxDl) && maxDl >= 1 ? Math.min(maxDl, 8) : defaults().maxConcurrentDownloads;
   s.preferredDeviceSerial = trimmedString(s.preferredDeviceSerial);
@@ -275,6 +287,13 @@ function effectiveUpdatePolicy(settings, appId) {
   if (UPDATE_POLICIES.includes(pref.updatePolicy)) return pref.updatePolicy;
   const s = settings || load();
   return UPDATE_POLICIES.includes(s.updatePolicy) ? s.updatePolicy : "notify";
+}
+
+/** Per-app autoRunCmd overrides the global autoRunPostInstallCmd. */
+function effectiveAutoRunCmd(settings, appId) {
+  const pref = getAppPref(settings, appId);
+  if (typeof pref.autoRunCmd === "boolean") return pref.autoRunCmd;
+  return Boolean(settings.autoRunPostInstallCmd);
 }
 
 function effectiveIncludePrereleases(settings, appId) {
@@ -505,6 +524,7 @@ module.exports = {
   getAppPref,
   effectiveUpdatePolicy,
   effectiveIncludePrereleases,
+  effectiveAutoRunCmd,
   exportSettings,
   importSettings,
   autostartDir,
