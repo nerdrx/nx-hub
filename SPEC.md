@@ -394,6 +394,110 @@ then continue the normal pipeline with the reconstructed file. ANY failure →
 silent fallback to the full download. Linux-only v1. Progress phase message
 notes "delta" so the UI can show the savings.
 
+## v0.7 "fabric" (frozen 2026-08-16)
+
+### Cross-hub stacks ([stacks-fabric] + [fleet-fabric])
+Step gains optional `peer` (fleet peer id). A peered step: fleet.remoteLaunch
+(existing) instead of jobs.launch; health gates on a peered step run REMOTELY:
+new fleet message `probe {rid, port}` → `probe-result {rid, open}` (remote
+TCP-connects 127.0.0.1:port); health type "connector" on a peered step is
+invalid (drop to delay) — the remote's bus is not visible here. New health
+type `peer-online` (gate = peer beacon/session alive; also the implicit gate
+after a wake step). New step type field `action: "launch"(default) | "wake"`:
+wake sends WOL magic packets (UDP 9 + 7, broadcast, 3×) to the peer's stored
+mac, then gates peer-online (default timeoutMs 120000). Stop for peered steps:
+fleet message `stop {rid, appId}` → remote does its polite bus/SIGTERM dance.
+
+### WOL + peer MAC ([fleet-fabric])
+After a session socket connects, resolve the peer's MAC from /proc/net/arp
+(Linux; win32: `arp -a` parse) keyed by the socket's remote IP; persist as
+peer.mac in fleet.json (refresh on every session). fleet.wake(peerId) → bool.
+IPC: fleetWake(peerId). CLI: `nx fleet wake <peer>`.
+
+### LAN asset seeding ([fleet-fabric])
+The fleet HTTP server (same port :9023, plain GET paths, NOT websocket) gains
+`GET /asset/<sha256>?auth=<hmac(secret, sha256+yyyymmddhh)>` — serves a file
+from dataDir/downloads or any installed kept-AppImage matching that sha256
+(hub maintains an index dataDir/asset-index.json: sha256 → path, updated after
+every verified download/install; entries validated on serve). Download path in
+jobs: when a .sha256 sidecar gives the expected hash, FIRST ask online peers
+(fleet.findAsset(sha256) → {peerId, size} via new WS message `asset-query` /
+`asset-have`), fetch over the authed HTTP GET, verify sha256 as usual; any
+failure → GitHub. Progress messages say "from <peer name>". Setting
+`lanSeeding` default true.
+
+### nx dev ([dev-tools])
+dataDir/dev.json: {links:[{appId, path, launchCmd?, name?}]}. CLI: `nx dev
+link <path> [--app <id>] [--cmd <c>]` (id defaults to basename; validates path
+exists), `nx dev unlink <id>`, `nx dev ls`, `nx dev run <id>` (spawn detached,
+cwd=path, launchCmd or ./<the app's known binary heuristic> — reuse engines'
+pickBinary via lazy require). Discovery: apps gain `devLink: {path}` when ids
+match; model flag only. Launcher renders a dev-badged tile per link
+(launch via new IPC devRun(id); getDevLinks() lists; devUnlink(id)).
+
+### nx bisect ([dev-tools])
+CLI-only. `nx bisect <app> [artifact]` starts: state dataDir/bisect.json
+{appId, artifactId, tags[], lo, hi, current}; installs midpoint via the
+existing installVersion pipeline; `nx bisect good|bad|skip|reset|status`
+narrows; on convergence prints the first bad release + its notes and offers
+`nx bisect reset` (reinstall the version installed before bisect began —
+recorded at start).
+
+## v0.8 "trust & memory" (frozen 2026-08-16)
+
+### Watchdog ([guardian])
+appPrefs.keepAlive (bool, default absent/off; UI in app options). Supervisor
+module src/main/supervisor.js: subscribes to launch-tracking exits (util.onSpawn
+world from v0.6): unexpected exit (not crash-loop-flagged, not stopped by a
+stack/hub action, not a clean connector `bye` within 5s before exit) →
+relaunch via jobs.launch with backoff 2s·4s·8s…60s, max 5 within 10min, then
+give up + toast. crashLoop suspends keepAlive for that version.
+
+### Sandbox profiles ([guardian])
+Overlay per app: `sandbox: "confined" | "offline" | "none"` (+ appPrefs
+override `sandbox` same values | absent=inherit overlay|none). When bwrap is
+on PATH and profile ≠ none, engines' launch wraps the command: confined =
+fresh tmpfs $HOME with only the app's install dir + its config dir
+(overlay `configPaths`) bound rw, display sockets (wayland/X11/dri/pulse)
+bound, network shared; offline = confined minus network (--unshare-net). No
+bwrap → log once, launch unwrapped. Never sandbox tarball-prefix/apk kinds.
+
+### Signed releases ([provenance])
+node:crypto ed25519. Keypair generated once at
+/run/media/nerdrx/Lex/claude/tools/nx-signing/ (private 0600, NEVER in any
+repo); public key (32-byte hex) pinned in src/main/provenance.js. release.sh
+signs every asset: `<asset>.sig` = ed25519(privkey, sha256(asset)) hex.
+Verification in the download pipeline: when a .sig asset exists for the
+downloaded file AND the repo owner is a pinned-key owner (map {nerdrx: <pub>}
+in provenance.js), verify after hash-check; mismatch = hard fail (no
+fallback); absent sig = allowed (log "unsigned"). Setting
+`requireSignatures` (default false) → unsigned pinned-owner assets refuse.
+`.sig` already classifier-ignored. Badge field artifact.signed: true|false|null.
+
+### Flight recorder ([recorder])
+src/main/recorder.js: init({emit-tap}) — the ipc emit fan-out calls
+recorder.record(evt) (one wired line, orchestrator adds); filters/normalizes
+{ts, type, appId?, ...} for types: job-done/job-error, update-available,
+stack-progress (terminal phases only), connector-changed (join/leave diffs),
+fleet-progress (terminal), crash records (poll state), install/uninstall.
+Append JSONL dataDir/events.jsonl, rotate at 5MB→events.1.jsonl (keep 2).
+query({since, type, appId, limit}) reads back newest-first. IPC getEvents(q).
+CLI `nx log [--since 24h] [--type x] [--app y] [--json]`. UI: Activity sheet
+(timeline list, filter chips) — [ui-8].
+
+### Config time machine ([timemachine])
+Overlay per app: `configPaths: ["~/.config/foo", ...]`. Module
+src/main/snapshots.js: maybeSnapshot(app, settings, reason) — tar.zst (zstd,
+system tar) of existing configPaths → dataDir/snapshots/<appId>/<ts>-<ver>-
+<reason>.tar.zst, retention keep last 5 per app; called (orchestrator wires
+one line each) before install-with-existing-install (reason "pre-update"),
+before uninstall ("pre-uninstall"). list(appId), restore(appId, file) (tar
+back over $HOME with -C ~, after snapshotting current as "pre-restore"),
+remove. IPC: getSnapshots(appId), restoreSnapshot(appId, file),
+deleteSnapshot. Rollback UI offers "also restore config from before the
+update" when a matching pre-update snapshot exists. CLI `nx snapshots <app>`,
+`nx restore <app> [file]`.
+
 ## Future (not v1 — do not build, do not preclude)
 
 ## Verification
