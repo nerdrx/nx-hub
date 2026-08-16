@@ -2312,6 +2312,15 @@ async function boot() {
     schedule();
   }
   if (ui.caps.getDeviceInfo && state.adb && state.adb.connected) refreshDeviceInfo();
+
+  // Safety heartbeat: a state-changed emitted in the gap between the hub's
+  // first refresh and onEvent attaching is simply missed — with no re-pull the
+  // grid would sit on skeletons forever (seen as an e2e flake). A slow poll
+  // heals every missed-event class; skipped while hidden.
+  window.setInterval(() => {
+    if (!document.hidden) pullState();
+  }, 10000);
+
   window.__nxhubBooted = true;
 }
 

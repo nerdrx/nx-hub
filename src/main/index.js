@@ -161,6 +161,14 @@ function createWindow({ minimized = false } = {}) {
     return { action: "deny" };
   });
 
+  // Under the e2e harness, surface renderer console errors into the hub log —
+  // a boot exception otherwise freezes the UI at skeletons with no trace.
+  if (process.env.NX_HUB_E2E === "1") {
+    mainWindow.webContents.on("console-message", (_e, level, message, line, sourceId) => {
+      if (level >= 2) config.log(`renderer console[${level}]: ${message} (${sourceId}:${line})`);
+    });
+  }
+
   mainWindow.webContents.on("render-process-gone", (_e, details) =>
     config.log(`renderer gone: ${JSON.stringify(details)}`)
   );
