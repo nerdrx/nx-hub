@@ -212,8 +212,8 @@
      "platform": "linux",
      "stripPrefix": "",
      "prefix": "~/.local",
-     "postInstallNote": "Right-click the desktop → Desktop and Wallpaper → type 'NX Nebula (Live)'. After an update, restart Plasma to reload the QML: systemctl --user restart plasma-plasmashell.service",
-     "postInstallCmd": "systemctl --user restart plasma-plasmashell.service"
+     "postInstallNote": "Right-click the desktop → Desktop and Wallpaper → type 'NX Nebula (Live)'. After an update, run the restart command so Plasma reloads the QML and the pointer-bridge helper picks up its new binary.",
+     "postInstallCmd": "systemctl --user try-restart nx-cursor.service; systemctl --user restart plasma-plasmashell.service"
     }
    ]
   },
