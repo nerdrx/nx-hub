@@ -166,6 +166,12 @@ export function renderSettingsPanel(draft, ctx = {}) {
         <p class="field-note">Single apps can override this under “App options…”.</p>
         ${check('includePrereleases', 'Include pre-releases', !!d.includePrereleases, 'alpha/beta tags count as updates')}
         ${check('notifications', 'Desktop notifications', d.notifications !== false, 'a system notification when an update lands')}
+        ${check(
+          'requireSignatures',
+          'Require signed releases',
+          !!d.requireSignatures,
+          'refuse unsigned assets from trusted publishers'
+        )}
         <label class="lbl" for="set-interval">Check for updates every (hours)</label>
         <input id="set-interval" class="input input-num" type="number" min="0" max="168" step="1" data-field="checkIntervalHours" value="${esc(d.checkIntervalHours ?? 6)}">
       </section>

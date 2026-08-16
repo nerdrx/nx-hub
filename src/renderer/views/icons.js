@@ -166,6 +166,36 @@ export const power = `
   <path d="M12 3.5v8"/><path d="M7.1 6.6a7.2 7.2 0 1 0 9.8 0"/>
 </svg>`;
 
+/* ------------------------------------------------------------------ v0.8 */
+
+/**
+ * Shield with a check — a signed release. Tiny (12px) because it sits inline in
+ * an artifact row's label, next to the size.
+ */
+export const shield = `
+<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 3.2 19 6v5.4c0 4-2.9 7.5-7 9.4-4.1-1.9-7-5.4-7-9.4V6z"/><path d="m9 12 2.2 2.2L15.4 10"/>
+</svg>`;
+
+/** The same shield, struck through — an unsigned asset under a strict setting. */
+export const shieldOff = `
+<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 3.2 19 6v5.4c0 4-2.9 7.5-7 9.4-4.1-1.9-7-5.4-7-9.4V6z"/><path d="m4 4 16 16"/>
+</svg>`;
+
+/** Shield around a heart — the watchdog is keeping this app alive. */
+export const shieldHeart = `
+<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 3.2 19 6v5.4c0 4-2.9 7.5-7 9.4-4.1-1.9-7-5.4-7-9.4V6z"/>
+  <path d="M12 15.4 9.3 12.8a1.8 1.8 0 0 1 2.7-2.35 1.8 1.8 0 0 1 2.7 2.35z"/>
+</svg>`;
+
+/** Archive box — the config snapshots section. */
+export const archive = `
+<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+  <rect x="3" y="4.5" width="18" height="4.5"/><path d="M4.8 9v9.3a1.2 1.2 0 0 0 1.2 1.2h12a1.2 1.2 0 0 0 1.2-1.2V9"/><path d="M10 13h4"/>
+</svg>`;
+
 /** Warning triangle — the crash-loop banner. */
 export const warn = `
 <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">

@@ -697,6 +697,284 @@ test('a delta install shows the Δ chip and its closing line', async () => {
   assert.ok(!after.includes('banner-crash'), 'and the fresh install has no crash history');
 });
 
+/* ------------------------------------------------------------------ v0.8 */
+
+test('the Activity sheet opens, groups by day and pages through the recording', async () => {
+  assert.equal(doc.getElementById('activity-btn').hidden, false, 'the header entry appeared with the caps probe');
+
+  await clickAndSettle({ 'data-act': 'activity' }, 200);
+  let sheet = dom.html('sheet-root');
+  assert.ok(sheet.includes('aria-label="Activity"'), 'the sheet opened');
+  assert.ok(sheet.includes('act-filters'), 'with its chips');
+  assert.ok(sheet.includes('class="act-row'), 'and rows');
+  assert.ok(sheet.includes('act-day-head'), 'under day separators');
+  assert.ok(sheet.includes('<span>Today</span>'), sheet.slice(sheet.indexOf('act-day-head'), 400));
+  assert.ok(!sheet.includes('act-chip">DAY<'), 'the recorder’s own dividers never become rows');
+
+  const firstPage = (sheet.match(/class="act-row/g) || []).length;
+  assert.equal(firstPage, 25, 'one page is one page');
+  assert.ok(sheet.includes('data-act="activity-more"'), 'and there is more behind it');
+
+  await clickAndSettle({ 'data-act': 'activity-more' }, 200);
+  sheet = dom.html('sheet-root');
+  const secondPage = (sheet.match(/class="act-row/g) || []).length;
+  assert.ok(secondPage > firstPage, `expected more rows, went ${firstPage} → ${secondPage}`);
+  assert.ok(!sheet.includes('data-act="activity-more"'), 'and that was the end of it');
+  assert.ok(sheet.includes('That is the whole recording'));
+  assert.ok(sheet.includes('<span>Yesterday</span>'), 'the older page brought its own separator');
+});
+
+test('the filter chips slice the timeline without another round trip', async () => {
+  await clickAndSettle({ 'data-act': 'activity-filter', 'data-filter': 'errors' }, 60);
+  let sheet = dom.html('sheet-root');
+  assert.ok(sheet.includes('act-chip">ERROR<'), 'errors survived');
+  assert.ok(!sheet.includes('act-chip">JOIN<'), 'and nothing else did');
+  assert.ok(!sheet.includes('act-chip">INSTALL<'));
+  assert.ok(sheet.includes('act-danger'), 'the tone came with them');
+
+  await clickAndSettle({ 'data-act': 'activity-filter', 'data-filter': 'watchdog' }, 60);
+  sheet = dom.html('sheet-root');
+  assert.ok(sheet.includes('act-chip">WATCHDOG<'));
+  assert.ok(!sheet.includes('act-chip">ERROR<'));
+
+  // A chip with nothing under it says so in its own words rather than blanking.
+  await clickAndSettle({ 'data-act': 'activity-filter', 'data-filter': 'stacks' }, 60);
+  assert.ok(/act-chip">STACK<|Nothing under “Stacks”/.test(dom.html('sheet-root')));
+
+  // An id that is not a chip is ignored rather than emptying the list.
+  await clickAndSettle({ 'data-act': 'activity-filter', 'data-filter': 'nonsense' }, 60);
+  assert.ok(dom.html('sheet-root').includes('act-chip">STACK<') || dom.html('sheet-root').includes('Nothing under'));
+
+  await clickAndSettle({ 'data-act': 'activity-filter', 'data-filter': 'all' }, 60);
+  assert.ok(dom.html('sheet-root').includes('act-chip">JOIN<'), 'All brings everything back');
+});
+
+test('a summary full of markup is escaped on the way to the sheet', () => {
+  const sheet = dom.html('sheet-root');
+  assert.ok(sheet.includes('&lt;img src=x onerror=alert(1)&gt;'), 'the seeded hostile summary rendered as text');
+  assert.ok(!sheet.includes('<img src=x'), sheet.slice(sheet.indexOf('INSTALL_FAILED') - 200, 200));
+});
+
+test('the sheet tails live events on a debounce, then lets go when it closes', async () => {
+  const before = (dom.html('sheet-root').match(/class="act-row/g) || []).length;
+  // A supervisor event both reaches the recorder and nudges the tail — which
+  // is the pairing the debounce exists for.
+  mock().simulateSupervisor('restarting', 'quadforge', 'blender-addon-linux');
+  await tick(300);
+  assert.equal(
+    (dom.html('sheet-root').match(/class="act-row/g) || []).length,
+    before,
+    'nothing re-renders immediately — that is the point of the debounce'
+  );
+  await tick(2200);
+  const after = (dom.html('sheet-root').match(/class="act-row/g) || []).length;
+  assert.equal(after, before + 1, `expected one new row, went ${before} → ${after}`);
+
+  await clickAndSettle({ 'data-act': 'close-sheet' }, 60);
+  assert.equal(dom.html('sheet-root'), '', 'the sheet closed');
+  mock().simulateSupervisor('restarting', 'quadforge', 'blender-addon-linux');
+  await tick(2400);
+  assert.equal(dom.html('sheet-root'), '', 'and its tail did not reopen it');
+});
+
+test('App options carries the snapshots, and they restore and delete', async () => {
+  await clickAndSettle({ 'data-act': 'app-options', 'data-app': 'wivrn-nx' }, 160);
+  let sheet = dom.html('sheet-root');
+  assert.ok(sheet.includes('Config snapshots'), 'the section rendered');
+  assert.ok(sheet.includes('data-act="snap-restore"'));
+  assert.ok(sheet.includes('before an update'), 'each row says why it was taken');
+
+  const before = mock().snapshots('wivrn-nx');
+  const target = before[1];
+
+  // Restoring asks first, and a "no" leaves the disk alone.
+  globalThis.window.__confirm = false;
+  await clickAndSettle({ 'data-act': 'snap-restore', 'data-app': 'wivrn-nx', 'data-snap': target.file }, 160);
+  assert.equal(mock().snapshots('wivrn-nx').length, before.length, 'a declined confirm restores nothing');
+
+  globalThis.window.__confirm = true;
+  await clickAndSettle({ 'data-act': 'snap-restore', 'data-app': 'wivrn-nx', 'data-snap': target.file }, 200);
+  const after = mock().snapshots('wivrn-nx');
+  assert.equal(after[0].reason, 'pre-restore', 'the current config was snapshotted first');
+  assert.match(dom.html('toasts'), /config restored/, dom.html('toasts'));
+  assert.equal(
+    (dom.html('toasts').match(/config restored/g) || []).length,
+    1,
+    'restoreSnapshot toasts on its own — the renderer must not say it twice'
+  );
+  assert.ok(dom.html('sheet-root').includes('before a restore'), 'and the list redrew with it');
+
+  // Deleting redraws from the answer, without a second round trip.
+  await clickAndSettle({ 'data-act': 'snap-delete', 'data-app': 'wivrn-nx', 'data-snap': target.file }, 160);
+  assert.ok(!mock().snapshots('wivrn-nx').some((s) => s.file === target.file), 'it is gone from the bridge');
+  assert.ok(!dom.html('sheet-root').includes(target.file), 'and from the sheet');
+  assert.match(dom.html('toasts'), /Snapshot deleted/);
+
+  await clickAndSettle({ 'data-act': 'close-sheet' }, 60);
+});
+
+test('keepAlive and the sandbox override round-trip through setAppPref', async () => {
+  await clickAndSettle({ 'data-act': 'app-options', 'data-app': 'quadforge' }, 160);
+  const sheet = dom.html('sheet-root');
+  assert.ok(sheet.includes('data-pref="keepAlive"'), 'the toggle rendered');
+  assert.ok(sheet.includes('restart this app if it exits unexpectedly'));
+  assert.ok(sheet.includes('Inherit (overlay: none)'), 'and the select spells out what it inherits');
+
+  // The stub DOM never parses innerHTML, so stand-ins play the controls.
+  const host = doc.getElementById('sheet-root');
+  const keep = doc.createElement('input');
+  keep.setAttribute('type', 'checkbox');
+  keep.setAttribute('data-pref', 'keepAlive');
+  keep.checked = true;
+  host.appendChild(keep);
+  const sandbox = doc.createElement('select');
+  sandbox.setAttribute('data-pref', 'sandbox');
+  sandbox.value = 'offline';
+  host.appendChild(sandbox);
+
+  await clickAndSettle({ 'data-act': 'save-app-prefs', 'data-app': 'quadforge' }, 200);
+  const pref = mock().state.settings.appPrefs.quadforge;
+  assert.equal(pref.keepAlive, true);
+  assert.equal(pref.sandbox, 'offline');
+  keep.remove();
+  sandbox.remove();
+
+  // …and "Inherit" writes null, which is what clears the override.
+  await clickAndSettle({ 'data-act': 'app-options', 'data-app': 'quadforge' }, 160);
+  const back = doc.createElement('select');
+  back.setAttribute('data-pref', 'sandbox');
+  back.value = 'inherit';
+  doc.getElementById('sheet-root').appendChild(back);
+  await clickAndSettle({ 'data-act': 'save-app-prefs', 'data-app': 'quadforge' }, 200);
+  assert.equal(mock().state.settings.appPrefs.quadforge.sandbox, null, 'null, not "inherit"');
+  back.remove();
+});
+
+test('the watchdog puts a line on the card, then a banner it can be dismissed from', async () => {
+  await clickAndSettle({ 'data-act': 'view', 'data-view': 'manage' }, 80);
+
+  // A restart on an app that is NOT on the bus, so nothing clears it early.
+  mock().simulateSupervisor('restarting', 'quadforge', 'blender-addon-linux');
+  await tick(80);
+  let grid = dom.html('grid');
+  assert.ok(grid.includes('class="sup-line"'), grid.slice(grid.indexOf('quadforge'), 400));
+  assert.match(grid, /Restarting — attempt \d…/);
+  assert.ok(!grid.includes('banner-sup'), 'a retry is not an alarm');
+
+  mock().simulateSupervisor('gave-up', 'quadforge', 'blender-addon-linux');
+  await tick(80);
+  grid = dom.html('grid');
+  assert.ok(grid.includes('banner-sup'), 'the give-up banners');
+  assert.match(grid, /kept exiting/);
+  assert.match(grid, /Start it by hand/, 'and says what to do next');
+  assert.ok(!grid.includes('class="sup-line"'), 'the retry line was superseded, not stacked');
+  assert.equal(
+    (dom.html('toasts').match(/kept exiting/g) || []).length,
+    1,
+    'main already toasted it — the renderer adds the standing copy only'
+  );
+
+  await clickAndSettle({ 'data-act': 'dismiss-supervisor', 'data-sup': 'quadforge::blender-addon-linux' }, 80);
+  assert.ok(!dom.html('grid').includes('banner-sup'), 'dismissed');
+
+  // An app that IS on the bus clears its own restart line the moment it reports
+  // in, because the presence that follows the event is the relaunch answering.
+  mock().simulateSupervisor('restarting', 'pulsenx', 'appimage-linux');
+  await tick(80);
+  assert.ok(dom.html('grid').includes('class="sup-line"'), 'it shows while the roster is stale');
+  mock().toggleBusClient('pulsenx');
+  await tick(120);
+  mock().toggleBusClient('pulsenx');
+  await tick(160);
+  assert.ok(!dom.html('grid').includes('class="sup-line"'), 'and goes when the app announces itself again');
+});
+
+test('the shield marks signed rows, and the strict setting calls out the unsigned ones', async () => {
+  let grid = dom.html('grid');
+  assert.ok(grid.includes('sig-ok'), 'signed rows wear the violet shield');
+  assert.ok(grid.includes('cryptographically signed release'));
+  assert.ok(!grid.includes('sig-none'), 'and unsigned ones say nothing while the setting is off');
+
+  mock().toggleRequireSignatures();
+  await tick(120);
+  grid = dom.html('grid');
+  assert.ok(grid.includes('sig-none'), 'now they do');
+  assert.ok(grid.includes('sig-ok'), 'and the signed ones are unchanged');
+
+  // The setting is editable from the panel and survives a save.
+  await clickAndSettle({ 'data-act': 'settings' }, 80);
+  assert.ok(dom.html('panel-root').includes('data-field="requireSignatures" checked'));
+  const box = doc.createElement('input');
+  box.setAttribute('type', 'checkbox');
+  box.setAttribute('data-field', 'requireSignatures');
+  box.checked = false;
+  doc.getElementById('panel-root').appendChild(box);
+  await clickAndSettle({ 'data-act': 'save-settings' }, 160);
+  assert.equal(mock().state.settings.requireSignatures, false, 'the checkbox reached setSettings');
+  box.remove();
+  await tick(80);
+  assert.ok(!dom.html('grid').includes('sig-none'), 'and the markers went with it');
+});
+
+test('a rollback with a matching pre-update snapshot offers to bring the config back', async () => {
+  mock().armRollback('quadforge', 'blender-addon-linux', '0.9.0', '0.8.0');
+  await tick(120);
+
+  await clickAndSettle({ 'data-act': 'rollback', 'data-app': 'quadforge', 'data-art': 'blender-addon-linux' }, 200);
+  const sheet = dom.html('sheet-root');
+  assert.ok(sheet.includes('data-act="rollback-confirm"'), 'the confirm became a sheet');
+  assert.ok(sheet.includes('0.9.0 → 0.8.0'));
+  assert.ok(sheet.includes('also restore the config from before the update'), 'with the affinity checkbox');
+  assert.ok(sheet.includes('data-rollback-config checked'), 'opted in by default');
+  assert.ok(sheet.includes('Files added since then are left alone'), 'and the overwrite semantics are spelled out');
+
+  const file = mock().snapshots('quadforge').find((s) => s.reason === 'pre-update' && s.version === '0.8.0').file;
+
+  // Untick it: the binary goes back, the config does not.
+  const box = doc.createElement('input');
+  box.setAttribute('type', 'checkbox');
+  box.setAttribute('data-rollback-config', '');
+  box.checked = false;
+  doc.getElementById('sheet-root').appendChild(box);
+  const beforeSnaps = mock().snapshots('quadforge').length;
+  await clickAndSettle({ 'data-act': 'rollback-confirm', 'data-app': 'quadforge', 'data-art': 'blender-addon-linux', 'data-snap': file }, 260);
+  box.remove();
+
+  let art = mock().state.apps.find((a) => a.id === 'quadforge').artifacts[0];
+  assert.equal(art.installed.version, '0.8.0', 'the rollback happened');
+  assert.equal(mock().snapshots('quadforge').length, beforeSnaps, 'and nothing was restored');
+  assert.equal(dom.html('sheet-root'), '', 'the sheet closed');
+
+  // Now with it ticked: the restore follows the rollback, and only then.
+  mock().armRollback('quadforge', 'blender-addon-linux', '0.9.0', '0.8.0');
+  await tick(120);
+  await clickAndSettle({ 'data-act': 'rollback', 'data-app': 'quadforge', 'data-art': 'blender-addon-linux' }, 200);
+  assert.ok(dom.html('sheet-root').includes('data-act="rollback-confirm"'));
+  const file2 = mock().snapshots('quadforge').find((s) => s.reason === 'pre-update' && s.version === '0.8.0').file;
+  await clickAndSettle({ 'data-act': 'rollback-confirm', 'data-app': 'quadforge', 'data-art': 'blender-addon-linux', 'data-snap': file2 }, 300);
+
+  art = mock().state.apps.find((a) => a.id === 'quadforge').artifacts[0];
+  assert.equal(art.installed.version, '0.8.0');
+  assert.equal(mock().snapshots('quadforge')[0].reason, 'pre-restore', 'the config came back too');
+  assert.match(dom.html('toasts'), /config restored/);
+});
+
+test('a rollback with no matching snapshot still uses the plain confirm', async () => {
+  // wivrn-nx deliberately has no pre-update snapshot at its rollback target, so
+  // nothing about the v0.2 flow changed for it.
+  mock().armRollback('quadforge', 'blender-addon-linux', '0.9.0', '0.5.0', { snapshot: false });
+  await tick(120);
+  globalThis.window.__confirm = false;
+  await clickAndSettle({ 'data-act': 'rollback', 'data-app': 'quadforge', 'data-art': 'blender-addon-linux' }, 200);
+  assert.equal(dom.html('sheet-root'), '', 'no sheet — there was nothing to offer');
+  assert.equal(
+    mock().state.apps.find((a) => a.id === 'quadforge').artifacts[0].installed.version,
+    '0.9.0',
+    'and a declined confirm rolls nothing back'
+  );
+  globalThis.window.__confirm = true;
+});
+
 test('the controller never throws on a junk event', () => {
   for (const ev of [null, 'nope', {}, { type: 'unknown' }, { type: 'update-available' }]) {
     app.onHubEvent(ev);

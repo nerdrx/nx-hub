@@ -4,6 +4,10 @@
 //
 // Nothing here touches the DOM or window.nxhub, so every rule is unit-testable.
 
+// v0.8 sandbox profiles live in guardian.js (they are shared with the app model
+// and the overlay); prefs only needs the value tuple to sanitise the pref.
+import { SANDBOX_VALUES as SANDBOX_PREF_VALUES } from './guardian.js';
+
 /** Policies the global setting accepts. */
 export const GLOBAL_POLICIES = ['notify', 'download', 'install'];
 /** Policies a single app accepts — "inherit" defers to the global setting. */
@@ -26,6 +30,10 @@ export const DEFAULT_APP_PREF = {
   releaseFallback: true,
   launchArgs: [],
   launchEnv: {},
+  // v0.8 — the watchdog is opt-in per app.
+  keepAlive: false,
+  // v0.8 — null (not '') is the "no per-app choice" write the bridge clears on.
+  sandbox: null,
 };
 
 function str(v) {
@@ -46,6 +54,10 @@ export function normalizeAppPref(pref) {
     releaseFallback: p.releaseFallback !== false,
     launchArgs: Array.isArray(p.launchArgs) ? p.launchArgs.map(str).filter((a) => a !== '') : [],
     launchEnv: normalizeEnv(p.launchEnv),
+    // v0.8 — watchdog + sandbox override. `sandbox` stays null unless it holds
+    // one of the three real profiles, so a junk value clears rather than sticks.
+    keepAlive: !!p.keepAlive,
+    sandbox: SANDBOX_PREF_VALUES.includes(p.sandbox) ? p.sandbox : null,
   };
   // v0.6 auto-run: boolean or ABSENT — absent means "inherit the global
   // setting", and null/undefined/junk all read as absent.

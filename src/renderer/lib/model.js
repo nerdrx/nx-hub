@@ -7,6 +7,7 @@
 import { artifactHasUpdate } from './version.js';
 import { normalizeAppPrefs, normalizeAppPref, isHiddenApp, isSkipped, GLOBAL_POLICIES } from './prefs.js';
 import { normalizeConnector, normalizeFieldDefs } from './connector.js';
+import { sandboxValue } from './guardian.js';
 
 export const DEFAULT_SETTINGS = {
   owners: ['nerdrx'],
@@ -27,6 +28,9 @@ export const DEFAULT_SETTINGS = {
   preferredDeviceSerial: '',
   // v0.6 — off by default: a post-install command is somebody else's shell line.
   autoRunPostInstallCmd: false,
+  // v0.8 — off by default per SPEC: an unsigned asset from a pinned-key owner
+  // is allowed (and logged) until the user asks for the stricter rule.
+  requireSignatures: false,
 };
 
 function bool(v, fallback) {
@@ -64,6 +68,7 @@ export function normalizeSettings(settings) {
     maxConcurrentDownloads: clampConcurrency(s.maxConcurrentDownloads),
     preferredDeviceSerial: typeof s.preferredDeviceSerial === 'string' ? s.preferredDeviceSerial : '',
     autoRunPostInstallCmd: bool(s.autoRunPostInstallCmd, DEFAULT_SETTINGS.autoRunPostInstallCmd),
+    requireSignatures: bool(s.requireSignatures, DEFAULT_SETTINGS.requireSignatures),
   };
 }
 
@@ -100,6 +105,10 @@ export function normalizeArtifact(artifact, latestVersion) {
     crashCount: crashCount(a),
     crashLoop: crashLooping(a),
     lastCrashAt: a.lastCrashAt || '',
+    // v0.8 — a `.sig` sibling exists for this asset. SPEC promises the field is
+    // ALWAYS present, so `false` here means "no signature", never "old build":
+    // that is what lets the unsigned marker be trusted.
+    hasSignature: !!a.hasSignature,
   };
 }
 
@@ -155,6 +164,15 @@ export function normalizeApp(app) {
     // getDevLinks()/devRun(), never from here.
     devLink:
       a.devLink && typeof a.devLink === 'object' ? { path: String(a.devLink.path || '') } : null,
+    // v0.8 — the watchdog and the sandbox. `sandboxPref` is the user's own
+    // choice and `sandbox` is the overlay's; keeping them apart is what lets
+    // the editor say "Inherit (overlay: confined)" instead of guessing.
+    keepAlive: !!a.keepAlive,
+    sandboxPref: sandboxValue(a.sandboxPref),
+    sandbox: sandboxValue(a.sandbox),
+    configPaths: asArray(a.configPaths)
+      .map((p) => (typeof p === 'string' ? p : String(p || '')))
+      .filter(Boolean),
   };
 }
 

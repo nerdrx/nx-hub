@@ -72,6 +72,10 @@ function artifact(a) {
     crashCount: a.crashCount || 0,
     crashLoop: !!a.crashLoop,
     lastCrashAt: a.lastCrashAt || '',
+    // v0.8 — a `.sig` sibling. release.sh signs everything, so the default is
+    // true and the interesting rows are the ones that opt OUT: they are what
+    // the unsigned marker and the requireSignatures setting are for.
+    hasSignature: a.hasSignature !== false,
   };
 }
 
@@ -133,6 +137,11 @@ function baseApps() {
       private: false,
       order: 1,
       unpublished: false,
+      // v0.8 — the overlay confines this one and names the config it owns, so
+      // the sandbox mark, the "Inherit (overlay: confined)" label and the
+      // snapshot section all have something real to say.
+      sandbox: 'confined',
+      configPaths: ['~/.config/wivrn', '~/.local/share/wivrn'],
       latest: { tag: 'v1.9.2', version: '1.9.2', publishedAt: iso(3), notes: NOTES_WIVRN, prerelease: false },
       // The overlay describes one of the two fields this app streams — the
       // other one has to render generically, which is the interesting case.
@@ -192,6 +201,10 @@ function baseApps() {
       private: false,
       order: 3,
       unpublished: false,
+      // v0.8 — the watchdog is on for this one: it is a background bridge, and
+      // an unnoticed exit is exactly what keepAlive exists for.
+      keepAlive: true,
+      configPaths: ['~/.config/pulsenx'],
       latest: { tag: 'v2.3.0', version: '2.3.0', publishedAt: iso(11), notes: NOTES_PULSE, prerelease: false },
       connectorFields: [
         { key: 'hr', label: 'Heart rate', unit: 'bpm', kind: 'number' },
@@ -238,6 +251,8 @@ function baseApps() {
           sourceVersion: '2.2.0',
           sourceTag: 'v2.2.0',
           fromOlderRelease: true,
+          // The 2.2.0 release predates release.sh signing — no `.sig` sibling.
+          hasSignature: false,
         }),
       ],
     },
@@ -300,6 +315,9 @@ function baseApps() {
           kind: 'blender-addon',
           assetName: 'quadforge-0.9.0.zip',
           size: 1_240_000,
+          // Built by CI rather than release.sh — the second unsigned row, so
+          // the strict setting lights up more than one card.
+          hasSignature: false,
         }),
       ],
     },
@@ -524,6 +542,9 @@ export function createMock() {
     preferredDeviceSerial: 'PA7HA0M123',
     // v0.6 — global auto-run stays off; wivrn-nx opts in per app.
     autoRunPostInstallCmd: false,
+    // v0.8 — SPEC default: unsigned assets from a pinned-key owner are allowed
+    // and logged. The toolbar flips it so the unsigned markers appear.
+    requireSignatures: false,
   };
 
   const state = {
@@ -615,6 +636,11 @@ export function createMock() {
   function runJob(appId, artifactId, { fail = false, target = '', delta = false, lan = '' } = {}) {
     const { app, art } = find(appId, artifactId);
     if (!app || !art) return null;
+    // v0.8 [timemachine]: maybeSnapshot() runs BEFORE an install that replaces
+    // an existing one. Doing it here (rather than at completion) is what makes
+    // the mock self-arming: every update leaves behind exactly the pre-update
+    // snapshot that a later rollback to that version will find.
+    if (art.installed && art.installed.version) pushSnapshot(appId, art.installed.version, 'pre-update');
     const jobId = `job-${++jobSeq}`;
     const job = { id: jobId, appId, artifactId, phase: 'download', pct: 0, message: '' };
     state.jobs = [...state.jobs.filter((j) => j.appId !== appId), job];
@@ -666,6 +692,12 @@ export function createMock() {
           artifactId,
           message: `checksum mismatch for ${art.assetName}`,
         });
+        record({
+          type: 'job-error',
+          appId,
+          artifactId,
+          summary: `${app.name} — ${art.label}: checksum mismatch for ${art.assetName}`,
+        });
         changed();
         return;
       }
@@ -697,6 +729,14 @@ export function createMock() {
           recompute(state.apps, state.settings);
           emit({ type: 'job-done', jobId, appId, artifactId });
           emit({ type: 'toast', level: 'info', message: `${app.name} — ${art.label} installed (${version})` });
+          record({
+            type: 'job-done',
+            appId,
+            artifactId,
+            summary: `${app.name} ${version} installed — ${
+              art.hasSignature ? 'signature verified' : 'signature unavailable'
+            }`,
+          });
           changed();
           return;
         }
@@ -1018,6 +1058,165 @@ export function createMock() {
   ];
   let devLinks = DEV_SEED();
   let devPid = 90210;
+
+  /* ------------------------------------------------ v0.8: the flight recorder */
+
+  // dataDir/events.jsonl, as query() hands it back: newest-first records of
+  // {ts, type, appId?, …, summary}. The seed is 40 entries spread over three
+  // local days and every type the recorder emits, so the day separators, all
+  // seven filter chips and the "Load more" cursor are all reachable without
+  // touching a single toolbar button.
+  const HOUR = 3600000;
+  const DAY = 86400000;
+
+  function EVENT_SEED() {
+    const now = Date.now();
+    // Anchored to local noon of each day so the three buckets stay three
+    // buckets whatever time of day the mock is opened.
+    const noon = (daysAgo) => {
+      const d = new Date(now - daysAgo * DAY);
+      d.setHours(12, 0, 0, 0);
+      return d.getTime();
+    };
+    const at = (daysAgo, hoursFromNoon, mins = 0) => noon(daysAgo) + hoursFromNoon * HOUR + mins * 60000;
+
+    const rows = [
+      // ---- today
+      ['job-done', 0, -0.4, 12, { appId: 'wivrn-nx', artifactId: 'tarball-prefix-linux' }, 'WiVRn NX 1.9.2 installed — signature verified'],
+      ['connector-join', 0, -0.6, 3, { appId: 'wivrn-nx' }, 'WiVRn NX 1.9.2 joined the bus (pid 40877)'],
+      ['connector-join', 0, -0.9, 41, { appId: 'pulsenx' }, 'PulseNX 2.2.0 joined the bus (pid 40211)'],
+      ['stack-progress', 0, -1.1, 8, { stackId: 'vr-night' }, 'Stack “VR Night” finished — 3 steps in 41s'],
+      ['supervisor', 0, -1.4, 22, { appId: 'pulsenx', artifactId: 'appimage-linux' }, 'PulseNX exited unexpectedly — restarting (attempt 1)', { action: 'restarting', attempt: 1, delayMs: 2000 }],
+      ['connector-leave', 0, -1.5, 2, { appId: 'pulsenx' }, 'PulseNX left the bus'],
+      ['job-error', 0, -2.2, 17, { appId: 'banish-protocol', artifactId: 'archive-dir-linux' }, 'checksum mismatch for limbo-protocol-linux-0.2.0.zip — the download was discarded'],
+      ['update-available', 0, -2.6, 5, { appId: 'oscgoesbrrr-nx-patches' }, 'OGB NX-Patches 1.6.0 is available (installed: 1.4.2)'],
+      ['fleet-progress', 0, -3.1, 30, { peerId: 'aa11bb22cc33dd44', appId: 'wivrn-nx' }, 'workshop-pc finished installing WiVRn NX 1.9.2'],
+      ['job-done', 0, -3.4, 9, { appId: 'quadforge', artifactId: 'blender-addon-linux' }, 'QuadForge 0.9.0 installed — signature unavailable'],
+      ['stack-progress', 0, -4.0, 44, { stackId: 'headset-arrives' }, 'Stack “Headset arrives” triggered by an adb device'],
+      ['connector-leave', 0, -4.6, 15, { appId: 'wivrn-nx' }, 'WiVRn NX left the bus'],
+      // A summary built from another program's output. It is markup-shaped on
+      // purpose: the renderer must escape it, and this is the row that proves it.
+      ['job-error', 0, -5.2, 6, { appId: 'wivrn-nx', artifactId: 'apk-adb-android' }, 'adb: install failed <img src=x onerror=alert(1)> "INSTALL_FAILED_VERSION_DOWNGRADE" & no device'],
+      ['supervisor', 0, -5.9, 38, { appId: 'oscgoesbrrr-nx-patches', artifactId: 'appimage-linux' }, 'OGB NX-Patches kept exiting — the watchdog gave up after 5 attempts', { action: 'gave-up', attempt: 5 }],
+
+      // ---- yesterday
+      ['job-done', 1, 1.2, 4, { appId: 'pulsenx', artifactId: 'appimage-linux' }, 'PulseNX 2.2.0 installed — signature verified'],
+      ['update-available', 1, 0.7, 19, { appId: 'wivrn-nx' }, 'WiVRn NX 1.9.2 is available (installed: 1.9.1)'],
+      ['connector-join', 1, 0.2, 51, { appId: 'pulsenx' }, 'PulseNX 2.2.0 joined the bus (pid 39106)'],
+      ['fleet-progress', 1, -0.4, 27, { peerId: 'aa11bb22cc33dd44', appId: 'pulsenx' }, 'workshop-pc finished installing PulseNX 2.2.0'],
+      ['fleet-progress', 1, -1.1, 3, { peerId: '99887766554433aa', appId: 'wivrn-nx' }, 'living-room could not be reached — the update was not sent'],
+      ['stack-progress', 1, -1.8, 36, { stackId: 'vr-night' }, 'Stack “VR Night” stopped at step 2 — the port never answered'],
+      ['job-error', 1, -2.4, 11, { appId: 'pulsenx', artifactId: 'windows-portable-windows' }, 'no signature for PulseNX-2.2.0-windows-portable.exe and signed releases are required'],
+      ['supervisor', 1, -3.0, 47, { appId: 'pulsenx', artifactId: 'appimage-linux' }, 'PulseNX exited unexpectedly — restarting (attempt 2)', { action: 'restarting', attempt: 2, delayMs: 4000 }],
+      ['connector-leave', 1, -3.5, 21, { appId: 'pulsenx' }, 'PulseNX left the bus'],
+      ['job-done', 1, -4.2, 33, { appId: 'oscgoesbrrr-nx-patches', artifactId: 'appimage-linux' }, 'OGB NX-Patches 1.4.2 installed — signature verified'],
+      ['connector-join', 1, -4.9, 8, { appId: 'wivrn-nx' }, 'WiVRn NX 1.9.1 joined the bus (pid 38220)'],
+      ['update-available', 1, -5.4, 14, { appId: 'pulsenx' }, 'PulseNX 2.3.0 is available (installed: 2.2.0)'],
+      ['stack-progress', 1, -6.0, 29, { stackId: 'vr-night-both-machines' }, 'Stack “VR Night (both machines)” woke NX-WIN and finished'],
+      ['supervisor', 1, -6.5, 12, { appId: 'pulsenx', artifactId: 'appimage-linux' }, 'PulseNX came back up — the watchdog stood down', { action: 'restarting', attempt: 3 }],
+
+      // ---- two days ago
+      ['job-done', 2, 2.0, 16, { appId: 'wivrn-nx', artifactId: 'apk-adb-android' }, 'WiVRn NX 1.8.0 installed onto PA7HA0M123 — signature verified'],
+      ['connector-join', 2, 1.4, 42, { appId: 'wivrn-nx' }, 'WiVRn NX 1.9.1 joined the bus (pid 37004)'],
+      ['fleet-progress', 2, 0.9, 7, { peerId: 'c0ffee11deadbeef', appId: 'wivrn-nx-windows' }, 'NX-WIN finished installing WiVRn NX for SteamVR 0.4.1'],
+      ['job-error', 2, 0.3, 25, { appId: 'quadforge', artifactId: 'blender-addon-linux' }, 'GitHub rate limit reached — discovery gave up for now'],
+      ['update-available', 2, -0.5, 39, { appId: 'quadforge' }, 'QuadForge 0.9.0 is available (nothing installed)'],
+      ['supervisor', 2, -1.2, 13, { appId: 'pulsenx', artifactId: 'appimage-linux' }, 'PulseNX exited unexpectedly — restarting (attempt 1)', { action: 'restarting', attempt: 1, delayMs: 2000 }],
+      ['connector-leave', 2, -1.9, 50, { appId: 'wivrn-nx' }, 'WiVRn NX left the bus'],
+      ['stack-progress', 2, -2.6, 4, { stackId: 'headset-arrives' }, 'Stack “Headset arrives” finished — 2 steps in 18s'],
+      ['job-done', 2, -3.3, 46, { appId: 'nx-hub', artifactId: 'appimage-linux' }, 'NX Hub 0.1.0 installed — signature verified'],
+      ['fleet-progress', 2, -4.1, 20, { peerId: 'aa11bb22cc33dd44', appId: 'oscgoesbrrr-nx-patches' }, 'workshop-pc started installing OGB NX-Patches 1.4.2'],
+      ['job-error', 2, -4.8, 31, { appId: 'wivrn-nx-windows', artifactId: 'windows-zip-windows' }, 'nothing installable on this machine — the Windows build was skipped'],
+      ['connector-join', 2, -5.5, 9, { appId: 'pulsenx' }, 'PulseNX 2.1.0 joined the bus (pid 35880)'],
+    ];
+
+    return rows.map(([type, d, h, m, ids, summary, data]) => ({
+      ts: at(d, h, m),
+      type,
+      ...ids,
+      summary,
+      ...(data ? { data } : {}),
+    }));
+  }
+
+  let events = EVENT_SEED();
+
+  /** Append the way the ipc emit-tap does: newest wins, the file only grows. */
+  function record(event) {
+    if (!event || !event.type) return null;
+    const row = { ts: Date.now(), ...event };
+    events = [row, ...events];
+    return row;
+  }
+
+  /**
+   * The recorder's own day dividers. SPEC has them in the stream; the renderer
+   * is documented to drop them and derive its own separators, so emitting them
+   * here is the only way that path stays exercised.
+   */
+  function withDayDividers(list) {
+    const out = [];
+    let day = '';
+    for (const e of list) {
+      const d = new Date(e.ts);
+      const key = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+      if (key !== day) {
+        day = key;
+        out.push({ ts: new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(), type: 'day', summary: key });
+      }
+      out.push(e);
+    }
+    return out;
+  }
+
+  /* ------------------------------------------------ v0.8: config snapshots */
+
+  // dataDir/snapshots/<appId>/<ts>-<ver>-<reason>.tar.zst, newest first.
+  //
+  // The OGB entry is the load-bearing one: its version matches the crash
+  // banner's "Roll back to 1.4.1", so the affinity checkbox is reachable from
+  // the default state without arming anything. WiVRn deliberately has NO
+  // pre-update at 1.9.1 — the miss path has to be reachable too.
+  const SNAPSHOT_SEED = () => ({
+    'wivrn-nx': [
+      { file: '2026-08-13T081200-1.9.1-pre-update.tar.zst', ts: iso(3), version: '1.9.1', reason: 'pre-uninstall', bytes: 2_340_000 },
+      { file: '2026-08-05T190400-1.9.0-pre-update.tar.zst', ts: iso(11), version: '1.9.0', reason: 'pre-update', bytes: 2_180_000 },
+      { file: '2026-07-28T101900-1.8.0-manual.tar.zst', ts: iso(19), version: '1.8.0', reason: 'manual', bytes: 1_960_000 },
+    ],
+    'oscgoesbrrr-nx-patches': [
+      { file: '2026-06-13T224100-1.4.1-pre-update.tar.zst', ts: iso(64), version: '1.4.1', reason: 'pre-update', bytes: 486_000 },
+      { file: '2026-05-02T113300-1.4.0-pre-update.tar.zst', ts: iso(106), version: '1.4.0', reason: 'pre-update', bytes: 470_000 },
+    ],
+    pulsenx: [
+      { file: '2026-08-05T072600-2.2.0-pre-update.tar.zst', ts: iso(11), version: '2.2.0', reason: 'pre-update', bytes: 41_000 },
+      { file: '2026-08-04T235900-2.2.0-pre-restore.tar.zst', ts: iso(12), version: '2.2.0', reason: 'pre-restore', bytes: 40_600 },
+    ],
+    // A filename that would break naive markup. Real filenames cannot look like
+    // this, which is exactly why the escaping has to be proven against one.
+    quadforge: [
+      { file: '2026-08-01T120000-0.8.0-"><img src=x onerror=alert(1)>.tar.zst', ts: iso(15), version: '0.8.0', reason: 'manual', bytes: 12_400 },
+    ],
+  });
+
+  let snapshots = SNAPSHOT_SEED();
+
+  const snapsFor = (appId) => (snapshots[appId] || []).slice();
+
+  /** maybeSnapshot(): newest first, retention keeps the last 5 per app. */
+  function pushSnapshot(appId, version, reason) {
+    if (!appId || !version) return null;
+    const now = new Date();
+    const stamp = now.toISOString().replace(/[-:]/g, '').replace(/\..*$/, '');
+    const snap = {
+      file: `${stamp}-${version}-${reason}.tar.zst`,
+      ts: now.toISOString(),
+      version: String(version),
+      reason,
+      bytes: 40_000 + Math.round(Math.random() * 2_000_000),
+    };
+    snapshots[appId] = [snap, ...snapsFor(appId).filter((s) => s.file !== snap.file)].slice(0, 5);
+    return snap;
+  }
 
   const fleetChanged = () => emit({ type: 'fleet-changed' });
   const findPeer = (id) => peers.find((p) => p.id === id) || null;
@@ -1443,6 +1642,68 @@ export function createMock() {
     async fleetWake(peerId) {
       return wakePeer(peerId);
     },
+
+    /* --------------------------------------------------------- v0.8 surface */
+
+    /**
+     * query({since, until, type, appId, limit}) → newest first. `until` is
+     * exclusive so the renderer's "lower until to the oldest ts held" cursor
+     * always advances instead of re-serving the same tail forever.
+     */
+    async getEvents(query) {
+      const q = query && typeof query === 'object' ? query : {};
+      let list = events.slice().sort((a, b) => b.ts - a.ts);
+      const until = Number(q.until);
+      const since = Number(q.since);
+      if (Number.isFinite(until) && until > 0) list = list.filter((e) => e.ts < until);
+      if (Number.isFinite(since) && since > 0) list = list.filter((e) => e.ts >= since);
+      if (q.type) list = list.filter((e) => e.type === q.type);
+      if (q.appId) list = list.filter((e) => e.appId === q.appId);
+      const limit = Math.max(1, Math.min(500, Number(q.limit) || 100));
+      // Dividers are added AFTER the slice: `limit` counts real records, which
+      // is the only reading under which a page size stays a page size.
+      return JSON.parse(JSON.stringify(withDayDividers(list.slice(0, limit))));
+    },
+
+    async getSnapshots(appId) {
+      return JSON.parse(JSON.stringify(snapsFor(appId)));
+    },
+
+    /**
+     * Untars over $HOME after snapshotting the current config as "pre-restore".
+     * It toasts on its own — the renderer is documented not to say it twice.
+     */
+    async restoreSnapshot(appId, file) {
+      const list = snapsFor(appId);
+      const snap = list.find((s) => s.file === file);
+      const app = state.apps.find((a) => a.id === appId);
+      if (!snap) return { ok: false, restored: [], preRestore: '' };
+      const preRestore = `${new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)}-${snap.version}-pre-restore.tar.zst`;
+      snapshots[appId] = [
+        { file: preRestore, ts: new Date().toISOString(), version: snap.version, reason: 'pre-restore', bytes: snap.bytes },
+        ...list,
+      ].slice(0, 5);
+      const restored = (app && app.configPaths) || ['~/.config/' + appId];
+      record({
+        type: 'job-done',
+        appId,
+        summary: `${(app && app.name) || appId}: config restored from ${snap.version} (${restored.length} path${restored.length === 1 ? '' : 's'})`,
+      });
+      changed();
+      emit({
+        type: 'toast',
+        level: 'info',
+        message: `${(app && app.name) || appId} — config restored from ${snap.version}`,
+      });
+      return { ok: true, restored: restored.slice(), preRestore };
+    },
+
+    /** Hands back the fresh list, so the section never needs a second trip. */
+    async deleteSnapshot(appId, file) {
+      const before = snapsFor(appId);
+      snapshots[appId] = before.filter((s) => s.file !== file);
+      return { ok: snapshots[appId].length !== before.length, snapshots: JSON.parse(JSON.stringify(snapshots[appId])) };
+    },
   };
 
   // ------------------------------------------------------------ dev helpers
@@ -1670,6 +1931,115 @@ export function createMock() {
       return runJob(appId, artifactId, { delta: true });
     },
 
+    /* -------------------------------------------------------- v0.8 helpers */
+
+    /** Read-only views the tests drive assertions from. */
+    events() {
+      return JSON.parse(JSON.stringify(events));
+    },
+    snapshots(appId) {
+      return appId ? JSON.parse(JSON.stringify(snapsFor(appId))) : JSON.parse(JSON.stringify(snapshots));
+    },
+    /**
+     * One fresh record, so the sheet's live tail (2s debounce) has something to
+     * arrive with while it is open.
+     */
+    logEvent(type = 'connector-join', appId = 'pulsenx') {
+      const app = state.apps.find((a) => a.id === appId);
+      return record({
+        type,
+        appId,
+        summary: `${(app && app.name) || appId} joined the bus (pid ${40000 + Math.floor(Math.random() * 9000)})`,
+      });
+    },
+    seedSnapshot(appId, version, reason = 'pre-update') {
+      const snap = pushSnapshot(appId, version, reason);
+      changed();
+      return snap ? JSON.parse(JSON.stringify(snap)) : null;
+    },
+
+    /**
+     * The watchdog, both endings. A give-up ALSO toasts from main — the mock
+     * has to do both or the renderer's "do not double-toast" rule is untested.
+     */
+    simulateSupervisor(action = 'restarting', appId = 'pulsenx', artifactId = 'appimage-linux') {
+      const app = state.apps.find((a) => a.id === appId);
+      if (!app) return null;
+      const attempt = action === 'gave-up' ? 5 : 1 + Math.floor(Math.random() * 3);
+      const ev = {
+        type: 'supervisor',
+        appId,
+        appName: app.name,
+        artifactId,
+        action,
+        attempt,
+        ...(action === 'restarting' ? { delayMs: 2000 * attempt } : {}),
+      };
+      emit(ev);
+      if (action === 'gave-up') {
+        emit({
+          type: 'toast',
+          level: 'error',
+          message: `${app.name} kept exiting — the watchdog stopped restarting it after ${attempt} attempts`,
+        });
+      }
+      record({
+        type: 'supervisor',
+        appId,
+        artifactId,
+        summary:
+          action === 'gave-up'
+            ? `${app.name} kept exiting — the watchdog gave up after ${attempt} attempts`
+            : `${app.name} exited unexpectedly — restarting (attempt ${attempt})`,
+        data: { action, attempt },
+      });
+      return ev;
+    },
+
+    /** Flip the strict-signature setting so the unsigned markers light up. */
+    toggleRequireSignatures() {
+      state.settings.requireSignatures = !state.settings.requireSignatures;
+      changed();
+      emit({
+        type: 'toast',
+        level: 'info',
+        message: state.settings.requireSignatures
+          ? 'Signed releases are now required — unsigned assets from trusted publishers are refused'
+          : 'Unsigned assets from trusted publishers are allowed again',
+      });
+      return state.settings.requireSignatures;
+    },
+
+    /** Flip keepAlive on an app, the way the options sheet would. */
+    toggleKeepAlive(appId = 'pulsenx') {
+      const app = state.apps.find((a) => a.id === appId);
+      if (!app) return null;
+      app.keepAlive = !app.keepAlive;
+      const prefs = state.settings.appPrefs || (state.settings.appPrefs = {});
+      prefs[appId] = { ...(prefs[appId] || {}), keepAlive: app.keepAlive };
+      changed();
+      return app.keepAlive;
+    },
+
+    /**
+     * Put an artifact one version back with a matching pre-update snapshot —
+     * the shortest route to the rollback-affinity checkbox from any state.
+     *
+     * `snapshot: false` arms the same rollback with NOTHING to offer, which is
+     * the other half of the matrix: that path must still use a plain confirm.
+     */
+    armRollback(appId = 'quadforge', artifactId = 'blender-addon-linux', from = '0.9.0', to = '0.8.0', opts = {}) {
+      const { art } = find(appId, artifactId);
+      if (!art) return null;
+      art.installed = { version: from, path: `/home/nerdrx/Applications/nx/${appId}/${artifactId}`, installedAt: new Date().toISOString() };
+      art.prevVersion = to;
+      art.rollbackAvailable = true;
+      if (opts.snapshot !== false) pushSnapshot(appId, to, 'pre-update');
+      recompute(state.apps, state.settings);
+      changed();
+      return { from, to };
+    },
+
     /* -------------------------------------------------------- v0.7 helpers */
 
     /** The cross-hub stack: wake NX-WIN, gate its helper's port, then go local. */
@@ -1783,7 +2153,13 @@ function toolbar(dev) {
     <button class="btn btn-ghost btn-sm" data-mock="lan">simulate LAN download</button>
     <button class="btn btn-ghost btn-sm" data-mock="lan-name">simulate "LAN party" download</button>
     <button class="btn btn-ghost btn-sm" data-mock="relink">restore dev links</button>
-    <button class="btn btn-ghost btn-sm" data-mock="dev-gone">toggle dev folder missing</button>`;
+    <button class="btn btn-ghost btn-sm" data-mock="dev-gone">toggle dev folder missing</button>
+    <button class="btn btn-ghost btn-sm" data-mock="sig">toggle require signatures</button>
+    <button class="btn btn-ghost btn-sm" data-mock="keepalive">toggle keep alive (PulseNX)</button>
+    <button class="btn btn-ghost btn-sm" data-mock="restarting">watchdog: restarting</button>
+    <button class="btn btn-ghost btn-sm" data-mock="gave-up">watchdog: gave up</button>
+    <button class="btn btn-ghost btn-sm" data-mock="arm-rollback">arm rollback + config snapshot</button>
+    <button class="btn btn-ghost btn-sm" data-mock="log-event">record a live event</button>`;
   bar.addEventListener('click', (ev) => {
     const el = ev.target instanceof Element ? ev.target.closest('[data-mock]') : null;
     if (!el) return;
@@ -1809,6 +2185,12 @@ function toolbar(dev) {
     else if (what === 'lan-name') dev.simulateLanNameJob();
     else if (what === 'relink') dev.relinkDev();
     else if (what === 'dev-gone') dev.toggleDevExists();
+    else if (what === 'sig') dev.toggleRequireSignatures();
+    else if (what === 'keepalive') dev.toggleKeepAlive();
+    else if (what === 'restarting') dev.simulateSupervisor('restarting');
+    else if (what === 'gave-up') dev.simulateSupervisor('gave-up');
+    else if (what === 'arm-rollback') dev.armRollback();
+    else if (what === 'log-event') dev.logEvent();
   });
   document.body.appendChild(bar);
 }

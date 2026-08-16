@@ -83,6 +83,31 @@ import { renderPeerChip, renderFleetSheet } from './views/fleet.js';
 import { parseHostPort } from './lib/devices.js';
 import { freedLabel, normalizeImportResult } from './lib/storage.js';
 import { esc } from './lib/html.js';
+import {
+  isFilterId,
+  mergeEvents,
+  normalizeEvents,
+  pageQuery,
+  hasMore,
+  PAGE_SIZE,
+  LIVE_DEBOUNCE_MS,
+} from './lib/events.js';
+import { renderActivitySheet } from './views/activity.js';
+import {
+  normalizeSnapshots,
+  rollbackSnapshot,
+  restoreConfirmText,
+  deleteConfirmText,
+  restoreResultText,
+} from './lib/snapshots.js';
+import { renderRollbackSheet } from './views/snapshots.js';
+import {
+  sandboxChoice,
+  sandboxFromChoice,
+  foldSupervisor,
+  pruneSupervisor,
+  dismissSupervisor,
+} from './lib/guardian.js';
 import * as icons from './views/icons.js';
 
 const LS_KEY = 'nxhub.ui.v1';
@@ -125,6 +150,14 @@ const V06_METHODS = [
  * the dev links and wake-on-LAN.
  */
 const V07_METHODS = ['getDevLinks', 'devRun', 'devUnlink', 'fleetWake'];
+
+/**
+ * Optional v0.8 bridge methods. The watchdog and the sandbox need nothing new —
+ * they ride setAppPref — and signatures ride the app model plus one setting, so
+ * this list is only the two surfaces that added IPC: the flight recorder and
+ * the config time machine. No getEvents → no Activity button at all.
+ */
+const V08_METHODS = ['getEvents', 'getSnapshots', 'restoreSnapshot', 'deleteSnapshot'];
 
 const ui = {
   loaded: false,
@@ -182,6 +215,17 @@ const ui = {
   // v0.7 — `nx dev link` checkouts. Empty until getDevLinks() answers, and
   // permanently empty in a build that has no such method.
   devLinks: [],
+  // v0.8 — the flight recorder. One flat newest-first list plus the paging
+  // cursor state; the chips slice it locally (see lib/events.js).
+  activity: { filter: 'all', events: [], loading: false, paging: false, error: '', more: false },
+  activityTimer: 0, // debounce for the live re-pull while the sheet is open
+  // v0.8 — config snapshots, per app: appId → { loading, error, snapshots }.
+  snapshots: new Map(),
+  snapBusy: '', // the snapshot file a restore/delete is currently working on
+  // v0.8 — watchdog news, keyed `${appId}::${artifactId}`.
+  supervisor: {},
+  // v0.8 — a rollback that has a matching pre-update snapshot to offer.
+  rollbackDraft: null,
 };
 
 let state = normalizeState(null);
@@ -245,7 +289,7 @@ function api() {
 function detectCaps() {
   const nx = api();
   const caps = {};
-  for (const m of [...V02_METHODS, ...V05_METHODS, ...V06_METHODS, ...V07_METHODS]) {
+  for (const m of [...V02_METHODS, ...V05_METHODS, ...V06_METHODS, ...V07_METHODS, ...V08_METHODS]) {
     caps[m] = !!(nx && typeof nx[m] === 'function');
   }
   return caps;
@@ -444,6 +488,10 @@ function renderSheet() {
     host.innerHTML = '';
     return;
   }
+  if (sheet.kind === 'activity') {
+    host.innerHTML = renderActivitySheet({ ...ui.activity, now: Date.now() });
+    return;
+  }
   if (sheet.kind === 'fleet') {
     host.innerHTML = renderFleetSheet({
       peers: ui.fleet.peers,
@@ -490,6 +538,22 @@ function renderSheet() {
       settings: state.settings,
       envError: ui.prefError,
       launchable: (app.artifacts || []).some((a) => a.launchable !== false),
+      caps: ui.caps,
+      snapshots: ui.snapshots.get(app.id) || { loading: true },
+      snapBusy: ui.snapBusy,
+      now: Date.now(),
+    });
+    return;
+  }
+  if (sheet.kind === 'rollback') {
+    const draft = ui.rollbackDraft;
+    if (!draft || draft.appId !== app.id) {
+      host.innerHTML = '';
+      return;
+    }
+    host.innerHTML = renderRollbackSheet(app, draft.target, draft.snapshot, {
+      restoreConfig: draft.restoreConfig,
+      busy: draft.busy,
     });
     return;
   }
@@ -524,6 +588,10 @@ function render() {
   if (manageHost) manageHost.hidden = launchView;
 
   const jobs = jobsForRender();
+  // v0.8 — a "restarting" line dies the moment its app turns up on the bus (the
+  // relaunch worked) or after it has simply aged out. Pruning at render time
+  // means no timer has to exist for it.
+  ui.supervisor = pruneSupervisor(ui.supervisor, { now: Date.now(), live: busClients() });
   const ctx = {
     settings: state.settings,
     prefs: prefsMap(),
@@ -538,6 +606,8 @@ function render() {
     clients: busClients(),
     // v0.7 — cards of apps that also have a checkout linked wear a DEV mark.
     devIds: devIds(ui.devLinks),
+    // v0.8 — the watchdog's restarting lines and give-up banners.
+    supervisor: ui.supervisor,
     now: Date.now(),
   };
 
@@ -663,6 +733,7 @@ async function saveSettings() {
     createDesktopEntries: d.createDesktopEntries !== false,
     cliShim: d.cliShim !== false,
     autoRunPostInstallCmd: !!d.autoRunPostInstallCmd,
+    requireSignatures: !!d.requireSignatures,
     maxConcurrentDownloads: clampConcurrency(d.maxConcurrentDownloads),
   };
   const ok = await call('setSettings', patch);
@@ -686,11 +757,17 @@ function openOptions(appId) {
     autoRunCmd: autoRunChoice(pref),
     launchArgsText: joinArgs(pref.launchArgs),
     envRows: envRows(pref.launchEnv),
+    // v0.8 — the APP MODEL is authoritative for these two: main mirrors the
+    // resolved pref onto the app, and the overlay is only visible there. Fall
+    // back to the raw pref so a build that mirrors nothing still round-trips.
+    keepAlive: app.keepAlive || !!pref.keepAlive,
+    sandbox: sandboxChoice({ sandboxPref: app.sandboxPref || pref.sandbox }),
   };
   ui.prefError = '';
   ui.sheet = { kind: 'options', appId };
   ui.openMenu = '';
   schedule();
+  loadSnapshots(appId);
 }
 
 function readPrefDraft() {
@@ -740,6 +817,9 @@ async function saveAppPrefs(appId) {
     autoRunCmd: autoRunFromChoice(d.autoRunCmd),
     launchArgs: parsed.args,
     launchEnv: envFromRows(d.envRows),
+    // v0.8 — same tri-state trick for the sandbox: null clears the override.
+    keepAlive: !!d.keepAlive,
+    sandbox: sandboxFromChoice(d.sandbox),
   };
   const ok = await call('setAppPref', appId, patch);
   if (ok !== null) {
@@ -787,6 +867,125 @@ async function openVersions(appId) {
     });
   }
   schedule();
+}
+
+/* ------------------------------------------------ v0.8 the flight recorder */
+
+/**
+ * Load one page. `append` lowers `until` to the oldest event already held; the
+ * live re-pull and the first open both ask for the newest page instead.
+ *
+ * Nothing is filtered on the bridge — see lib/events.js for why — so the same
+ * cursor is valid no matter which chip is active.
+ */
+async function loadActivity(opts = {}) {
+  if (!ui.caps.getEvents) {
+    ui.activity = { ...ui.activity, loading: false, error: 'This build has no flight recorder.' };
+    schedule();
+    return;
+  }
+  const append = !!opts.append;
+  if (append) ui.activity.paging = true;
+  else if (!opts.quiet) ui.activity.loading = true;
+  if (!opts.quiet) schedule();
+
+  const query = append ? pageQuery(ui.activity.events, PAGE_SIZE) : { limit: PAGE_SIZE };
+  try {
+    const page = normalizeEvents(await maybeCall('getEvents', query));
+    const before = ui.activity.events.length;
+    const merged = mergeEvents(ui.activity.events, page);
+    ui.activity = {
+      ...ui.activity,
+      events: merged,
+      error: '',
+      loading: false,
+      paging: false,
+      // The first page decides whether a "Load more" exists at all; a page that
+      // added nothing new ends the road either way.
+      more: append ? hasMore(before, merged.length, page.length, PAGE_SIZE) : page.length >= PAGE_SIZE,
+    };
+  } catch (err) {
+    ui.activity = {
+      ...ui.activity,
+      loading: false,
+      paging: false,
+      error: `Could not read the activity log: ${(err && err.message) || err}`,
+    };
+  }
+  schedule();
+}
+
+function openActivity() {
+  ui.sheet = { kind: 'activity' };
+  ui.openMenu = '';
+  ui.activity = { ...ui.activity, events: [], error: '', more: false, loading: true, paging: false };
+  schedule();
+  return loadActivity();
+}
+
+/**
+ * Live tail. The recorder writes on every job, so a naive re-pull per event
+ * would re-render the sheet several times a second during an install — hence
+ * one trailing 2s debounce, and only while the sheet is actually open.
+ */
+function bumpActivity() {
+  if (!ui.sheet || ui.sheet.kind !== 'activity' || !ui.caps.getEvents) return;
+  if (ui.activityTimer) return;
+  ui.activityTimer = window.setTimeout(() => {
+    ui.activityTimer = 0;
+    if (ui.sheet && ui.sheet.kind === 'activity') loadActivity({ quiet: true });
+  }, LIVE_DEBOUNCE_MS);
+}
+
+function clearActivityTimer() {
+  if (ui.activityTimer) window.clearTimeout(ui.activityTimer);
+  ui.activityTimer = 0;
+}
+
+/* --------------------------------------------------- v0.8 config snapshots */
+
+async function loadSnapshots(appId, opts = {}) {
+  if (!appId) return null;
+  if (!ui.caps.getSnapshots) {
+    ui.snapshots.set(appId, { loading: false, error: '', snapshots: [] });
+    return [];
+  }
+  if (!opts.quiet) {
+    ui.snapshots.set(appId, { ...(ui.snapshots.get(appId) || {}), loading: true, error: '' });
+    schedule();
+  }
+  try {
+    const list = normalizeSnapshots(await maybeCall('getSnapshots', appId));
+    ui.snapshots.set(appId, { loading: false, error: '', snapshots: list });
+    schedule();
+    return list;
+  } catch (err) {
+    ui.snapshots.set(appId, {
+      loading: false,
+      error: `Could not read the snapshots: ${(err && err.message) || err}`,
+      snapshots: [],
+    });
+    schedule();
+    return null;
+  }
+}
+
+/**
+ * restoreSnapshot() toasts on its own success (frozen surface), so the renderer
+ * only speaks up when the answer says otherwise — saying it twice is exactly
+ * the bug the devRun path already taught us to avoid.
+ */
+async function restoreSnapshotFile(appId, file, opts = {}) {
+  const app = (state.apps || []).find((a) => a.id === appId);
+  const res = await call('restoreSnapshot', appId, file);
+  if (res === null) return false;
+  if (res && res.ok === false) {
+    toast('error', restoreResultText(app, res));
+    return false;
+  }
+  // The restore snapshots the current config first, so the list grew.
+  await loadSnapshots(appId, { quiet: opts.quiet });
+  return true;
 }
 
 /* -------------------------------------------------------------- dev links */
@@ -1617,10 +1816,42 @@ async function onAction(act, el, ev) {
         toast('warn', 'No previous install kept for this artifact');
         break;
       }
+      // v0.8 rollback affinity: a pre-update snapshot taken at the version we
+      // are rolling BACK to holds the config as it stood before the update
+      // being undone. When one exists the confirm becomes a sheet, because a
+      // window.confirm() cannot carry a checkbox; when none does, nothing about
+      // this flow changes.
+      const snaps = ui.caps.getSnapshots ? await loadSnapshots(appId, { quiet: true }) : null;
+      const hit = rollbackSnapshot(snaps, target.prevVersion);
+      if (hit) {
+        ui.rollbackDraft = { appId, target, snapshot: hit, restoreConfig: true, busy: false };
+        ui.sheet = { kind: 'rollback', appId };
+        schedule();
+        break;
+      }
       if (!window.confirm(rollbackConfirmText(app, target))) break;
       ui.sheet = null;
       schedule();
       await call('rollback', appId, artId);
+      await pullState();
+      break;
+    }
+    case 'rollback-confirm': {
+      const draft = ui.rollbackDraft;
+      if (!draft) break;
+      const file = el.getAttribute('data-snap') || '';
+      // The checkbox is the user's last word; the draft is only the default.
+      const box = document.querySelector('[data-rollback-config]');
+      const alsoConfig = box ? !!box.checked : draft.restoreConfig !== false;
+      draft.busy = true;
+      ui.sheet = null;
+      ui.rollbackDraft = null;
+      schedule();
+      const ok = await call('rollback', appId, artId);
+      // Order matters: the binary goes back first, then its config. A restore
+      // over a still-new install would be read by the new version and possibly
+      // rewritten before the rollback ever landed.
+      if (ok !== null && alsoConfig && file) await restoreSnapshotFile(appId, file, { quiet: true });
       await pullState();
       break;
     }
@@ -1856,6 +2087,64 @@ async function onAction(act, el, ev) {
       break;
     }
 
+    /* ------------------------------------------------------------- v0.8 */
+
+    case 'activity':
+      await openActivity();
+      break;
+    case 'activity-filter': {
+      const next = el.getAttribute('data-filter') || 'all';
+      if (!isFilterId(next)) break;
+      ui.activity = { ...ui.activity, filter: next };
+      schedule();
+      break;
+    }
+    case 'activity-more':
+      await loadActivity({ append: true });
+      break;
+    case 'snap-restore': {
+      const file = el.getAttribute('data-snap') || '';
+      const app = (state.apps || []).find((a) => a.id === appId);
+      const data = ui.snapshots.get(appId) || {};
+      const snap = (data.snapshots || []).find((s) => s.file === file);
+      if (!snap) break;
+      if (!window.confirm(restoreConfirmText(app, snap))) break;
+      ui.snapBusy = file;
+      schedule();
+      await restoreSnapshotFile(appId, file);
+      ui.snapBusy = '';
+      schedule();
+      break;
+    }
+    case 'snap-delete': {
+      const file = el.getAttribute('data-snap') || '';
+      const app = (state.apps || []).find((a) => a.id === appId);
+      const data = ui.snapshots.get(appId) || {};
+      const snap = (data.snapshots || []).find((s) => s.file === file);
+      if (!snap) break;
+      if (!window.confirm(deleteConfirmText(app, snap))) break;
+      ui.snapBusy = file;
+      schedule();
+      const res = await call('deleteSnapshot', appId, file);
+      ui.snapBusy = '';
+      if (res !== null) {
+        // The call hands back the fresh list, so the section redraws from the
+        // answer rather than from another round trip.
+        if (res && Array.isArray(res.snapshots)) {
+          ui.snapshots.set(appId, { loading: false, error: '', snapshots: normalizeSnapshots(res.snapshots) });
+        } else {
+          await loadSnapshots(appId);
+        }
+        toast('info', 'Snapshot deleted');
+      }
+      schedule();
+      break;
+    }
+    case 'dismiss-supervisor':
+      ui.supervisor = dismissSupervisor(ui.supervisor, el.getAttribute('data-sup') || '');
+      schedule();
+      break;
+
     case 'update-app': {
       ui.toasts = ui.toasts.filter((t) => t.id !== el.getAttribute('data-id'));
       renderToasts();
@@ -1881,8 +2170,12 @@ function closeSheet() {
   ui.prefError = '';
   ui.stackDraft = null;
   ui.stackErrors = {};
+  ui.rollbackDraft = null;
   // The pairing countdown must never outlive the sheet that shows it.
   clearPairTimer();
+  // …and neither may the activity tail: a debounce that fires after the sheet
+  // is gone would re-render a surface nobody is looking at.
+  clearActivityTimer();
   ui.pair = blankPairState();
   schedule();
 }
@@ -1923,6 +2216,7 @@ function onHubEvent(ev) {
       ui.dismissedNotes.delete(artifactKey(ev.appId, ev.artifactId));
       saveUiPrefs();
       if (ev.appId === 'nx-hub') toast('info', 'Hub updated — restarting…', { sticky: true });
+      bumpActivity();
       pullState();
       break;
     }
@@ -1931,6 +2225,7 @@ function onHubEvent(ev) {
       // Background-policy failures stay quiet — the update badge and the
       // card's own hints carry the state; only user-initiated jobs toast.
       if (!ev.silent) toast('error', ev.message || 'Job failed');
+      bumpActivity();
       pullState();
       break;
     case 'toast':
@@ -1964,6 +2259,17 @@ function onHubEvent(ev) {
       ui.fleetJobs = foldFleetProgress(ui.fleetJobs, ev, Date.now());
       schedule();
       break;
+    /* ------------------------------------------------------------- v0.8 */
+
+    // The watchdog. A give-up ALSO arrives as an error toast from main, so this
+    // handler is deliberately silent — it only parks the standing copy on the
+    // card. Toasting here would say the same thing twice.
+    case 'supervisor':
+      ui.supervisor = foldSupervisor(ui.supervisor, ev, Date.now());
+      bumpActivity();
+      schedule();
+      break;
+
     case 'update-available': {
       const app = (state.apps || []).find((a) => a.id === ev.appId);
       const name = (app && app.name) || ev.appId || 'An app';
@@ -2274,6 +2580,11 @@ async function boot() {
     stacksBtn.innerHTML = icons.stack;
     stacksBtn.hidden = true; // until the caps probe says the bridge has stacks
   }
+  const activityBtn = document.getElementById('activity-btn');
+  if (activityBtn) {
+    activityBtn.innerHTML = icons.history;
+    activityBtn.hidden = true; // until the caps probe says the bridge records
+  }
   const searchIcon = document.getElementById('filter-icon');
   if (searchIcon) searchIcon.innerHTML = icons.search;
 
@@ -2293,6 +2604,7 @@ async function boot() {
 
   ui.caps = detectCaps();
   if (stacksBtn) stacksBtn.hidden = !ui.caps.getStacks;
+  if (activityBtn) activityBtn.hidden = !ui.caps.getEvents;
 
   const nx = api();
   if (nx && typeof nx.onEvent === 'function') {

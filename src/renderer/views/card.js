@@ -17,6 +17,12 @@ import {
 import { artifactActions, platformLabel } from '../lib/actions.js';
 import { showOwnerBadge, ownerOf, githubUrl, releaseUrl } from '../lib/model.js';
 import { normalizeAppPref, isSkipped } from '../lib/prefs.js';
+import {
+  supervisorFor,
+  restartingLine,
+  gaveUpText,
+  effectiveSandbox,
+} from '../lib/guardian.js';
 import { renderDeviceLine } from './devices.js';
 import { renderStatusStrip } from './status.js';
 import * as icons from './icons.js';
@@ -243,6 +249,61 @@ export function renderCrashBanner(app, artifact, ctx = {}) {
     </div>`;
 }
 
+/* ------------------------------------------------- v0.8 signed releases */
+
+/**
+ * The provenance mark on one artifact row, as a two-by-two:
+ *
+ *   signed                          → violet shield, always. A signature is a
+ *                                     property of the asset, not of a setting.
+ *   unsigned + requireSignatures    → muted struck-through shield. The setting
+ *                                     is what makes "no signature" newsworthy.
+ *   unsigned + relaxed              → nothing. Most of GitHub is unsigned; a
+ *                                     marker on every third-party row would be
+ *                                     noise, and noise is how markers die.
+ *
+ * Violet rather than cyan on purpose (DESIGN §1): this is identity, not a live
+ * value. It is never amber — a signed release is not asking for attention.
+ */
+export function signatureMark(artifact, settings = {}) {
+  if (artifact && artifact.hasSignature) {
+    return `<span class="sig-mark sig-ok" title="cryptographically signed release">${icons.shield}</span>`;
+  }
+  if (settings && settings.requireSignatures) {
+    return `<span class="sig-mark sig-none" title="no signature — this asset is refused while “Require signed releases” is on">${icons.shieldOff}</span>`;
+  }
+  return '';
+}
+
+/* --------------------------------------------------- v0.8 the watchdog */
+
+/**
+ * The transient line. It is NOT a banner: a restart that worked is good news
+ * about a machine looking after itself, and dressing it in amber would teach
+ * the user to fear it. It clears itself (guardian.pruneSupervisor).
+ */
+export function renderSupervisorLine(entry) {
+  return `<div class="sup-line" data-sup="${esc(entry.key)}">
+      <span class="sup-spark" aria-hidden="true"></span>
+      <span>${esc(restartingLine(entry))}</span>
+    </div>`;
+}
+
+/**
+ * The give-up banner. Amber, because the app is now down and the user has to
+ * decide something — and dismissable, because main ALREADY toasted this. The
+ * banner is the standing copy of a message that already flew past.
+ */
+export function renderSupervisorBanner(entry) {
+  return `<div class="banner banner-warn banner-sup" role="status" data-sup="${esc(entry.key)}">
+      <span class="crash-icon" aria-hidden="true">${icons.warn}</span>
+      <span class="crash-text">${esc(gaveUpText(entry))}</span>
+      <span class="banner-actions">
+        <button class="btn btn-ghost btn-sm" data-act="dismiss-supervisor" data-sup="${esc(entry.key)}">Dismiss</button>
+      </span>
+    </div>`;
+}
+
 export function renderPostInstallNote(app, artifact, caps = {}) {
   // Overlay-declared command wins; the heuristic is only a fallback.
   const cmd = artifact.postInstallCmd || extractCommand(artifact.postInstallNote);
@@ -293,7 +354,7 @@ export function renderArtifactRow(app, artifact, ctx = {}) {
     <div class="art ${esc(artifact.platform)}" data-art-row="${esc(artifact.id)}">
       <span class="chip chip-${esc(artifact.platform)}">${esc(platformLabel(artifact.platform))}</span>
       <div class="art-main">
-        <div class="art-label">${esc(artifact.label)}${
+        <div class="art-label">${esc(artifact.label)}${signatureMark(artifact, ctx.settings)}${
           artifact.size ? `<span class="art-size">${esc(formatBytes(artifact.size))}</span>` : ''
         }</div>
         <div class="art-ver ${shown.updateAvailable ? 'has-update' : ''}">${esc(versionLabel(shown, latest))}${
@@ -360,6 +421,13 @@ export function renderAppCard(app, ctx = {}) {
     .map((a) => renderCrashBanner(app, a, { caps }))
     .join('');
 
+  // v0.8 — the watchdog's own news. A give-up banners; a restart is one quiet
+  // line. Both are keyed per artifact so a two-artifact app cannot merge them.
+  const supervisor = supervisorFor(ctx.supervisor, app.id);
+  const supBanners = supervisor.filter((e) => e.action === 'gave-up').map(renderSupervisorBanner).join('');
+  const supLines = supervisor.filter((e) => e.action === 'restarting').map(renderSupervisorLine).join('');
+  const sandbox = effectiveSandbox(app);
+
   return `
   <article class="card ${isHub ? 'card-self' : ''}${pref.favorite ? ' card-fav' : ''}" data-app-card="${esc(app.id)}">
     <div class="card-head">
@@ -367,6 +435,20 @@ export function renderAppCard(app, ctx = {}) {
         ${pref.favorite ? `<span class="fav-star" title="favorite">${icons.starFilled}</span>` : ''}
         <h2>${esc(app.name)}</h2>
         ${isHub ? badge('badge-self', 'this app') : ''}
+        ${
+          app.keepAlive
+            ? `<span class="keep-mark" title="keep alive — the hub restarts this app if it exits unexpectedly">${icons.shieldHeart}</span>`
+            : ''
+        }
+        ${
+          sandbox !== 'none'
+            ? `<span class="sandbox-mark" title="${esc(
+                sandbox === 'offline'
+                  ? 'sandboxed and offline — no network from inside'
+                  : 'sandboxed — a fresh home with only this app’s own folders'
+              )}">${esc(sandbox)}</span>`
+            : ''
+        }
         ${has(ctx.devIds, app.id) || app.devLink ? DEV_MARK : ''}
         ${showOwnerBadge(app, settings) ? badge('badge-owner', owner, `from ${app.repo}`) : ''}
         ${app.private ? `<span class="lock" title="private repository">${icons.lock}</span>` : ''}
@@ -400,7 +482,9 @@ export function renderAppCard(app, ctx = {}) {
       </div>
       ${renderStatusStrip(client, app.connectorFields, { now: ctx.now })}
     </div>
+    ${supBanners}
     ${crashBanners}
+    ${supLines}
 
     ${
       notes

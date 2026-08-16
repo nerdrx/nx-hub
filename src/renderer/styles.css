@@ -1013,6 +1013,15 @@ body.sky-parked .neb {
 .btn:active:not([disabled]) { transform: scale(0.96); transition-duration: 80ms; }
 .btn[disabled] { opacity: 0.4; cursor: not-allowed; }
 
+/* alias: a few views emit .btn-primary — same treatment as .btn-violet */
+.btn-primary {
+  background: linear-gradient(180deg, #9a3cff 0%, var(--violet) 58%, #6a00e0 100%);
+  border-color: rgba(214, 180, 255, 0.45);
+  color: #fff;
+}
+/* .card-head is structural: title row spacing inside a card */
+.card-head { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--sp-1); }
+
 .btn-violet {
   background: linear-gradient(180deg, #9a3cff 0%, var(--violet) 58%, #6a00e0 100%);
   border-color: rgba(214, 180, 255, 0.45);
@@ -2697,6 +2706,177 @@ select.input option {
 .peer-wake { gap: 5px; }
 .peer-wake svg { width: 13px; height: 13px; }
 
+/* -------------------------------------------------- v0.8: activity sheet */
+
+/* The chip bar sits directly on the sheet's tier-2 glass; the timeline below
+   it is a WELL, because glass inside glass reads as fog (DESIGN §4) and this
+   is the densest list in the app. */
+.act-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: var(--sp-2);
+}
+.act-filter {
+  padding: 5px 10px;
+  border-radius: var(--pill);
+  border: 1px solid var(--line);
+  background: var(--glass-chip);
+  color: var(--muted);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-soft), border-color var(--dur-fast) var(--ease-soft),
+    transform var(--dur-fast) var(--ease-soft);
+}
+.act-filter:hover { color: var(--text); transform: translateY(-1px); }
+.act-filter.active {
+  color: #e9dcff;
+  border-color: rgba(154, 60, 255, 0.55);
+  background: linear-gradient(180deg, rgba(119, 0, 255, 0.3), rgba(119, 0, 255, 0.14));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+.act-filter:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+.act-body { display: flex; flex-direction: column; gap: var(--sp-2); }
+.act-day { display: flex; flex-direction: column; gap: 6px; }
+
+/* The separator: a micro-label with a hairline running out of it, so the eye
+   reads a boundary without a solid grey rule anywhere (DESIGN §1). */
+.act-day-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin: 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.act-day-head::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--hairline);
+}
+
+.act-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.act-row {
+  display: grid;
+  grid-template-columns: 44px 78px 1fr;
+  align-items: baseline;
+  gap: var(--sp-1);
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--well);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.act-row:hover { background: var(--well-deep); }
+.act-time { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.act-chip {
+  justify-self: start;
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+.act-sum { color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+.act-app { color: var(--muted); font-size: 11px; font-family: var(--mono); margin-left: 6px; }
+
+/* The palette is the whole point: red is failure, amber wants attention, cyan
+   is a live property of the bus, everything else is inert. */
+.act-danger .act-chip { color: var(--danger); border-color: rgba(255, 84, 112, 0.4); background: rgba(255, 84, 112, 0.1); }
+.act-amber .act-chip { color: var(--amber); border-color: rgba(255, 179, 0, 0.4); background: rgba(255, 179, 0, 0.1); }
+.act-cyan .act-chip { color: var(--cyan); border-color: rgba(0, 229, 255, 0.34); background: rgba(0, 229, 255, 0.09); }
+
+.act-more { display: flex; justify-content: center; padding-top: 4px; }
+.act-end {
+  margin: 0;
+  padding-top: 4px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+/* -------------------------------------------------- v0.8: config snapshots */
+
+.snap-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: var(--sp-1); }
+.snap-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--well);
+}
+.snap-main { flex: 1 1 auto; min-width: 0; }
+.snap-top { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; font-size: 12.5px; }
+.snap-when { color: var(--text); }
+.snap-ver { font-family: var(--mono); font-size: 11.5px; color: var(--cyan); }
+.snap-reason { color: var(--muted); font-size: 11.5px; }
+.snap-size { color: var(--muted); font-size: 11px; margin-top: 2px; }
+.snap-acts { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+
+/* ------------------------------------------------- v0.8: signed releases */
+
+/* Violet, not cyan: a signature is identity, not a live value (DESIGN §1). */
+.sig-mark { display: inline-flex; align-items: center; margin-left: 6px; vertical-align: -1px; }
+.sig-ok { color: var(--violet-soft); filter: drop-shadow(0 0 6px rgba(154, 60, 255, 0.45)); }
+.sig-none { color: var(--muted); opacity: 0.75; }
+
+/* ------------------------------------------------------- v0.8: watchdog */
+
+.keep-mark { display: inline-flex; align-items: center; color: var(--violet-soft); }
+.sandbox-mark {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  border: 1px solid rgba(0, 229, 255, 0.3);
+  background: rgba(0, 229, 255, 0.08);
+  color: var(--cyan);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* A restart that WORKED is not an alarm — one quiet line, cyan, no border. */
+.sup-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 var(--sp-2);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--well);
+  color: var(--cyan);
+  font-size: 12px;
+}
+.sup-spark {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 8px rgba(0, 229, 255, 0.8);
+  animation: sup-pulse 1.8s var(--ease-soft) infinite;
+}
+@keyframes sup-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1); }
+}
+.banner-sup { margin: 0 0 var(--sp-2); gap: 9px; }
+
 /* ------------------------------------------------------- reduced motion */
 
 @media (prefers-reduced-motion: reduce) {
@@ -2719,6 +2899,9 @@ select.input option {
   }
   .star-layer { display: none; }
   .neb { animation: none !important; }
+  /* The watchdog's pulse is decoration; the line reads fine without it. */
+  .sup-spark { animation: none !important; opacity: 1; transform: none; }
+  .act-filter:hover { transform: none; }
   .bar > span::after { display: none; }
   /* No sliding specular highlights without motion — the edge does the work. */
   .card::after, .tile-hit::after { display: none; }

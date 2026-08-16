@@ -5,6 +5,8 @@
 
 import { esc } from '../lib/html.js';
 import { APP_POLICIES, AUTO_RUN_CHOICES, policyLabel, autoRunLabel, splitArgs } from '../lib/prefs.js';
+import { SANDBOX_CHOICES, sandboxLabel, sandboxNote, KEEP_ALIVE_NOTE } from '../lib/guardian.js';
+import { renderSnapshotsSection } from './snapshots.js';
 import { renderSheet } from './sheet.js';
 import * as icons from './icons.js';
 
@@ -40,14 +42,40 @@ function envRowMarkup(row, index) {
 }
 
 /**
+ * v0.8 — the watchdog and the sandbox profile. Both are per-app prefs, but the
+ * *values they inherit* come from the app model (the overlay's own profile), so
+ * this section reads the app as well as the draft.
+ */
+function guardianSection(app, d, caps) {
+  if (caps.setAppPref === false) return '';
+  return `
+    <section class="fieldset">
+      <h3>${icons.shieldHeart}<span>Watchdog &amp; sandbox</span></h3>
+      ${checkbox('keepAlive', 'Keep alive', !!d.keepAlive, KEEP_ALIVE_NOTE)}
+
+      <label class="lbl" for="opt-sandbox">Sandbox</label>
+      <select id="opt-sandbox" class="input" data-pref="sandbox">
+        ${SANDBOX_CHOICES.map(
+          (c) =>
+            `<option value="${esc(c)}"${d.sandbox === c ? ' selected' : ''}>${esc(sandboxLabel(c, app))}</option>`
+        ).join('')}
+      </select>
+      <p class="field-note">${esc(sandboxNote(d.sandbox || 'inherit', app))}. Needs
+        <code>bwrap</code> on PATH — without it the app starts unwrapped and the hub says so once.</p>
+    </section>`;
+}
+
+/**
  * @param {object} app    normalized app
  * @param {object} draft  { updatePolicy, includePrereleases, skippedVersion,
- *                          favorite, hidden, launchArgsText, envRows }
- * @param {object} ctx    { settings, launchable, envError }
+ *                          favorite, hidden, launchArgsText, envRows,
+ *                          keepAlive, sandbox }
+ * @param {object} ctx    { settings, launchable, envError, caps, snapshots, now }
  */
 export function renderAppOptions(app, draft, ctx = {}) {
   const d = draft || {};
   const settings = ctx.settings || {};
+  const caps = ctx.caps || {};
   const latest = (app && app.latest && app.latest.version) || '';
   const rows = Array.isArray(d.envRows) ? d.envRows : [];
   const skipped = String(d.skippedVersion || '');
@@ -125,7 +153,10 @@ export function renderAppOptions(app, draft, ctx = {}) {
       </div>
       ${ctx.envError ? `<p class="field-error">${esc(ctx.envError)}</p>` : ''}
       <button class="btn btn-ghost btn-sm" data-act="env-add">Add variable</button>
-    </section>`;
+    </section>
+
+    ${guardianSection(app, d, caps)}
+    ${caps.getSnapshots ? renderSnapshotsSection(app, ctx.snapshots || {}, { now: ctx.now, busy: ctx.snapBusy }) : ''}`;
 
   const foot = `
     <button class="btn btn-ghost" data-act="close-sheet">Cancel</button>

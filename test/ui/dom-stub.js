@@ -230,6 +230,7 @@ const IDS = [
   'refresh',
   'settings-btn',
   'stacks-btn',
+  'activity-btn',
   'main',
   'banner',
   'launch',

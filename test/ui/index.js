@@ -26,5 +26,9 @@ import './triggers.test.js';
 import './crash.test.js';
 // v0.7 — cross-hub steps, dev links, LAN seeding, wake-on-LAN
 import './fabric.test.js';
+// v0.8 — the flight recorder, config snapshots, the watchdog and signed releases
+import './activity.test.js';
+import './snapshots.test.js';
+import './guardian.test.js';
 // Last on purpose: this one installs a stub DOM on globalThis and boots app.js.
 import './smoke.test.js';
