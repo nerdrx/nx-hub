@@ -2286,6 +2286,37 @@ function onHubEvent(ev) {
 }
 
 function wireDom() {
+  // DESIGN v1.3 "light rides motion": one rAF-throttled pointermove for the
+  // whole document writes a normalized --mx onto the hovered card/tile, and
+  // the sheen's background-position derives from it — the highlight tracks
+  // the cursor instead of sweeping once on hover. Off under reduced motion.
+  if (!window.matchMedia || !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    let sheenRaf = 0;
+    let sheenEl = null;
+    document.addEventListener(
+      'pointermove',
+      (ev) => {
+        if (sheenRaf) return;
+        const x = ev.clientX;
+        const t = ev.target instanceof Element ? ev.target : null;
+        sheenRaf = window.requestAnimationFrame(() => {
+          sheenRaf = 0;
+          const surface = t && t.closest ? t.closest('.card, .tile-hit') : null;
+          if (sheenEl && sheenEl !== surface) {
+            sheenEl.style.removeProperty('--mx');
+            sheenEl = null;
+          }
+          if (!surface) return;
+          const r = surface.getBoundingClientRect();
+          if (!r.width) return;
+          surface.style.setProperty('--mx', String(Math.min(1, Math.max(0, (x - r.left) / r.width))));
+          sheenEl = surface;
+        });
+      },
+      { passive: true }
+    );
+  }
+
   document.addEventListener('click', (ev) => {
     const target = ev.target instanceof Element ? ev.target : null;
     if (!target) return;

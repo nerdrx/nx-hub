@@ -429,9 +429,12 @@ body.sky-parked .neb {
   z-index: 2;
   transition: background var(--dur) var(--ease-soft);
 }
-/* Faked glass, part 2: the specular band that slides on hover. On cards it
-   sits under the content (z-index -1 inside the card's own stacking context);
-   on tiles it washes over the icon, which is what glass actually does. */
+/* Faked glass, part 2: the specular band. DESIGN v1.3 "light rides motion":
+   the band's position is BOUND to the pointer (--mx, 0..1, written by a
+   single rAF-throttled pointermove in app.js) — the highlight slides across
+   the pane as the cursor moves instead of sweeping once on entry. Opacity
+   still fades softly on enter/leave; without a pointer (--mx unset) the band
+   rests at the light's home, upper-left-of-center. */
 .tile-hit::after,
 .card::after {
   content: "";
@@ -440,11 +443,11 @@ body.sky-parked .neb {
   border-radius: inherit;
   background: var(--sheen);
   background-size: 240% 100%;
-  background-position: 90% 0;
+  background-position: calc((1 - var(--mx, 0.38)) * 100%) 0;
   opacity: 0;
   pointer-events: none;
   z-index: 1;
-  transition: opacity var(--dur-slow) var(--ease-soft), background-position 900ms var(--ease-out);
+  transition: opacity var(--dur-slow) var(--ease-soft), background-position 120ms linear;
 }
 .tile-hit:hover:not([disabled]) {
   transform: translateY(-3px);
@@ -452,7 +455,7 @@ body.sky-parked .neb {
 }
 .tile-hit:hover:not([disabled])::before { background: var(--edge-lit); }
 .tile-hit:hover:not([disabled])::after,
-.card:hover::after { opacity: 1; background-position: 10% 0; }
+.card:hover::after { opacity: 1; }
 .tile-hit:active:not([disabled]) {
   transform: scale(0.96);
   transition-duration: 90ms;
@@ -1013,12 +1016,6 @@ body.sky-parked .neb {
 .btn:active:not([disabled]) { transform: scale(0.96); transition-duration: 80ms; }
 .btn[disabled] { opacity: 0.4; cursor: not-allowed; }
 
-/* alias: a few views emit .btn-primary — same treatment as .btn-violet */
-.btn-primary {
-  background: linear-gradient(180deg, #9a3cff 0%, var(--violet) 58%, #6a00e0 100%);
-  border-color: rgba(214, 180, 255, 0.45);
-  color: #fff;
-}
 /* .card-head is structural: title row spacing inside a card */
 .card-head { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--sp-1); }
 

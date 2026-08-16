@@ -319,7 +319,7 @@ export function renderPostInstallNote(app, artifact, caps = {}) {
           ? `<div class="pin-cmd"><code>${esc(cmd)}</code>
         ${
           artifact.postInstallCmd && caps.runPostInstallCmd !== false
-            ? `<button class="btn btn-primary btn-sm" data-act="run-cmd" data-app="${esc(app.id)}" data-art="${esc(artifact.id)}">${icons.terminal}<span>Run</span></button>`
+            ? `<button class="btn btn-violet btn-sm" data-act="run-cmd" data-app="${esc(app.id)}" data-art="${esc(artifact.id)}">${icons.terminal}<span>Run</span></button>`
             : ''
         }
         <button class="btn btn-ghost btn-sm" data-act="copy" data-copy="${esc(cmd)}">${icons.copy}<span>Copy</span></button></div>`
