@@ -15,8 +15,8 @@ android {
         applicationId "com.nxhub.android"
         minSdk 26
         targetSdk 34
-        versionCode 21
-        versionName "0.8.1"   // keep in sync with the desktop hub's package.json
+        versionCode 22
+        versionName "0.9.0"   // keep in sync with the desktop hub's package.json
     }
 
     signingConfigs {

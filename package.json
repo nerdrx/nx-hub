@@ -1,8 +1,8 @@
 {
   "name": "nx-hub",
   "productName": "NX Hub",
-  "version": "0.8.1",
-  "description": "NX Hub — installer, updater and launcher for the NX app family",
+  "version": "0.9.0",
+  "description": "NX Hub \u2014 installer, updater and launcher for the NX app family",
   "main": "src/main/index.js",
   "bin": {
     "nx": "bin/nx"
@@ -31,6 +31,8 @@
       "src/**/*",
       "assets/**/*",
       "registry/**/*",
+      "docs/connector/**/*",
+      "docs/DESIGN.md",
       "package.json",
       "!test/**/*",
       "!dist/**/*"

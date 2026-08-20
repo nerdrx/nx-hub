@@ -1,8 +1,8 @@
 # The NX Design Language
 
-**Version 1.4 · extracted from NX Hub v0.3.6 · amendments from PulseNX v1.2.1
-and the pointer-bound specular rule (2026-08-16) · §12 reskin rules from the
-Vencord NX theme (2026-08-20)**
+**Version 1.5 · extracted from NX Hub v0.9.0 · amendments from PulseNX v1.2.1,
+the pointer-bound specular rule (2026-08-16), §12 reskin rules from the
+Vencord NX theme, and §12's opacity rule promoted app-wide (2026-08-20)**
 
 This document is the canonical specification of the NX visual language —
 "liquid glass on deep space." It is written to be dropped into any project's
@@ -95,6 +95,9 @@ Copy these verbatim into `:root` (CSS) or mirror them as resources (Android
       rgba(19, 12, 34, 0.66) 100%);
   --glass-chip: linear-gradient(180deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0.028) 100%);
   --well: linear-gradient(180deg, rgba(7, 4, 16, 0.5) 0%, rgba(7, 4, 16, 0.32) 100%);
+  /* v1.5: STRUCTURAL surfaces are opaque elevation steps (see §4) */
+  --surface-1: linear-gradient(157deg, #221739 0%, #1a1130 44%, #140c24 100%);
+  --surface-1-hover: linear-gradient(157deg, #271b41 0%, #1d1335 44%, #170e29 100%);
   --well-deep: linear-gradient(180deg, rgba(4, 2, 10, 0.62) 0%, rgba(4, 2, 10, 0.46) 100%);
 
   /* blur strengths — ONLY these three exist */
@@ -164,9 +167,20 @@ the cost.
 | Tier | Surfaces | Fill | Blur | Edge | Shadow |
 | --- | --- | --- | --- | --- | --- |
 | **Bar** | app header, floating toolbars | `--glass-bar` | `--blur-bar` (real) | 1px `--edge-top` top highlight | `--shadow-bar` |
-| **1 — Card** | content cards, tiles | `--glass-1` | **none — faked** | `--edge` gradient border | `--shadow` |
+| **1 — Card** | content cards, tiles | `--surface-1` (**opaque**) | none | `--edge` gradient border | `--shadow` |
 | **2 — Sheet** | modals, slide-overs, menus, toasts | `--glass-2` | `--blur-sheet` / `--blur-chip` (real) | `--edge-lit` | `--shadow-sheet` |
 | **Well** | recessed regions *inside* glass (list rows, code, logs) | `--well` / `--well-deep` | never | none or `--line` | inset only |
+
+**v1.5 — the opacity rule, promoted from §12.** What began as a reskin
+constraint proved to be the better look everywhere: **structural, always-
+present surfaces (cards, tiles, rails) are OPAQUE elevation steps**
+(`--surface-1`, hover steps to `--surface-1-hover`) — depth comes from surface
+steps and the lit edge, never from see-through. The nebula lives *between* the
+panels, not behind them. Translucency + real blur are reserved for layers that
+genuinely float (bars over scrolling content, sheets, menus, toasts), and a
+floating layer's fill stays **≥ 0.85 alpha** so nothing behind it shows
+through its body. `--glass-1` remains for legacy/edge uses but new structural
+surfaces take `--surface-1`.
 
 Implementation notes:
 
