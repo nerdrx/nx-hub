@@ -498,6 +498,76 @@ deleteSnapshot. Rollback UI offers "also restore config from before the
 update" when a matching pre-update snapshot exists. CLI `nx snapshots <app>`,
 `nx restore <app> [file]`.
 
+## v0.10 "nervous system" (frozen 2026-08-20)
+
+### Bus federation ([fabric2])
+Each hub pushes its bus roster over every fleet session: message
+`bus-roster {clients:[{app, version, fields, since}]}`, debounced ≤1/5s,
+pushed on connector-changed and on session open. Received rosters kept per
+peer (cleared when the session drops). connector view becomes federated:
+getState().connector gains `remote: [{peerId, peerName, clients:[...]}]`.
+Stacks: a `connector` health gate on a PEERED step becomes VALID — it checks
+the app's presence in THAT peer's relayed roster (sanitizer stops rewriting it
+to delay on peered steps; on non-peered steps unchanged). Tray/status strips
+render remote clients with a peer tag.
+
+### Field history → sparklines ([fabric2] server, [ui-10] render)
+connector/server.js keeps a per-client per-numeric-field ring buffer:
+{ts, value}, max 120 samples, 10min window. getClients() entries gain
+`history: {field: [{ts, v}, ...]}` (numeric fields only, downsampled to ≤60
+points). bus-roster carries each client's latest fields PLUS history capped to
+20 points per field (bandwidth). UI: cyan sparkline (inline SVG, ~sparkline
+class, tabular label) beside numeric fields on the status strip; remote strips
+too.
+
+### Fleet settings sync ([fabric2])
+Setting `fleetSync` (default true). Synced key-spaces ONLY: appPrefs (per-app,
+each entry stamped `_ts` epoch ms on write), stacks (per-stack `updatedAt`),
+and the hidden/favorites already inside appPrefs. NEVER synced: token, owners,
+extraRepos, installRoot, adbPath, fleet/cliShim/autostart or any machine-local
+key. Message `prefs-sync {appPrefs, stacks, sentAt}` pushed debounced 3s after
+any local change + on session open; receiver merges LWW per app-entry / per
+stack by stamp (missing stamp = epoch 0), applying through the existing
+sanitizers; loops prevented by only re-broadcasting when the merge changed
+something. config.setAppPref and stacks.save gain the stamps.
+
+### Ecosystem checkpoints ([replay])
+src/main/checkpoints.js — read-only reconstruction over the flight recorder +
+snapshots: timeline(appId?) from journal entries (install/update/rollback/
+uninstall verbs with versions); checkpointAt(when) → {ts, apps:[{appId,
+artifactId, version, currentVersion, action: none|install|remove,
+snapshot?: file}]} where snapshot = newest config snapshot ≤ when for that
+app; plan/apply: restore(when, {configs:bool}) walks the plan through the
+EXISTING pipelines (installVersion / uninstall / restoreSnapshot), serialized,
+emitting checkpoint-progress {phase, appId} events; unknown tags (release
+deleted) → skipped + reported. IPC: getCheckpoint(when), restoreCheckpoint
+(when, opts). CLI: `nx checkpoint show <when>` (the plan, human + --json),
+`nx checkpoint restore <when> [--configs] [-y]`. `when` accepts the recorder's
+relative forms.
+
+### Headless daemon ([daemon])
+`nx daemon run` — the hub without electron: config/github/discovery/jobs/
+policies + connector server + fleet + stacks/triggers + recorder + scheduler
+loop (checkIntervalHours), clean SIGTERM/SIGINT shutdown. Refuses to start
+when the connector or fleet port is already bound (a GUI hub is running) with
+a clear message. Notifications/toasts become log lines. `nx daemon install`
+writes ~/.config/systemd/user/nx-hub-daemon.service (ExecStart = the nx shim
+with `daemon run`, Restart=on-failure) + prints the enable command;
+`nx daemon uninstall` removes it (marker-guarded like the cli shim).
+`nx daemon status` → running? (port probe + connector snapshot age).
+
+### Deep audit ([audit])
+src/main/audit.js — audit(appId?) over state installs: install dir exists;
+manifest parses; manifest.binary exists+executable; every manifest outside
+file exists; appimage kept file's sha256 vs asset-index/expected when known
+(skip silently when unknown); desktop entries exist where recorded. →
+[{appId, artifactId, ok, problems:[{kind, path?, detail}]}]. repair(appId,
+artifactId) = reinstall via the existing pipeline (LAN seed first as ever).
+IPC: getAudit(), repairInstall(appId, artifactId). CLI: `nx doctor --deep
+[--repair] [--json]` (repair prompts per broken install unless -y). UI hook
+([ui-10]): Settings→Storage gains "Verify installs" running getAudit with
+per-problem rows + Repair buttons.
+
 ## Future (not v1 — do not build, do not preclude)
 
 ## Verification
