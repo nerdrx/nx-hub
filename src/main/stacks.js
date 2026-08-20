@@ -240,6 +240,34 @@ function isPeerOnline(peerId) {
   return Boolean(peer && peer.online);
 }
 
+/**
+ * v0.10 [fabric2]: is `appId` on THAT peer's connector bus?
+ *
+ * SPEC "Bus federation": every hub pushes its bus roster over the fleet, so a
+ * `connector` gate on a peered step is answerable from here — it checks the
+ * app's presence in the roster the NAMED peer relayed, never in any other
+ * peer's and never in this hub's own bus. A hub whose fleet predates v0.10
+ * simply never relays one, so the gate reads "not yet" and times out with the
+ * usual sentence instead of passing on a hub that cannot see anything.
+ */
+function isPresentOnPeer(peerId, appId) {
+  const f = fleetMod();
+  if (!f || typeof f.getRemoteClients !== "function" || !peerId) return false;
+  let rosters = [];
+  try {
+    rosters = f.getRemoteClients() || [];
+  } catch (e) {
+    warnOnce(`fleet.getRemoteClients failed: ${e.message}`);
+    return false;
+  }
+  if (!Array.isArray(rosters)) return false;
+  const entry = rosters.find((r) => r && String(r.peerId) === String(peerId));
+  if (!entry || !Array.isArray(entry.clients)) return false;
+  const wanted = String(appId == null ? "" : appId).trim().toLowerCase();
+  if (!wanted) return false;
+  return entry.clients.some((c) => c && String(c.app == null ? "" : c.app).trim().toLowerCase() === wanted);
+}
+
 /** The sentence inside a nack, whatever the remote called the field. */
 function ackError(ack) {
   if (!ack || typeof ack !== "object") return null;
@@ -291,18 +319,19 @@ function sanitizePort(value) {
  * No rule at all → "launch it and move on" (delay 0), never a silent 30s wait.
  *
  * `peered` (v0.7) is what the SAME rule means on a step that runs somewhere
- * else: `connector` becomes impossible (SPEC — the remote's bus is not visible
- * from here) and `peer-online` becomes possible. Both mistakes drop to delay,
- * the file's standing answer to "that gate cannot mean anything": the step still
+ * else: `peer-online` becomes possible, and a mistake drops to delay — the
+ * file's standing answer to "that gate cannot mean anything": the step still
  * runs, it just is not waited on.
+ *
+ * v0.10 [fabric2]: a `connector` gate on a peered step is now VALID. It used to
+ * be rewritten to delay because the remote's bus was invisible from here; bus
+ * federation makes it visible, so the gate means what it always should have —
+ * "wait until that app announces itself on THAT hub's bus" — and is answered
+ * from the peer's relayed roster (see isPresentOnPeer).
  */
 function sanitizeHealth(raw, peered = false) {
   const h = raw && typeof raw === "object" ? raw : {};
   let type = HEALTH_TYPES.includes(String(h.type)) ? String(h.type) : null;
-  if (type === "connector" && peered) {
-    warnOnce("a connector gate cannot see a peer's bus — dropped to delay");
-    type = null;
-  }
   if (PEER_ONLY_HEALTH_TYPES.includes(type) && !peered) {
     warnOnce(`a ${type} gate needs a step with a peer — dropped to delay`);
     type = null;
@@ -426,6 +455,12 @@ function sanitizeStack(raw) {
   // written against v0.5 keeps seeing exactly the object it expects.
   const trigger = sanitizeTrigger(s.trigger);
   if (trigger) stack.trigger = trigger;
+  // v0.10 [fabric2]: PRESERVED, never INVENTED — see save(). Fleet settings
+  // sync picks a winner between two hubs' copies of a stack by comparing these,
+  // so a stamp minted here would make merely READING the file look like an
+  // edit, and this hub would beat the machine the user actually typed on.
+  const updatedAt = Number(s.updatedAt);
+  if (Number.isFinite(updatedAt) && updatedAt > 0) stack.updatedAt = Math.round(updatedAt);
   return stack;
 }
 
@@ -468,11 +503,20 @@ function get(id) {
   return list().find((s) => s.id === wanted) || null;
 }
 
-/** Create or replace a stack. Returns the sanitized record actually stored. */
-function save(raw) {
+/**
+ * Create or replace a stack. Returns the sanitized record actually stored.
+ *
+ * v0.10 [fabric2]: every save stamps `updatedAt`, which is how fleet settings
+ * sync tells two hubs' copies of the same stack apart. `{stamp:false}` is the
+ * ONE exception — the sync applying a peer's stack, where the stamp already on
+ * the record is the whole point and re-stamping it here would make this hub the
+ * apparent author of somebody else's edit.
+ */
+function save(raw, { stamp = true } = {}) {
   const stack = sanitizeStack(raw);
   if (!stack) throw new Error("A stack needs an id or a name");
   if (!stack.steps.length) throw new Error("A stack needs at least one step");
+  if (stamp) stack.updatedAt = Date.now();
   const store = readStore();
   const idx = store.stacks.findIndex((s) => s.id === stack.id);
   if (idx >= 0) store.stacks[idx] = stack;
@@ -585,7 +629,13 @@ function tryPort(port) {
 function gateTimeoutReason(step) {
   const health = step.health;
   const peer = step.peer || null;
-  if (health.type === "connector") return `${step.appId} did not announce itself on the bus`;
+  // v0.10 [fabric2]: name WHOSE bus was watched — "on the bus" is a different
+  // (and much more confusing) sentence when the bus is on another machine.
+  if (health.type === "connector") {
+    return peer
+      ? `${step.appId} did not announce itself on ${peerLabel(peer)}'s bus`
+      : `${step.appId} did not announce itself on the bus`;
+  }
   if (health.type === "peer-online") return `${peerLabel(peer)} did not come online`;
   const where = peer ? peerLabel(peer) : "127.0.0.1";
   return `nothing is listening on ${where}:${health.port}`;
@@ -623,7 +673,10 @@ async function waitForHealth(step, signal) {
     return signal.aborted ? { ok: false, reason: "stopped" } : { ok: true };
   }
 
-  if (health.type === "connector" && !connector()) {
+  // v0.10 [fabric2]: only a LOCAL connector gate needs a local bus. A peered
+  // one is answered from the fabric, so a hub with no bus of its own can still
+  // wait for an app to come up on the other machine.
+  if (health.type === "connector" && !peer && !connector()) {
     // Nothing can ever answer — say so now instead of burning the timeout.
     return { ok: false, reason: "the connector bus is not running" };
   }
@@ -635,7 +688,9 @@ async function waitForHealth(step, signal) {
   for (;;) {
     if (signal.aborted) return { ok: false, reason: "stopped" };
     if (health.type === "connector") {
-      if (isPresent(step.appId)) return { ok: true };
+      // v0.10 [fabric2]: peered → the peer's relayed roster, polled at the same
+      // rate as everything else here (250ms by default, injected in tests).
+      if (peer ? isPresentOnPeer(peer, step.appId) : isPresent(step.appId)) return { ok: true };
     } else if (health.type === "port") {
       // eslint-disable-next-line no-await-in-loop
       if (peer ? await probeRemotePort(peer, health.port) : await tryPort(health.port)) return { ok: true };

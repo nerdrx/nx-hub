@@ -46,7 +46,7 @@ import {
   autoRunFromChoice,
 } from './lib/prefs.js';
 import { normalizeReleases, isDowngrade, downgradeConfirmText, rollbackConfirmText, rollbackTargets } from './lib/releases.js';
-import { clientsByApp } from './lib/connector.js';
+import { clientsByApp, remoteByApp } from './lib/connector.js';
 import {
   normalizeStacks,
   stackTiles,
@@ -93,6 +93,21 @@ import {
   LIVE_DEBOUNCE_MS,
 } from './lib/events.js';
 import { renderActivitySheet } from './views/activity.js';
+import { renderCheckpointSheet } from './views/checkpoint.js';
+import {
+  normalizePlan,
+  hasWork,
+  hasSnapshots,
+  // v0.8's snapshot sheet already owns the name `restoreConfirmText`; the two
+  // confirmations are different sentences about different scopes.
+  restoreConfirmText as checkpointConfirmText,
+  blankRun,
+  startRun,
+  foldCheckpointProgress,
+  isRunning,
+  isFinished as checkpointFinished,
+} from './lib/checkpoint.js';
+import { normalizeAudit, auditKey, auditSummary } from './lib/audit.js';
 import {
   normalizeSnapshots,
   rollbackSnapshot,
@@ -158,6 +173,17 @@ const V07_METHODS = ['getDevLinks', 'devRun', 'devUnlink', 'fleetWake'];
  * the config time machine. No getEvents → no Activity button at all.
  */
 const V08_METHODS = ['getEvents', 'getSnapshots', 'restoreSnapshot', 'deleteSnapshot'];
+
+/**
+ * Optional v0.10 bridge methods.
+ *
+ * The rest of v0.10 needs none: the federated roster and the field histories
+ * ride getState().connector, and fleet settings sync is a setting. So this is
+ * only [replay]'s two calls and [audit]'s two — and each surface is gated on
+ * its OWN method, not on the group: a hub with the audit but no checkpoints
+ * (or the reverse) must show exactly the half it has.
+ */
+const V10_METHODS = ['getCheckpoint', 'restoreCheckpoint', 'getAudit', 'repairInstall'];
 
 const ui = {
   loaded: false,
@@ -226,6 +252,12 @@ const ui = {
   supervisor: {},
   // v0.8 — a rollback that has a matching pre-update snapshot to offer.
   rollbackDraft: null,
+  // v0.10 — the checkpoint sheet: the moment asked for, the reconstructed plan
+  // and, once confirmed, the folded checkpoint-progress run.
+  checkpoint: { ts: 0, plan: null, loading: false, error: '', configs: false, busy: false, run: blankRun() },
+  // v0.10 — the deep audit, run on demand from Settings → Storage. `ran` is
+  // what separates "no problems" from "not checked yet".
+  audit: { loading: false, error: '', rows: [], ran: false, repairing: '' },
 };
 
 let state = normalizeState(null);
@@ -289,7 +321,14 @@ function api() {
 function detectCaps() {
   const nx = api();
   const caps = {};
-  for (const m of [...V02_METHODS, ...V05_METHODS, ...V06_METHODS, ...V07_METHODS, ...V08_METHODS]) {
+  for (const m of [
+    ...V02_METHODS,
+    ...V05_METHODS,
+    ...V06_METHODS,
+    ...V07_METHODS,
+    ...V08_METHODS,
+    ...V10_METHODS,
+  ]) {
     caps[m] = !!(nx && typeof nx[m] === 'function');
   }
   return caps;
@@ -406,9 +445,27 @@ function prefsMap() {
   return (state.settings && state.settings.appPrefs) || {};
 }
 
-/** Apps currently announced on the connector bus, keyed by app id. */
+/** Apps currently announced on the LOCAL connector bus, keyed by app id. */
 function busClients() {
   return clientsByApp(state.connector);
+}
+
+/**
+ * v0.10 — apps announced on a PEER's bus, keyed by app id. Empty in a build
+ * whose main process never sends `connector.remote`, which is what keeps every
+ * remote surface off the screen rather than half-drawn.
+ */
+function remoteClients() {
+  return remoteByApp(state.connector);
+}
+
+/** peerId → the clients that peer relayed, for the fleet sheet's own rosters. */
+function remoteByPeer() {
+  const map = new Map();
+  for (const peer of (state.connector && state.connector.remote) || []) {
+    map.set(peer.peerId, peer.clients || []);
+  }
+  return map;
 }
 
 /**
@@ -477,7 +534,43 @@ function renderFleetSlot() {
   if (!host) return;
   const peers = ui.fleet.peers || [];
   const show = !!ui.caps.getFleet && (peers.length > 0 || ui.fleetSeen);
-  host.innerHTML = show ? renderPeerChip(peers, { busy: ui.fleetBusy }) : '';
+  // v0.10 — how many apps the fleet is relaying right now, for the chip's title.
+  const remoteLive = ((state.connector && state.connector.remote) || []).reduce(
+    (n, r) => n + ((r.clients && r.clients.length) || 0),
+    0
+  );
+  host.innerHTML = show ? renderPeerChip(peers, { busy: ui.fleetBusy, remoteLive }) : '';
+}
+
+/**
+ * Replace a host's markup while keeping the reader where they were.
+ *
+ * These surfaces re-render wholesale on every state change — a checkbox, an
+ * arriving event, a job's progress — and a fresh innerHTML always starts at
+ * scroll 0. Without this, asking a long panel a question throws you away from
+ * the answer: "Verify installs" sits at the bottom of Settings and renders its
+ * results there, and the Activity timeline jumps every time the hub records
+ * anything. The scroll only carries over while `key` is unchanged, so opening a
+ * DIFFERENT sheet (or the same one for another app) still starts at the top.
+ */
+const scrollKeys = new WeakMap();
+
+/** The scrolling element inside a sheet or the settings panel, if it has one. */
+function scrollBodyOf(host) {
+  if (!host || typeof host.querySelector !== 'function') return null;
+  // Queried one class at a time rather than as a selector list: that is what the
+  // renderer's own stub DOM understands, so the behaviour below is testable.
+  return host.querySelector('.sheet-body') || host.querySelector('.panel-body');
+}
+
+function paint(host, html, key) {
+  const prev = scrollBodyOf(host);
+  const top = prev && scrollKeys.get(host) === key ? Number(prev.scrollTop) || 0 : 0;
+  host.innerHTML = html;
+  scrollKeys.set(host, key);
+  if (!top) return;
+  const next = scrollBodyOf(host);
+  if (next) next.scrollTop = top;
 }
 
 function renderSheet() {
@@ -486,25 +579,42 @@ function renderSheet() {
   const sheet = ui.sheet;
   if (!sheet) {
     host.innerHTML = '';
+    scrollKeys.set(host, '');
     return;
   }
   if (sheet.kind === 'activity') {
-    host.innerHTML = renderActivitySheet({ ...ui.activity, now: Date.now() });
+    paint(host, renderActivitySheet({
+      ...ui.activity,
+      now: Date.now(),
+      // No getCheckpoint() → no "restore to here…" anywhere in the timeline.
+      canRestore: !!ui.caps.getCheckpoint,
+    }), 'activity');
+    return;
+  }
+  if (sheet.kind === 'checkpoint') {
+    paint(host, renderCheckpointSheet({
+      ...ui.checkpoint,
+      apps: state.apps,
+      now: Date.now(),
+      caps: ui.caps,
+    }), 'checkpoint');
     return;
   }
   if (sheet.kind === 'fleet') {
-    host.innerHTML = renderFleetSheet({
+    paint(host, renderFleetSheet({
       peers: ui.fleet.peers,
       apps: state.apps,
       pair: ui.pair,
       jobs: ui.fleetJobs,
       now: Date.now(),
       caps: ui.caps,
-    });
+      settings: state.settings,
+      remote: remoteByPeer(),
+    }), 'fleet');
     return;
   }
   if (sheet.kind === 'stacks') {
-    host.innerHTML = renderStacksSheet({
+    paint(host, renderStacksSheet({
       stacks: ui.stacks,
       apps: state.apps,
       peers: editorPeers(),
@@ -512,11 +622,11 @@ function renderSheet() {
       errors: ui.stackErrors,
       runs: ui.runs,
       saving: ui.stackBusy,
-    });
+    }), 'stacks');
     return;
   }
   if (sheet.kind === 'devices') {
-    host.innerHTML = renderDevicesSheet(state, {
+    paint(host, renderDevicesSheet(state, {
       info: ui.deviceInfo,
       infoError: ui.deviceInfoError,
       connecting: ui.adbBusy,
@@ -524,7 +634,7 @@ function renderSheet() {
       connected: ui.adbOk,
       host: ui.adbHost,
       caps: ui.caps,
-    });
+    }), 'devices');
     return;
   }
 
@@ -534,7 +644,7 @@ function renderSheet() {
     return;
   }
   if (sheet.kind === 'options') {
-    host.innerHTML = renderAppOptions(app, ui.prefDraft, {
+    paint(host, renderAppOptions(app, ui.prefDraft, {
       settings: state.settings,
       envError: ui.prefError,
       launchable: (app.artifacts || []).some((a) => a.launchable !== false),
@@ -542,7 +652,7 @@ function renderSheet() {
       snapshots: ui.snapshots.get(app.id) || { loading: true },
       snapBusy: ui.snapBusy,
       now: Date.now(),
-    });
+    }), `options:${app.id}`);
     return;
   }
   if (sheet.kind === 'rollback') {
@@ -551,21 +661,21 @@ function renderSheet() {
       host.innerHTML = '';
       return;
     }
-    host.innerHTML = renderRollbackSheet(app, draft.target, draft.snapshot, {
+    paint(host, renderRollbackSheet(app, draft.target, draft.snapshot, {
       restoreConfig: draft.restoreConfig,
       busy: draft.busy,
-    });
+    }), `rollback:${app.id}`);
     return;
   }
   if (sheet.kind === 'versions') {
     const data = ui.releases.get(app.id) || { loading: true };
-    host.innerHTML = renderVersionsSheet(app, data, {
+    paint(host, renderVersionsSheet(app, data, {
       expanded: ui.expandedRelNotes,
       platform: state.platform || ui.platform,
       busy: !!jobForApp(jobsForRender(), app.id),
       now: Date.now(),
       caps: ui.caps.rollback === false ? false : ui.caps,
-    });
+    }), `versions:${app.id}`);
   }
 }
 
@@ -604,6 +714,8 @@ function render() {
     dismissedCrashes: ui.dismissedCrashes,
     openMenu: ui.openMenu,
     clients: busClients(),
+    // v0.10 — the same app, seen on another hub's bus.
+    remote: remoteClients(),
     // v0.7 — cards of apps that also have a checkout linked wear a DEV mark.
     devIds: devIds(ui.devLinks),
     // v0.8 — the watchdog's restarting lines and give-up banners.
@@ -615,20 +727,27 @@ function render() {
   if (refreshBtn) refreshBtn.classList.toggle('spinning', !!state.refreshing || ui.busy);
 
   if (panelHost) {
-    panelHost.innerHTML = ui.settingsOpen
-      ? renderSettingsPanel(ui.draft, {
-          hubVersion: state.hubVersion,
-          tokenSource: state.tokenSource,
-          repoError: ui.repoError,
-          caps: ui.caps,
-          apps: state.apps,
-          diskUsage: ui.diskUsage,
-          diskLoading: ui.diskLoading,
-          freed: ui.freed,
-          logs: ui.logs,
-          importResult: ui.importResult,
-        })
-      : '';
+    paint(
+      panelHost,
+      ui.settingsOpen
+        ? renderSettingsPanel(ui.draft, {
+            hubVersion: state.hubVersion,
+            tokenSource: state.tokenSource,
+            repoError: ui.repoError,
+            caps: ui.caps,
+            apps: state.apps,
+            diskUsage: ui.diskUsage,
+            diskLoading: ui.diskLoading,
+            freed: ui.freed,
+            logs: ui.logs,
+            importResult: ui.importResult,
+            // v0.10 — the deep audit lives inside the Storage section.
+            audit: ui.audit,
+            repairing: ui.audit.repairing,
+          })
+        : '',
+      ui.settingsOpen ? 'settings' : ''
+    );
   }
 
   if (!ui.loaded) {
@@ -940,6 +1059,142 @@ function bumpActivity() {
 function clearActivityTimer() {
   if (ui.activityTimer) window.clearTimeout(ui.activityTimer);
   ui.activityTimer = 0;
+}
+
+/* ------------------------------------------------ v0.10 checkpoint restore */
+
+/**
+ * Open the Checkpoint sheet for one moment and reconstruct its plan.
+ *
+ * The Activity sheet is REPLACED rather than stacked: two modal sheets at once
+ * would fight for Escape, and coming back to a timeline that has meanwhile
+ * tailed three new events is not "back" anyway. Cancelling closes out entirely.
+ */
+async function openCheckpoint(ts) {
+  const when = Math.round(Number(ts) || 0);
+  if (!when) return;
+  ui.sheet = { kind: 'checkpoint' };
+  ui.openMenu = '';
+  // The tail belongs to the timeline we just left.
+  clearActivityTimer();
+  ui.checkpoint = { ts: when, plan: null, loading: true, error: '', configs: false, busy: false, run: blankRun() };
+  schedule();
+  await loadCheckpoint();
+}
+
+async function loadCheckpoint() {
+  const when = ui.checkpoint.ts;
+  if (!when) return;
+  if (!ui.caps.getCheckpoint) {
+    ui.checkpoint = { ...ui.checkpoint, loading: false, error: 'This build cannot reconstruct checkpoints.' };
+    schedule();
+    return;
+  }
+  ui.checkpoint = { ...ui.checkpoint, loading: true, error: '' };
+  schedule();
+  try {
+    const plan = normalizePlan(await maybeCall('getCheckpoint', when), { ts: when });
+    ui.checkpoint = {
+      ...ui.checkpoint,
+      plan,
+      loading: false,
+      error: '',
+      // Restoring configs is opt-IN: it overwrites files the user may have
+      // edited since, and SPEC makes it an explicit option for that reason.
+      configs: false,
+    };
+  } catch (err) {
+    ui.checkpoint = {
+      ...ui.checkpoint,
+      loading: false,
+      error: `Could not reconstruct that point: ${(err && err.message) || err}`,
+    };
+  }
+  schedule();
+}
+
+async function confirmCheckpoint() {
+  const { plan, ts, configs } = ui.checkpoint;
+  if (!plan || !hasWork(plan) || ui.checkpoint.busy) return;
+  if (!window.confirm(checkpointConfirmText(plan, { configs }))) return;
+  ui.checkpoint = { ...ui.checkpoint, busy: true, run: startRun(Date.now()) };
+  schedule();
+  // The progress rows arrive as events; the call itself only resolves at the
+  // end (or throws), so the answer is the FALLBACK ending, never the only one.
+  const res = await call('restoreCheckpoint', ts, { configs: !!configs && hasSnapshots(plan) });
+  ui.checkpoint = { ...ui.checkpoint, busy: false };
+  if (res === null) {
+    // call() already toasted. Mark the run failed so the sheet stops spinning.
+    ui.checkpoint = {
+      ...ui.checkpoint,
+      run: { ...ui.checkpoint.run, phase: 'failed', error: ui.checkpoint.run.error || 'the restore could not be started' },
+    };
+  } else if (!checkpointFinished(ui.checkpoint.run)) {
+    // A main process that answers without ever emitting a terminal event still
+    // has to end the sheet's "restoring" state.
+    const failed = res && res.ok === false;
+    ui.checkpoint = {
+      ...ui.checkpoint,
+      run: {
+        ...ui.checkpoint.run,
+        phase: failed ? 'failed' : 'done',
+        error: failed ? String((res && res.error) || '') : '',
+      },
+    };
+  }
+  await pullState();
+  schedule();
+}
+
+/* ----------------------------------------------------------- v0.10 audit */
+
+async function runAudit() {
+  if (!ui.caps.getAudit) {
+    ui.audit = { ...ui.audit, loading: false, ran: true, error: 'This build cannot verify installs.' };
+    schedule();
+    return;
+  }
+  ui.audit = { ...ui.audit, loading: true, error: '' };
+  schedule();
+  try {
+    const rows = normalizeAudit(await maybeCall('getAudit'));
+    ui.audit = { ...ui.audit, rows, loading: false, error: '', ran: true };
+    const s = auditSummary(rows);
+    toast(
+      s.broken ? 'warn' : 'info',
+      s.broken
+        ? `${s.broken} install${s.broken === 1 ? '' : 's'} need${s.broken === 1 ? 's' : ''} attention`
+        : `Checked ${s.total} install${s.total === 1 ? '' : 's'} — everything is intact`
+    );
+  } catch (err) {
+    ui.audit = {
+      ...ui.audit,
+      loading: false,
+      ran: true,
+      error: `Could not verify the installs: ${(err && err.message) || err}`,
+    };
+  }
+  schedule();
+}
+
+/**
+ * Repair = reinstall through the normal pipeline, so the JOB events take over
+ * from here: the app's own card grows its progress bar, the toast says where to
+ * look, and the audit row is left alone until the next verify. Inventing a
+ * second progress surface for the same bytes is exactly how two of them drift.
+ */
+async function repairInstall(appId, artifactId) {
+  const key = auditKey(appId, artifactId);
+  ui.audit = { ...ui.audit, repairing: key };
+  schedule();
+  const res = await call('repairInstall', appId, artifactId);
+  ui.audit = { ...ui.audit, repairing: '' };
+  if (res !== null) {
+    const app = (state.apps || []).find((a) => a.id === appId);
+    toast('info', `Reinstalling ${(app && app.name) || appId} — follow it on its card`);
+  }
+  schedule();
+  return res;
 }
 
 /* --------------------------------------------------- v0.8 config snapshots */
@@ -2140,6 +2395,33 @@ async function onAction(act, el, ev) {
       schedule();
       break;
     }
+    /* ------------------------------------------------------------ v0.10 */
+
+    case 'checkpoint':
+      await openCheckpoint(el.getAttribute('data-ts'));
+      break;
+    case 'checkpoint-retry':
+      await loadCheckpoint();
+      break;
+    case 'checkpoint-configs':
+      // The checkbox's own state is the source of truth when we have it; a
+      // synthetic click (tests, keyboard) just flips the flag.
+      ui.checkpoint = {
+        ...ui.checkpoint,
+        configs: typeof el.checked === 'boolean' ? !!el.checked : !ui.checkpoint.configs,
+      };
+      schedule();
+      break;
+    case 'checkpoint-confirm':
+      await confirmCheckpoint();
+      break;
+    case 'verify-installs':
+      await runAudit();
+      break;
+    case 'repair-install':
+      await repairInstall(appId, artId);
+      break;
+
     case 'dismiss-supervisor':
       ui.supervisor = dismissSupervisor(ui.supervisor, el.getAttribute('data-sup') || '');
       schedule();
@@ -2177,6 +2459,12 @@ function closeSheet() {
   // is gone would re-render a surface nobody is looking at.
   clearActivityTimer();
   ui.pair = blankPairState();
+  // v0.10 — a checkpoint restore that is still walking the plan keeps its run:
+  // the events go on arriving and the toast at the end still means something.
+  // An idle (or finished) sheet is cleared so the next one starts blank.
+  if (!isRunning(ui.checkpoint.run)) {
+    ui.checkpoint = { ts: 0, plan: null, loading: false, error: '', configs: false, busy: false, run: blankRun() };
+  }
   schedule();
 }
 
@@ -2269,6 +2557,23 @@ function onHubEvent(ev) {
       bumpActivity();
       schedule();
       break;
+
+    /* ------------------------------------------------------------ v0.10 */
+
+    // The checkpoint restore narrates itself. Folding happens whether or not the
+    // sheet is open — a restore started here and then dismissed still finishes,
+    // and re-opening must not show a run frozen halfway through.
+    case 'checkpoint-progress': {
+      ui.checkpoint = {
+        ...ui.checkpoint,
+        run: foldCheckpointProgress(ui.checkpoint.run, ev, Date.now()),
+      };
+      // A terminal phase means the disk changed under us.
+      if (checkpointFinished(ui.checkpoint.run)) pullState();
+      bumpActivity();
+      schedule();
+      break;
+    }
 
     case 'update-available': {
       const app = (state.apps || []).find((a) => a.id === ev.appId);
@@ -2674,4 +2979,4 @@ if (typeof document !== 'undefined') {
 
 // Exposed for the e2e hooks / dev toolbar.
 export const __ui = ui;
-export { toast, pullState, onHubEvent, boot };
+export { toast, pullState, onHubEvent, boot, paint };

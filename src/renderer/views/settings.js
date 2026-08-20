@@ -9,6 +9,7 @@ import { esc } from '../lib/html.js';
 import { isValidRepoRef } from '../lib/model.js';
 import { GLOBAL_POLICIES, policyLabel } from '../lib/prefs.js';
 import { usageRows, usageTotalLabel } from '../lib/storage.js';
+import { problemLabel, problemChip, auditSummaryText, rowSummaryText } from '../lib/audit.js';
 import * as icons from './icons.js';
 
 function chip(value, kind) {
@@ -24,11 +25,94 @@ function check(field, label, checked, note) {
     </label>`;
 }
 
+/**
+ * v0.10 [audit] — one install's verdict.
+ *
+ * A clean row is one quiet line with a cyan check; a broken one lists every
+ * problem it has, each with the path that failed, and offers Repair. Repair is
+ * a reinstall through the normal pipeline, so it reports through the normal job
+ * bar on the app's card — the button says so rather than pretending the row
+ * will animate.
+ */
+export function renderAuditRow(row, ctx = {}) {
+  const apps = Array.isArray(ctx.apps) ? ctx.apps : [];
+  const app = apps.find((a) => a && a.id === row.appId);
+  const name = (app && app.name) || row.appId;
+  const canRepair = ctx.caps ? ctx.caps.repairInstall !== false : true;
+  const busy = ctx.repairing === `${row.appId}::${row.artifactId}`;
+
+  return `
+    <div class="audit-row${row.ok ? ' is-ok' : ' is-bad'}${
+      row.deviceResident ? ' is-device' : ''
+    }" data-audit="${esc(row.appId)}::${esc(row.artifactId)}">
+      <div class="audit-top">
+        <span class="audit-mark" aria-hidden="true">${row.ok ? (row.deviceResident ? '·' : '✓') : '!'}</span>
+        <span class="audit-name">${esc(name)}</span>
+        ${row.artifactId ? `<span class="audit-art mono">${esc(row.artifactId)}</span>` : ''}
+        <span class="audit-sum">${esc(rowSummaryText(row))}</span>
+        ${
+          !row.ok && canRepair
+            ? `<button class="btn btn-outline btn-sm" data-act="repair-install" data-app="${esc(row.appId)}"
+                 data-art="${esc(row.artifactId)}"${busy ? ' disabled' : ''}
+                 title="${esc(`Reinstall ${name} from its release`)}">${busy ? 'Repairing…' : 'Repair'}</button>`
+            : ''
+        }
+      </div>
+      ${
+        row.problems.length
+          ? `<ul class="audit-problems">${row.problems
+              .map(
+                (p) => `<li class="audit-problem">
+                  <span class="audit-kind">${esc(problemChip(p.kind))}</span>
+                  <span class="audit-what">${esc(problemLabel(p.kind))}</span>
+                  ${p.path ? `<span class="audit-path mono" title="${esc(p.path)}">${esc(p.path)}</span>` : ''}
+                  ${p.detail ? `<span class="audit-detail">${esc(p.detail)}</span>` : ''}
+                </li>`
+              )
+              .join('')}</ul>`
+          : ''
+      }
+    </div>`;
+}
+
+/** The "Verify installs" block inside Storage. Absent without getAudit(). */
+export function renderAuditBlock(audit, ctx = {}) {
+  const state = audit || {};
+  const ran = !!state.ran;
+  const rows = Array.isArray(state.rows) ? state.rows : [];
+
+  const body = state.loading
+    ? '<p class="field-note">Checking every install…</p>'
+    : state.error
+      ? `<p class="field-error">${esc(state.error)}</p>`
+      : !ran
+        ? '<p class="field-note">Checks every installed file against what the hub recorded — folders, manifests, binaries and checksums.</p>'
+        : rows.length
+          ? `<p class="field-note">${esc(auditSummaryText(rows))}</p>
+             <div class="audit-list">${rows.map((r) => renderAuditRow(r, ctx)).join('')}</div>`
+          : '<p class="field-note">Nothing installed by the hub to check.</p>';
+
+  return `
+    <div class="audit">
+      ${body}
+      <div class="row row-wrap">
+        <button class="btn btn-ghost btn-sm" data-act="verify-installs"${state.loading ? ' disabled' : ''}>${
+          icons.shield
+        }<span>${state.loading ? 'Verifying…' : ran ? 'Verify again' : 'Verify installs'}</span></button>
+      </div>
+    </div>`;
+}
+
 /** Storage bars — one per app plus the download cache, biggest first. */
 export function renderStorageSection(usage, apps, ctx = {}) {
   const rows = usageRows(usage, apps);
   const total = usageTotalLabel(usage);
-  const canClear = ctx.caps ? ctx.caps.clearDownloadCache !== false : true;
+  const caps = ctx.caps || {};
+  const canClear = caps.clearDownloadCache !== false;
+  const canAudit = caps.getAudit !== false;
+  // A build can have the audit without the measurer: the bars go, the section
+  // (and its Verify button) stay.
+  const canMeasure = caps.getDiskUsage !== false;
 
   const body = ctx.loading
     ? '<p class="field-note">Measuring…</p>'
@@ -48,13 +132,18 @@ export function renderStorageSection(usage, apps, ctx = {}) {
   return `
     <section class="fieldset">
       <h3>${icons.disk}<span>Storage</span></h3>
-      ${body}
-      ${total ? `<p class="usage-total">Total <strong>${esc(total)}</strong></p>` : ''}
-      <div class="row row-wrap">
-        <button class="btn btn-ghost btn-sm" data-act="disk-usage">${icons.refresh}<span>${usage ? 'Re-measure' : 'Measure'}</span></button>
-        ${canClear ? `<button class="btn btn-ghost btn-sm" data-act="clear-cache">${icons.trash}<span>Clear download cache</span></button>` : ''}
-      </div>
+      ${canMeasure ? body : ''}
+      ${canMeasure && total ? `<p class="usage-total">Total <strong>${esc(total)}</strong></p>` : ''}
+      ${
+        canMeasure || canClear
+          ? `<div class="row row-wrap">
+               ${canMeasure ? `<button class="btn btn-ghost btn-sm" data-act="disk-usage">${icons.refresh}<span>${usage ? 'Re-measure' : 'Measure'}</span></button>` : ''}
+               ${canClear ? `<button class="btn btn-ghost btn-sm" data-act="clear-cache">${icons.trash}<span>Clear download cache</span></button>` : ''}
+             </div>`
+          : ''
+      }
       ${ctx.freed ? `<p class="field-ok">${esc(ctx.freed)}</p>` : ''}
+      ${canAudit ? renderAuditBlock(ctx.audit, { caps, apps, repairing: ctx.repairing }) : ''}
     </section>`;
 }
 
@@ -204,7 +293,17 @@ export function renderSettingsPanel(draft, ctx = {}) {
         <input id="set-adb" class="input" type="text" data-field="adbPath" value="${esc(d.adbPath || '')}" placeholder="adb" spellcheck="false">
       </section>
 
-      ${caps.getDiskUsage === false ? '' : renderStorageSection(ctx.diskUsage, ctx.apps, { caps, loading: ctx.diskLoading, freed: ctx.freed })}
+      ${
+        caps.getDiskUsage === false && caps.getAudit === false && caps.clearDownloadCache === false
+          ? ''
+          : renderStorageSection(ctx.diskUsage, ctx.apps, {
+              caps,
+              loading: ctx.diskLoading,
+              freed: ctx.freed,
+              audit: ctx.audit,
+              repairing: ctx.repairing,
+            })
+      }
       ${caps.getLogs === false ? '' : renderLogsSection(ctx.logs)}
       ${renderBackupSection({ caps, importResult: ctx.importResult })}
 

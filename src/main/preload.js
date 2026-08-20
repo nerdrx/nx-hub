@@ -82,6 +82,35 @@ const api = {
   restoreSnapshot: (appId, file) => ipcRenderer.invoke("nxhub:restoreSnapshot", appId, file),
   deleteSnapshot: (appId, file) => ipcRenderer.invoke("nxhub:deleteSnapshot", appId, file),
 
+  // ---- v0.10 [audit] (SPEC "Deep audit") ----
+  // getAudit(appId?) → [{appId, artifactId, ok, kind, version, path,
+  // deviceResident, problems:[{kind, path?, detail}], notes:[…]}], one row per
+  // recorded install. `problems` is empty exactly when `ok`.
+  // Problem kinds: missing-dir · bad-manifest · missing-binary · not-executable
+  // · missing-file · missing-desktop-entry · hash-mismatch. Never rejects.
+  // deviceResident rows (apk-adb) come back ok with a note: their files live on
+  // a headset, so "ok" means "nothing here to check", not "verified".
+  // repairInstall(appId, artifactId) → a JOB ID: an ordinary install job, so
+  // it streams the same job-progress/job-done events as any other install.
+  getAudit: (appId) => ipcRenderer.invoke("nxhub:getAudit", appId || null),
+  repairInstall: (appId, artifactId) => ipcRenderer.invoke("nxhub:repairInstall", appId, artifactId),
+
+  // ---- v0.10 [replay] (SPEC "Ecosystem checkpoints") ----
+  // getCheckpoint(when) → {ts, iso, apps:[{appId, appName, artifactId, version,
+  // currentVersion, action: none|install|remove, tag, snapshot, snapshotAt,
+  // uncertain, why, skipReason}], uncertain, actionable, skipped, horizon}.
+  // `when` takes epoch ms or the recorder's strings ("24h", "2d", "2026-08-15").
+  // `version` is what was installed THEN — null means "not installed then", or
+  // "unknown" when `uncertain` is set (those rows are never acted on).
+  // A checkpoint on `now` comes back with an empty `apps`.
+  // restoreCheckpoint(when, {configs}) resolves with the verdict {ok, ts,
+  // results, counts} once the whole plan has run; follow it live on onEvent
+  // through `checkpoint-progress` {phase: planning|installing|removing|
+  // restoring-config|done|failed, appId, artifactId} — the run's own verdict
+  // carries appId: null. One restore at a time (a second call rejects).
+  getCheckpoint: (when) => ipcRenderer.invoke("nxhub:getCheckpoint", when),
+  restoreCheckpoint: (when, opts) => ipcRenderer.invoke("nxhub:restoreCheckpoint", when, opts || {}),
+
   onEvent: (cb) => {
     if (typeof cb !== "function") return () => {};
     const handler = (_event, payload) => {

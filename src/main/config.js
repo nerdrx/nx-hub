@@ -100,6 +100,10 @@ function defaults() {
     // (src/main/fleet). Off means this hub is neither discoverable nor
     // reachable; already-paired peers simply go offline.
     fleet: true,
+    // v0.10: exchange appPrefs and stacks with paired hubs (SPEC "Fleet
+    // settings sync"). Gates BOTH directions — off means this hub neither
+    // sends its preferences nor accepts a peer's.
+    fleetSync: true,
   };
 }
 
@@ -139,6 +143,20 @@ function trimmedString(v) {
 }
 
 /**
+ * v0.10 [fabric2]: the last-write stamp on one app's prefs, epoch ms.
+ *
+ * PRESERVED but never INVENTED. Fleet settings sync resolves two hubs' copies
+ * of an entry by comparing these, so a stamp has to survive every read/write
+ * cycle the entry goes through — but a stamp minted by the sanitiser would
+ * claim that reading a file was an edit, and the entry would then beat the real
+ * edit on the other machine. Only setAppPref (the actual writer) stamps.
+ */
+function prefStamp(value) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  return Math.round(value);
+}
+
+/**
  * Clean ONE app's prefs. Unknown keys are dropped, values are type-checked,
  * arrays are taken as-is (never merged element-wise).
  * @returns {object} may be empty
@@ -146,6 +164,9 @@ function trimmedString(v) {
 function sanitizeAppPref(raw) {
   const out = {};
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+
+  const ts = prefStamp(raw._ts); // v0.10 — see prefStamp
+  if (ts != null) out._ts = ts;
 
   if (UPDATE_POLICIES.includes(raw.updatePolicy)) out.updatePolicy = raw.updatePolicy;
   if (typeof raw.includePrereleases === "boolean") out.includePrereleases = raw.includePrereleases;
@@ -259,6 +280,7 @@ function sanitize(raw) {
   s.lanSeeding = bool(s.lanSeeding, true);
   s.requireSignatures = bool(s.requireSignatures, false); // v0.8
   s.fleet = bool(s.fleet, true); // v0.6
+  s.fleetSync = bool(s.fleetSync, true); // v0.10
   const maxDl = Math.floor(Number(s.maxConcurrentDownloads));
   s.maxConcurrentDownloads = Number.isFinite(maxDl) && maxDl >= 1 ? Math.min(maxDl, 8) : defaults().maxConcurrentDownloads;
   s.preferredDeviceSerial = trimmedString(s.preferredDeviceSerial);
@@ -294,7 +316,12 @@ function setAppPref(appId, patch) {
   if (!id) throw new Error("setAppPref needs an app id");
   const stored = loadRaw();
   const prefs = Object.assign({}, stored.appPrefs);
-  prefs[id] = mergeAppPref(prefs[id], patch);
+  const merged = mergeAppPref(prefs[id], patch);
+  // v0.10 [fabric2]: this is the WRITE, so this is where the stamp is minted.
+  // `_ts` is not in APP_PREF_KEYS, so a caller cannot smuggle one in through
+  // the patch and win a merge on another machine by claiming the future.
+  merged._ts = Date.now();
+  prefs[id] = merged;
   return save({ appPrefs: prefs });
 }
 

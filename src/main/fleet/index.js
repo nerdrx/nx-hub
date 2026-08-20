@@ -55,6 +55,8 @@ const client = require("./client");
 const arp = require("./arp");
 const wol = require("./wol");
 const assetsMod = require("./assets");
+const rosterMod = require("./roster");
+const syncMod = require("./sync");
 const frame = require("../connector/frame");
 
 /** How often the local summary is rebuilt and (if changed) pushed. */
@@ -70,6 +72,10 @@ const CHANGE_MIN_MS = 250;
 const PROBE_TIMEOUT_MS = 3000;
 /** v0.7: how long a remote stop waits for the bus to say the app left. */
 const STOP_WAIT_MS = 5000;
+/** v0.10: SPEC — a bus roster goes out at most once every five seconds. */
+const ROSTER_MIN_MS = 5000;
+/** v0.10: SPEC — a settings push follows a local change by three seconds. */
+const PREFS_DEBOUNCE_MS = 3000;
 
 let current = null;
 
@@ -133,6 +139,31 @@ function createFleet(o = {}) {
     }
     return connectorMod;
   }
+  /* ---- v0.10 "nervous system" knobs, injectable for the same reason ---- */
+
+  const rosterIntervalMs = Number(o.rosterIntervalMs) > 0 ? Number(o.rosterIntervalMs) : ROSTER_MIN_MS;
+  const prefsDebounceMs = Number.isFinite(o.prefsDebounceMs)
+    ? Math.max(0, Number(o.prefsDebounceMs))
+    : PREFS_DEBOUNCE_MS;
+  /**
+   * The two modules settings sync reads and writes. Separate from `config`
+   * above on purpose: a test drives sync against temp files without the fleet's
+   * own identity store moving, and a hub without a stacks module (the CLI's
+   * bare fleet) simply syncs prefs.
+   */
+  const syncConfig = o.syncConfig || config;
+  let stacksMod = o.stacks === undefined ? undefined : o.stacks;
+  function stacksModule() {
+    if (stacksMod !== undefined) return stacksMod;
+    try {
+      // eslint-disable-next-line global-require
+      stacksMod = require("../stacks");
+    } catch (_) {
+      stacksMod = null;
+    }
+    return stacksMod;
+  }
+
   /** process.kill, injectable — a test must never SIGTERM a real pid. */
   const kill =
     typeof o.kill === "function"
@@ -149,6 +180,8 @@ function createFleet(o = {}) {
   const sessions = new Map();
   /** peerId -> the last `summary` payload it pushed */
   const summaries = new Map();
+  /** v0.10: peerId -> {peerId, peerName, clients, at} — that peer's bus roster */
+  const rosters = new Map();
   /** rid -> {peerId, resolve, reject, timer} for requests WE sent */
   const inflight = new Map();
   /** jobId -> {peerId, rid} for jobs a PEER asked us to run */
@@ -169,6 +202,16 @@ function createFleet(o = {}) {
   let changeTimer = null;
   let closed = false;
   let ridCounter = 0;
+  /* v0.10 */
+  let rosterTimer = null;
+  let rosterPending = false;
+  let lastRosterAt = 0;
+  let unsubscribeBus = null;
+  let prefsTimer = null;
+  let lastPrefsHash = null;
+  /** True while an INBOUND merge is being written, so our own state-changed
+   *  does not come straight back round as another push. */
+  let applyingPrefs = false;
 
   const localChangeListeners = new Set();
 
@@ -227,6 +270,280 @@ function createFleet(o = {}) {
     return summary;
   }
 
+  /* ---------------- v0.10: the federated bus ---------------- */
+
+  /**
+   * `bus-roster` as it stands right now: whoever is on THIS hub's connector
+   * bus, with 20 points of history per numeric field. Never throws — a hub
+   * without a bus federates an empty roster, which is the truth.
+   */
+  function buildRoster() {
+    const c = bus();
+    let list = [];
+    if (c && typeof c.getClients === "function") {
+      try {
+        list = c.getClients({ historyLimit: rosterMod.MAX_ROSTER_HISTORY }) || [];
+      } catch (e) {
+        log(`fleet: could not read the bus roster — ${e.message}`);
+        list = [];
+      }
+    }
+    return rosterMod.buildRoster(list);
+  }
+
+  /** Push the local roster to every live session (or to just one). */
+  function pushRoster(session) {
+    if (closed) return null;
+    const payload = buildRoster();
+    if (session) {
+      if (session.alive) session.send(payload);
+      return payload;
+    }
+    for (const s of sessions.values()) if (s.alive) s.send(payload);
+    return payload;
+  }
+
+  /**
+   * SPEC: "debounced <=1/5s". Same leading-ish shape as the connector's own
+   * change notifier — the first move goes out at once, a storm of them costs
+   * one message per window, and a quiet bus costs nothing at all.
+   */
+  function scheduleRoster() {
+    if (closed) return;
+    rosterPending = true;
+    if (rosterTimer) return;
+    const wait = Math.max(0, rosterIntervalMs - (Date.now() - lastRosterAt));
+    rosterTimer = setTimeout(() => {
+      rosterTimer = null;
+      if (!rosterPending || closed) return;
+      rosterPending = false;
+      lastRosterAt = Date.now();
+      pushRoster();
+    }, wait);
+    if (rosterTimer.unref) rosterTimer.unref();
+  }
+
+  /** A peer told us what is on its bus. */
+  function onBusRoster(session, payload) {
+    const clients = rosterMod.sanitizeRoster(payload.clients);
+    const before = rosters.get(session.peerId);
+    rosters.set(session.peerId, {
+      peerId: session.peerId,
+      peerName: session.peerName,
+      clients,
+      at: Date.now(),
+    });
+    if (before && before.peerName === session.peerName && !rosterMod.differs(before.clients, clients)) return;
+    // SPEC: ONE event type. A remote app appearing is a connector change like
+    // any other, so the renderer has a single thing to listen for.
+    safely(emit, { type: "connector-changed" });
+  }
+
+  /**
+   * Forget a peer's roster. The event fires whenever there WAS an entry, empty
+   * client list included: the strip draws a row per peer, so a peer vanishing
+   * is a change on screen even when it was running nothing.
+   */
+  function dropRoster(peerId) {
+    if (!rosters.delete(peerId)) return;
+    safely(emit, { type: "connector-changed" });
+  }
+
+  /** SPEC: `[{peerId, peerName, clients:[…]}]`, ordinally sorted. */
+  function getRemoteClients() {
+    const out = [];
+    for (const entry of rosters.values()) {
+      out.push({
+        peerId: entry.peerId,
+        peerName: entry.peerName,
+        clients: entry.clients.map((c) => ({
+          app: c.app,
+          version: c.version,
+          since: c.since,
+          fields: Object.assign({}, c.fields),
+          history: Object.assign({}, c.history),
+        })),
+      });
+    }
+    out.sort((a, b) => {
+      const an = String(a.peerName || "");
+      const bn = String(b.peerName || "");
+      if (an !== bn) return an < bn ? -1 : 1;
+      return a.peerId < b.peerId ? -1 : a.peerId > b.peerId ? 1 : 0;
+    });
+    return out;
+  }
+
+  /* ---------------- v0.10: settings sync ---------------- */
+
+  /** SPEC: `fleetSync` (default true) gates BOTH directions. */
+  function syncEnabled() {
+    try {
+      return syncConfig.load().fleetSync !== false;
+    } catch (e) {
+      log(`fleet: could not read fleetSync — ${e.message}`);
+      return false;
+    }
+  }
+
+  /** What this hub would send: appPrefs + stacks, and nothing else, ever. */
+  function buildPrefsPayload() {
+    let appPrefs = {};
+    try {
+      appPrefs = syncConfig.load().appPrefs || {};
+    } catch (e) {
+      log(`fleet: could not read appPrefs — ${e.message}`);
+      return null;
+    }
+    let stackList = [];
+    const s = stacksModule();
+    if (s && typeof s.list === "function") {
+      try {
+        stackList = s.list() || [];
+      } catch (e) {
+        log(`fleet: could not read stacks — ${e.message}`);
+        stackList = [];
+      }
+    }
+    return syncMod.buildPayload({ appPrefs, stacks: stackList });
+  }
+
+  /**
+   * Send the payload — to one session, or to every live one when it MOVED.
+   *
+   * The hash check is what stops a re-broadcast turning into a conversation:
+   * a merge that changed nothing leaves the hash where it was, so nothing goes
+   * out and the exchange ends.
+   */
+  function pushPrefs(session) {
+    if (closed || !syncEnabled()) return null;
+    const payload = buildPrefsPayload();
+    if (!payload) return null;
+    const hash = syncMod.payloadHash(payload);
+    const moved = hash !== lastPrefsHash;
+    lastPrefsHash = hash;
+
+    let size = Infinity;
+    try {
+      size = Buffer.byteLength(JSON.stringify(payload), "utf8");
+    } catch (_) {
+      size = Infinity;
+    }
+    // The wire caps a message at MAX_MESSAGE and a peer hangs up on an
+    // oversized frame, so an unsendable payload is dropped HERE with a line in
+    // the log rather than by killing a healthy session.
+    if (size > Math.min(syncMod.MAX_SYNC_BYTES, protocol.MAX_MESSAGE - 2048)) {
+      log(`fleet: settings payload is ${size} bytes — too big to sync`);
+      return null;
+    }
+
+    if (session) {
+      if (session.alive) session.send(payload);
+      return payload;
+    }
+    if (!moved) return payload;
+    for (const s of sessions.values()) if (s.alive) s.send(payload);
+    return payload;
+  }
+
+  /** SPEC: "pushed debounced 3s after any local change". */
+  function notePrefsChange() {
+    if (closed || applyingPrefs || !syncEnabled()) return;
+    if (prefsTimer) return;
+    prefsTimer = setTimeout(() => {
+      prefsTimer = null;
+      pushPrefs();
+    }, prefsDebounceMs);
+    if (prefsTimer.unref) prefsTimer.unref();
+  }
+
+  /**
+   * Merge a peer's payload into ours.
+   *
+   * Everything lands through the hub's own writers — config.save and
+   * stacks.save — so the merge cannot reach anywhere those two would not, and
+   * an entry that offends the sanitizers dies exactly where a hand-edited file
+   * would kill it. The stamps TRAVEL: an entry adopted from a peer keeps that
+   * peer's stamp, otherwise every hop would look like a fresh local edit and
+   * the newest writer would be whoever spoke last rather than whoever typed
+   * last.
+   */
+  function onPrefsSync(session, payload) {
+    if (!syncEnabled()) {
+      // Not an error and not worth a nack: the user turned sync off on THIS
+      // hub, and the peer has no business being told what we do about that.
+      return;
+    }
+    const s = stacksModule();
+    const clean = syncMod.sanitizePayload(payload, {
+      sanitizeAppPrefs: (raw) => syncConfig.sanitizeAppPrefs(raw),
+      sanitizeStack: s && typeof s.sanitizeStack === "function" ? (raw) => s.sanitizeStack(raw) : null,
+    });
+    if (!clean.ok) {
+      log(`fleet: refused ${session.peerName}'s settings — ${clean.reason}`);
+      return;
+    }
+
+    let changedPrefs = [];
+    let changedStacks = [];
+    applyingPrefs = true;
+    try {
+      let local = {};
+      try {
+        local = syncConfig.load().appPrefs || {};
+      } catch (_) {
+        local = {};
+      }
+      const prefs = syncMod.mergeAppPrefs(local, clean.appPrefs);
+      if (prefs.changed.length) {
+        syncConfig.save({ appPrefs: prefs.merged });
+        changedPrefs = prefs.changed;
+      }
+
+      if (s && typeof s.save === "function") {
+        let localStacks = [];
+        try {
+          localStacks = s.list() || [];
+        } catch (_) {
+          localStacks = [];
+        }
+        const merged = syncMod.mergeStacks(localStacks, clean.stacks);
+        for (const id of merged.changed) {
+          const stack = merged.merged.find((x) => x && x.id === id);
+          if (!stack) continue;
+          try {
+            // `stamp:false` — the stamp is the peer's, and re-stamping here
+            // would make this hub the newest writer of somebody else's edit.
+            s.save(stack, { stamp: false });
+            changedStacks.push(id);
+          } catch (e) {
+            log(`fleet: could not adopt stack "${id}" from ${session.peerName} — ${e.message}`);
+          }
+        }
+      }
+    } catch (e) {
+      log(`fleet: merging ${session.peerName}'s settings failed — ${e.message}`);
+    }
+
+    try {
+      if (!changedPrefs.length && !changedStacks.length) return;
+      log(
+        `fleet: took ${changedPrefs.length} app pref(s) and ${changedStacks.length} stack(s) from ${session.peerName}`
+      );
+      // The flag is still up here on purpose: this state-changed is OUR doing,
+      // and the hub's fan-out feeds it straight back into notePrefsChange. The
+      // re-broadcast below is the deliberate one; a debounced copy of it three
+      // seconds later would be a second push saying the same thing.
+      safely(emit, { type: "state-changed" });
+      // SPEC: re-broadcast ONLY when the merge changed something. It did, so the
+      // hash has moved and pushPrefs sends; the peers that already agree will
+      // find nothing changed and the exchange stops there.
+      pushPrefs();
+    } finally {
+      applyingPrefs = false;
+    }
+  }
+
   /* ---------------- sessions ---------------- */
 
   function adopt(session) {
@@ -244,6 +561,10 @@ function createFleet(o = {}) {
     session.onClose = (reason) => {
       if (sessions.get(session.peerId) === session) sessions.delete(session.peerId);
       failInflightFor(session.peerId, `the session with ${session.peerName} ended (${reason})`);
+      // v0.10: a roster is only true while the session is up. A peer that
+      // dropped is not "running these apps" — it is unknown, so it shows as
+      // nothing rather than as a stale list that never goes away.
+      dropRoster(session.peerId);
       log(`fleet: session with ${session.peerName} closed — ${reason}`);
       notifyChange();
     };
@@ -251,6 +572,11 @@ function createFleet(o = {}) {
     // A fresh session starts with the truth on both sides: BOTH ends adopt,
     // so both push their summary and neither has to ask.
     session.send(lastSummary || buildLocalSummary());
+    // v0.10: and the same for the bus roster and the synced settings — SPEC
+    // says both go out "on session open", which is also the only moment a
+    // debounce would otherwise leave the new peer staring at nothing.
+    pushRoster(session);
+    pushPrefs(session);
     captureMac(session);
     notifyChange();
     return session;
@@ -411,6 +737,11 @@ function createFleet(o = {}) {
         return onAssetQuery(session, payload);
       case "asset-have":
         return onAssetHave(session, payload);
+      // ---- v0.10 "nervous system" ----
+      case "bus-roster":
+        return onBusRoster(session, payload);
+      case "prefs-sync":
+        return onPrefsSync(session, payload);
       default:
         // Forward compatibility: a newer peer's verb earns a complaint, not a
         // hangup — the session is authenticated, so it is a version gap.
@@ -803,7 +1134,12 @@ function createFleet(o = {}) {
    * business.
    */
   function onHubEvent(evt) {
-    if (closed || !evt || !evt.jobId) return;
+    if (closed || !evt) return;
+    // v0.10: the hub's fan-out is the only place a local settings or stack edit
+    // is visible from here, whichever module made it — so the sync's "after any
+    // local change" hangs off it rather than off a hook in every writer.
+    if (evt.type === "state-changed" || evt.type === "settings-changed") notePrefsChange();
+    if (!evt.jobId) return;
     if (evt.type !== "job-progress" && evt.type !== "job-done" && evt.type !== "job-error") return;
     const owner = jobOwners.get(evt.jobId);
     if (!owner) return;
@@ -885,6 +1221,7 @@ function createFleet(o = {}) {
       sessions.delete(peerId);
     }
     summaries.delete(peerId);
+    dropRoster(peerId); // v0.10
     const removed = store.removePeer(peerId);
     if (removed) log(`fleet: unpaired ${peerId}`);
     notifyChange();
@@ -1019,6 +1356,20 @@ function createFleet(o = {}) {
     ensureSession,
     request,
     sessions,
+
+    /* ---- v0.10 "nervous system" ---- */
+
+    /** SPEC: the federated bus — `[{peerId, peerName, clients}]`. */
+    getRemoteClients,
+    /** Push this hub's bus roster now (the debounced path is automatic). */
+    pushRoster,
+    buildRoster,
+    /** Tell the sync a local pref/stack moved. Debounced by SPEC's 3s. */
+    notePrefsChange,
+    pushPrefs,
+    buildPrefsPayload,
+    syncEnabled,
+    rosters,
     remoteInstall(peerId, appId, artifactId) {
       return request(peerId, { type: "install", appId, artifactId: artifactId || null });
     },
@@ -1087,6 +1438,19 @@ function createFleet(o = {}) {
       if (pairing && pairing.timer) clearTimeout(pairing.timer);
       summaryTimer = dialTimer = changeTimer = null;
       pairing = null;
+      // v0.10
+      if (rosterTimer) clearTimeout(rosterTimer);
+      if (prefsTimer) clearTimeout(prefsTimer);
+      rosterTimer = prefsTimer = null;
+      rosters.clear();
+      if (typeof unsubscribeBus === "function") {
+        try {
+          unsubscribeBus();
+        } catch (_) {
+          /* ignore */
+        }
+      }
+      unsubscribeBus = null;
       for (const [rid, entry] of Array.from(inflight.entries())) {
         inflight.delete(rid);
         clearTimeout(entry.timer);
@@ -1115,6 +1479,18 @@ function createFleet(o = {}) {
       if (dialTimer.unref) dialTimer.unref();
       lastSummary = buildLocalSummary();
       lastSummaryHash = protocol.summaryHash(lastSummary);
+      // v0.10: SPEC — a roster is pushed "on connector-changed". The bus's own
+      // subscription survives its init()/close() cycles, so subscribing once
+      // here keeps working across a bus restart.
+      const c = bus();
+      if (c && typeof c.onChange === "function") {
+        try {
+          const off = c.onChange(scheduleRoster);
+          if (typeof off === "function") unsubscribeBus = off;
+        } catch (e) {
+          log(`fleet: could not follow the bus — ${e.message}`);
+        }
+      }
       dialSweep();
     }
     return { ok: listening.ok, port: server.port, beacon: beaconReady, id: identity.id };
@@ -1174,6 +1550,8 @@ module.exports = {
   arp,
   wol,
   assets: assetsMod,
+  roster: rosterMod,
+  sync: syncMod,
   _current: () => current,
   getPeers: passthrough("getPeers", () => []),
   snapshot: passthrough("snapshot", () => null),
@@ -1230,9 +1608,26 @@ module.exports = {
   recordAsset: (sha256, filePath) =>
     current ? current.recordAsset(sha256, filePath) : assetsMod.createAssetIndex().record(sha256, filePath),
 
+  /* ---- v0.10 "nervous system" --------------------------------------- */
+
+  /**
+   * SPEC "Bus federation": what every PEER's connector bus is showing.
+   * `[]` with no fleet, which is also what a hub with no peers reports — the
+   * renderer never has to tell those two apart.
+   */
+  getRemoteClients: passthrough("getRemoteClients", () => []),
+  /** SPEC "Fleet settings sync": a local pref/stack moved. No-op with no fleet. */
+  notePrefsChange: () => {
+    if (current) current.notePrefsChange();
+  },
+  pushRoster: (...a) => (current ? current.pushRoster(...a) : null),
+  pushPrefs: (...a) => (current ? current.pushPrefs(...a) : null),
+
   SUMMARY_INTERVAL_MS,
   DIAL_INTERVAL_MS,
   REQUEST_TIMEOUT_MS,
   PROBE_TIMEOUT_MS,
   STOP_WAIT_MS,
+  ROSTER_MIN_MS,
+  PREFS_DEBOUNCE_MS,
 };

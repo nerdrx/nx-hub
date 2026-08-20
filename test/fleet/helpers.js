@@ -20,6 +20,8 @@ const protocol = require("../../src/main/fleet/protocol");
 const store = require("../../src/main/fleet/store");
 const client = require("../../src/main/fleet/client");
 const wire = require("../../src/main/fleet/wire");
+const realConfig = require("../../src/main/config");
+const realStacks = require("../../src/main/stacks");
 
 const tempDirs = [];
 const running = [];
@@ -110,6 +112,138 @@ function fakeConnector({ present = [], honourShutdown = true } = {}) {
   };
 }
 
+/* ---------------------------------------------------------------- v0.10 */
+
+/**
+ * A connector bus stand-in for bus federation: a mutable client list plus the
+ * module-level `onChange` the real bus exposes, so a test can make the roster
+ * move and watch it cross the wire.
+ */
+function fakeBus({ clients = [] } = {}) {
+  const listeners = new Set();
+  const bus = {
+    clients: clients.slice(),
+    calls: [],
+    getClients(opts) {
+      bus.calls.push(opts || null);
+      return bus.clients.map((c) => Object.assign({}, c));
+    },
+    onChange(cb) {
+      if (typeof cb !== "function") return () => {};
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+    /** Replace the roster and tell everyone, exactly as the real bus does. */
+    set(next) {
+      bus.clients = next.slice();
+      for (const cb of [...listeners]) cb();
+    },
+  };
+  return bus;
+}
+
+/** One connector client in the shape connector/server.getClients() returns. */
+function busClient(app, { version = "1.0.0", fields = {}, history = {}, since = Date.now() } = {}) {
+  return { app, version, pid: 1234, since, lastSeen: Date.now(), fields, caps: [], history };
+}
+
+/**
+ * Settings + stacks for ONE hub, in ONE directory.
+ *
+ * The fleet's settings sync reads and WRITES the hub's real settings.json and
+ * stacks.json, and the machine running these tests has a real hub on it — so
+ * every test drives sync through this facade instead. It is not a mock of the
+ * logic: the sanitisers, the merge and the stamping are the real modules'
+ * (`config.sanitize`, `config.mergeAppPref`, `stacks.sanitizeStack`), only the
+ * file path is the test's.
+ */
+function syncEnv(dir) {
+  const settingsFile = path.join(dir, "settings.json");
+  const stacksFile = path.join(dir, "stacks.json");
+  const readJson = (file, fallback) => {
+    try {
+      return JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch (_) {
+      return fallback;
+    }
+  };
+  const writeJson = (file, value) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
+  };
+
+  const config = {
+    file: settingsFile,
+    load: () => realConfig.sanitize(readJson(settingsFile, {})),
+    save(patch) {
+      const next = realConfig.sanitize(Object.assign(config.load(), patch && typeof patch === "object" ? patch : {}));
+      writeJson(settingsFile, next);
+      return next;
+    },
+    sanitizeAppPrefs: (raw) => realConfig.sanitizeAppPrefs(raw),
+    /** config.setAppPref's contract, including the v0.10 `_ts` stamp. */
+    setAppPref(appId, patch, at) {
+      const id = String(appId).toLowerCase();
+      const prefs = Object.assign({}, config.load().appPrefs);
+      const merged = realConfig.mergeAppPref(prefs[id], patch);
+      merged._ts = at == null ? Date.now() : at;
+      prefs[id] = merged;
+      return config.save({ appPrefs: prefs });
+    },
+  };
+
+  const stacks = {
+    file: stacksFile,
+    sanitizeStack: (raw) => realStacks.sanitizeStack(raw),
+    list() {
+      const raw = readJson(stacksFile, null);
+      const list = raw && Array.isArray(raw.stacks) ? raw.stacks : [];
+      const out = [];
+      const seen = new Set();
+      for (const entry of list) {
+        const stack = realStacks.sanitizeStack(entry);
+        if (!stack || !stack.steps.length || seen.has(stack.id)) continue;
+        seen.add(stack.id);
+        out.push(stack);
+      }
+      return out;
+    },
+    /** stacks.save's contract: stamps unless the sync says not to. */
+    save(raw, { stamp = true, at } = {}) {
+      const stack = realStacks.sanitizeStack(raw);
+      if (!stack) throw new Error("A stack needs an id or a name");
+      if (!stack.steps.length) throw new Error("A stack needs at least one step");
+      if (stamp) stack.updatedAt = at == null ? Date.now() : at;
+      const all = stacks.list();
+      const idx = all.findIndex((s) => s.id === stack.id);
+      if (idx >= 0) all[idx] = stack;
+      else all.push(stack);
+      writeJson(stacksFile, { version: 1, stacks: all });
+      return stack;
+    },
+  };
+
+  return { dir, config, stacks };
+}
+
+/**
+ * Settings sync is OFF for every hub that does not ask for it.
+ *
+ * The fleet tests run against the real `config` module unless told otherwise,
+ * and that module reads (and would write) the settings of the hub actually
+ * installed on this machine. An inert stand-in is the safe default; the sync
+ * tests hand over a syncEnv() instead.
+ */
+function inertSyncConfig() {
+  return {
+    load: () => ({ fleetSync: false, appPrefs: {} }),
+    save: () => {
+      throw new Error("this hub must never write settings");
+    },
+    sanitizeAppPrefs: () => ({}),
+  };
+}
+
 /** One app in the shape discovery.buildApp produces (only the bits we read). */
 function app(id, { name, latest = "1.0.0", artifacts = [] } = {}) {
   return {
@@ -143,6 +277,12 @@ async function startFleet(opts = {}) {
         hubVersion: opts.hubVersion || "9.9.9",
         discovery: opts.discovery || fakeDiscovery([]),
         jobs: opts.jobs || null,
+        // v0.10: null = "this hub has no bus", the default for every test that
+        // is not about federation. `undefined` would lazily require the real
+        // connector module instead.
+        connector: opts.connector === undefined ? null : opts.connector,
+        stacks: opts.stacks === undefined ? null : opts.stacks,
+        syncConfig: opts.syncConfig || inertSyncConfig(),
         emit: (e) => events.push(e),
         log: (m) => logs.push(String(m)),
         // Fast timers everywhere: the tests must never wait on production
@@ -280,6 +420,10 @@ module.exports = {
   fakeDiscovery,
   fakeJobs,
   fakeConnector,
+  fakeBus,
+  busClient,
+  syncEnv,
+  inertSyncConfig,
   app,
   startFleet,
   pairHubs,

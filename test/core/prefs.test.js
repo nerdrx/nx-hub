@@ -35,6 +35,60 @@ test("v0.2 settings defaults match the SPEC", (t) => {
   assert.strictEqual(s.preferredDeviceSerial, null);
 });
 
+test("v0.10 — setAppPref stamps _ts; the sanitizer preserves it and never invents one", (t) => {
+  const env = helpers.useTempEnv();
+  t.after(() => env.cleanup());
+
+  const before = Date.now();
+  config.setAppPref("wivrn-nx", { favorite: true });
+  const stamped = config.getAppPref(config.load(), "wivrn-nx");
+  assert.ok(stamped._ts >= before && stamped._ts <= Date.now(), "the WRITE is what mints a stamp");
+
+  // a second write moves it forward; the entry's other keys are untouched
+  const first = stamped._ts;
+  config.setAppPref("wivrn-nx", { hidden: true });
+  const second = config.getAppPref(config.load(), "wivrn-nx");
+  assert.ok(second._ts >= first);
+  assert.strictEqual(second.favorite, true);
+
+  // READING is not editing. Fleet settings sync decides which of two hubs'
+  // copies wins by comparing these, so a stamp minted by the sanitizer would
+  // let a machine nobody touched beat the one the user actually typed on.
+  config.save({ appPrefs: { quadforge: { favorite: true } } });
+  assert.deepStrictEqual(config.getAppPref(config.load(), "quadforge"), { favorite: true }, "never invented");
+  assert.deepStrictEqual(config.load().appPrefs.quadforge, config.load().appPrefs.quadforge);
+
+  // …but a stamp that IS there survives every round trip
+  config.save({ appPrefs: { ogb: { favorite: true, _ts: 1_700_000_000_000 } } });
+  assert.strictEqual(config.getAppPref(config.load(), "ogb")._ts, 1_700_000_000_000);
+  assert.strictEqual(config.sanitizeAppPref({ favorite: true, _ts: 1_700_000_000_000.6 })._ts, 1_700_000_000_001);
+
+  // junk stamps are not stamps
+  for (const junk of [0, -1, "1700000000000", null, NaN, Infinity, {}, []]) {
+    assert.ok(!("_ts" in config.sanitizeAppPref({ favorite: true, _ts: junk })), `_ts: ${JSON.stringify(junk)}`);
+  }
+
+  // a caller cannot claim the future through setAppPref — `_ts` is not one of
+  // the keys a patch may set, so the write's own clock always wins
+  config.setAppPref("pulsenx", { favorite: true, _ts: 4_000_000_000_000 });
+  assert.ok(config.getAppPref(config.load(), "pulsenx")._ts < 4_000_000_000_000);
+  assert.ok(!config.APP_PREF_KEYS.includes("_ts"));
+});
+
+test("v0.10 — fleetSync defaults on and sanitizes like the other booleans", (t) => {
+  const env = helpers.useTempEnv();
+  t.after(() => env.cleanup());
+
+  assert.strictEqual(config.defaults().fleetSync, true);
+  assert.strictEqual(config.load().fleetSync, true);
+  config.save({ fleetSync: false });
+  assert.strictEqual(config.load().fleetSync, false);
+  config.save({ fleetSync: "true" });
+  assert.strictEqual(config.load().fleetSync, true);
+  config.save({ fleetSync: "nonsense" });
+  assert.strictEqual(config.load().fleetSync, true, "junk falls back to the default");
+});
+
 test("junk values fall back to the defaults instead of poisoning settings", (t) => {
   const env = helpers.useTempEnv();
   t.after(() => env.cleanup());

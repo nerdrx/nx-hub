@@ -45,6 +45,23 @@ const HELLO_GRACE_MS = 10 * 1000;
 /** Guard against a client inventing unbounded status keys across messages. */
 const MAX_STATUS_KEYS = 64;
 
+// --- v0.10 "nervous system": field history → sparklines (SPEC) --------------
+//
+// Every NUMERIC status field gets a ring of {ts, value} behind it, so the UI
+// can draw where a number has been rather than only where it is. Bools and
+// text get none: a sparkline over "connected" or "idle" would be a drawing of
+// nothing. The rings hang off the connection object, so they are reaped with
+// the client for free — a reconnect starts a fresh line, which is the honest
+// thing to show after a gap.
+
+/** SPEC: "max 120 samples, 10min window" — whichever bites first. */
+const HISTORY_MAX_SAMPLES = 120;
+const HISTORY_WINDOW_MS = 10 * 60 * 1000;
+/** SPEC: getClients() hands out at most this many points per field. */
+const HISTORY_POINTS = 60;
+/** SPEC: a fleet `bus-roster` carries at most this many (bandwidth). */
+const ROSTER_HISTORY_POINTS = 20;
+
 const TOKEN_FILE = "connector.token";
 
 // ---------------------------------------------------------------------------
@@ -126,6 +143,77 @@ function isLoopback(address) {
   if (!address) return false;
   const addr = address.startsWith("::ffff:") ? address.slice(7) : address;
   return addr === "127.0.0.1" || addr.startsWith("127.") || addr === "::1";
+}
+
+// ---------------------------------------------------------------------------
+// v0.10: field history
+// ---------------------------------------------------------------------------
+
+/** Drop what fell out of the window, then what fell out of the ring. */
+function pruneRing(ring, now) {
+  const floor = now - HISTORY_WINDOW_MS;
+  let stale = 0;
+  while (stale < ring.length && ring[stale].ts < floor) stale += 1;
+  if (stale) ring.splice(0, stale);
+  if (ring.length > HISTORY_MAX_SAMPLES) ring.splice(0, ring.length - HISTORY_MAX_SAMPLES);
+  return ring;
+}
+
+/**
+ * Record one status message's numeric fields.
+ *
+ * Only the keys THIS message carried are touched — status is a shallow merge,
+ * so a strap that sends {hr} every beat must not be treated as having stopped
+ * reporting {battery}. A key that arrives as something other than a finite
+ * number loses its history outright: the line is over, and half a line of
+ * numbers followed by "n/a" is worse than no line at all.
+ */
+function recordHistory(conn, fields, now) {
+  for (const key of Object.keys(fields)) {
+    const value = fields[key];
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      conn.history.delete(key);
+      continue;
+    }
+    let ring = conn.history.get(key);
+    if (!ring) {
+      // The field cap already bounds `fields`; bound the rings by the same
+      // number so a client cycling key names cannot grow this map forever.
+      if (conn.history.size >= MAX_STATUS_KEYS) continue;
+      ring = [];
+      conn.history.set(key, ring);
+    }
+    ring.push({ ts: now, v: value });
+    pruneRing(ring, now);
+  }
+}
+
+/**
+ * Thin a ring to at most `limit` points by an EVEN stride, counting back from
+ * the newest sample so the latest value is always one of them — a sparkline
+ * whose right-hand end lags the number printed beside it looks broken.
+ */
+function downsample(ring, limit, now) {
+  const floor = now - HISTORY_WINDOW_MS;
+  const live = ring.filter((s) => s.ts >= floor);
+  if (!live.length) return [];
+  if (live.length <= limit) return live.map((s) => ({ ts: s.ts, v: s.v }));
+  const stride = Math.ceil(live.length / limit);
+  const out = [];
+  for (let i = live.length - 1; i >= 0; i -= stride) out.push({ ts: live[i].ts, v: live[i].v });
+  out.reverse();
+  return out;
+}
+
+/** `{field: [{ts, v}, …]}` for one connection. Empty rings are left out. */
+function historyOf(conn, limit, now) {
+  const out = {};
+  if (!conn.history) return out;
+  for (const [key, ring] of conn.history) {
+    const points = downsample(ring, limit, now);
+    if (points.length) out[key] = points;
+  }
+  return out;
 }
 
 /**
@@ -275,6 +363,8 @@ function createBus(opts) {
       pid: null,
       caps: [],
       fields: {},
+      // v0.10: field -> [{ts, v}] for the numeric ones. Dies with the socket.
+      history: new Map(),
       since: now,
       lastSeen: now,
       statusTimes: [],
@@ -388,6 +478,9 @@ function createBus(opts) {
     conn.since = Date.now();
     conn.lastSeen = conn.since;
     conn.fields = {};
+    // v0.10: a re-hello is a new run of the app — the old numbers are not this
+    // process's history, so the sparklines start again from empty.
+    conn.history = new Map();
     byApp.set(appId, conn);
 
     send(conn, { type: "welcome", hub: hubVersion });
@@ -439,6 +532,8 @@ function createBus(opts) {
       return;
     }
     conn.fields = merged;
+    // v0.10: AFTER the caps, so a rejected status never leaves a sample behind.
+    recordHistory(conn, fields, now);
     notifyChange();
   }
 
@@ -486,7 +581,18 @@ function createBus(opts) {
     tokenFile: tokenPath(dataDir),
     /** Resolves {ok, port, error} once listening succeeds or fails. */
     ready: null,
-    getClients() {
+    /**
+     * @param {object} [opts]
+     * @param {number} [opts.historyLimit] v0.10: points per field (default 60).
+     *        The fleet asks for 20 — a roster crosses the LAN, a sparkline does
+     *        not.
+     */
+    getClients({ historyLimit = HISTORY_POINTS } = {}) {
+      const limit =
+        Number.isFinite(historyLimit) && historyLimit > 0
+          ? Math.min(Math.floor(historyLimit), HISTORY_MAX_SAMPLES)
+          : HISTORY_POINTS;
+      const now = Date.now();
       const out = [];
       for (const conn of byApp.values()) {
         out.push({
@@ -497,6 +603,8 @@ function createBus(opts) {
           lastSeen: conn.lastSeen,
           fields: Object.assign({}, conn.fields),
           caps: conn.caps.slice(),
+          // v0.10: {field: [{ts, v}]} — numeric fields only, may be {}
+          history: historyOf(conn, limit, now),
         });
       }
       // Ordinal sort — the host may run de_DE, so never localeCompare.
@@ -624,8 +732,8 @@ function init(o = {}) {
 }
 
 /** Every app currently on the bus. Empty when the bus is not running. */
-function getClients() {
-  return current ? current.getClients() : [];
+function getClients(opts) {
+  return current ? current.getClients(opts) : [];
 }
 
 /** Is this app id on the bus right now? (presence === open socket) */
@@ -668,4 +776,11 @@ module.exports = {
   CHANGE_MIN_MS,
   DEFAULT_PING_MS,
   DEFAULT_REAP_MS,
+  // v0.10 [fabric2]: field history
+  HISTORY_MAX_SAMPLES,
+  HISTORY_WINDOW_MS,
+  HISTORY_POINTS,
+  ROSTER_HISTORY_POINTS,
+  _downsample: downsample,
+  _pruneRing: pruneRing,
 };

@@ -975,8 +975,195 @@ test('a rollback with no matching snapshot still uses the plain confirm', async 
   globalThis.window.__confirm = true;
 });
 
+/* ------------------------------------------------------------------ v0.10 */
+
+test('the strip draws sparklines, and a peer-tagged strip for the remote roster', async () => {
+  const grid = dom.html('grid');
+  assert.ok(grid.includes('<svg class="spark'), 'the live cards carry sparklines');
+  assert.ok(grid.includes('data-spark="bitrate"'), 'one per numeric field');
+  assert.ok(grid.includes('<polyline points='), 'with real coordinates in them');
+
+  // workshop-pc is relaying an app that is NOT on this machine's bus: that card
+  // is LIVE, peer-tagged, and has no local strip at all.
+  assert.ok(grid.includes('class="live live-remote"'), 'the relayed roster reached a card');
+  assert.ok(grid.includes('>on workshop-pc<'), 'wearing the violet peer microchip');
+
+  // …and the same card can gain a second, local strip without losing the first.
+  mock().toggleBusClient('oscgoesbrrr-nx-patches');
+  await tick(140);
+  const both = dom.html('grid');
+  assert.ok(both.includes('class="live"'), 'a local strip appeared');
+  assert.ok(both.includes('class="live live-remote"'), 'and the remote one is still there');
+  mock().toggleBusClient('oscgoesbrrr-nx-patches');
+  await tick(140);
+});
+
+test('the fleet sheet shows what a peer is relaying, and says sync is on', async () => {
+  mock().relayNxWin();
+  await tick(200);
+  await clickAndSettle({ 'data-act': 'fleet' }, 200);
+  const sheet = dom.html('sheet-root');
+  assert.ok(sheet.includes('class="peer-bus"'), 'the relayed roster is inline under its peer');
+  assert.ok(sheet.includes('>Live there<'));
+  assert.ok(sheet.includes('data-live="wivrn-nx-windows"'), 'wivrn on NX-WIN, as the mock promised');
+  assert.ok(sheet.includes('preferences sync with this hub'), 'and sync says so, once per online peer');
+  await clickAndSettle({ 'data-act': 'close-sheet' });
+});
+
+test('Activity offers "restore to here", and the sheet plans the whole ecosystem', async () => {
+  await clickAndSettle({ 'data-act': 'activity' }, 400);
+  const timeline = dom.html('sheet-root');
+  assert.ok(timeline.includes('class="act-restore"'), 'the affordance is on the timeline');
+  assert.ok(timeline.includes('data-act="checkpoint"'));
+
+  // Take the moment the day separator offers — the same control the user clicks.
+  const ts = /data-act="checkpoint" data-ts="(\d+)"/.exec(timeline)[1];
+  await clickAndSettle({ 'data-act': 'checkpoint', 'data-ts': ts }, 300);
+
+  const plan = dom.html('sheet-root');
+  assert.ok(plan.includes('Restore to '), 'the checkpoint sheet replaced the timeline');
+  assert.ok(plan.includes('class="cp-table"'), 'with the reconstruction as a table');
+  assert.ok(plan.includes('cp-chip-cyan">install'), 'something to install');
+  assert.ok(plan.includes('cp-chip-violet">remove'), 'something to remove');
+  assert.ok(plan.includes('cp-chip-amber'), 'and rows it cannot place');
+  assert.ok(plan.includes('is-uncertain'));
+  assert.ok(plan.includes('cannot be placed'), 'said in words, not just colour');
+  assert.ok(plan.includes('data-act="checkpoint-configs"'), 'a snapshot exists, so the toggle does');
+  assert.ok(plan.includes('data-act="checkpoint-confirm"'));
+});
+
+test('confirming the checkpoint folds progress rows and ends in a result', async () => {
+  // The plan removes QuadForge and puts WiVRn back on 1.9.1. Earlier tests in
+  // this file have moved both around, so what is asserted is the MOVE, not an
+  // absolute version this test does not own.
+  const quadBefore = mock().state.apps.find((a) => a.id === 'quadforge').artifacts[0];
+  assert.ok(quadBefore.installed, 'QuadForge is installed going in — the plan removes it');
+
+  await clickAndSettle({ 'data-act': 'checkpoint-confirm' }, 600);
+  const running = dom.html('sheet-root');
+  assert.ok(running.includes('class="cp-progress"'), 'the table became progress rows');
+  assert.ok(running.includes('cp-prow'), running.slice(0, 400));
+  assert.ok(!running.includes('cp-table'), 'and the plan is not shown twice');
+
+  // Let the serialized walk finish.
+  await tick(4200);
+  const done = dom.html('sheet-root');
+  assert.ok(done.includes('Restored '), done.slice(0, 600));
+  assert.ok(done.includes('field-ok'));
+  assert.ok(done.includes('data-act="close-sheet">Close'));
+
+  const wivrn = mock().state.apps.find((a) => a.id === 'wivrn-nx').artifacts.find((a) => a.id === 'tarball-prefix-linux');
+  assert.equal(wivrn.installed.version, '1.9.1', 'the plan really was applied');
+  assert.equal(mock().state.apps.find((a) => a.id === 'quadforge').artifacts[0].installed, null, 'removals too');
+  await clickAndSettle({ 'data-act': 'close-sheet' });
+  assert.equal(dom.html('sheet-root'), '');
+});
+
+test('a declined checkpoint restores nothing', async () => {
+  await clickAndSettle({ 'data-act': 'activity' }, 400);
+  const ts = /data-act="checkpoint" data-ts="(\d+)"/.exec(dom.html('sheet-root'))[1];
+  await clickAndSettle({ 'data-act': 'checkpoint', 'data-ts': ts }, 300);
+  globalThis.window.__confirm = false;
+  await clickAndSettle({ 'data-act': 'checkpoint-confirm' }, 200);
+  assert.ok(dom.html('sheet-root').includes('cp-table'), 'the plan is still on screen, untouched');
+  assert.ok(!dom.html('sheet-root').includes('cp-progress'));
+  globalThis.window.__confirm = true;
+  await clickAndSettle({ 'data-act': 'close-sheet' });
+});
+
+test('Settings → Storage verifies every install and repairs a broken one', async () => {
+  mock().breakInstalls();
+  await clickAndSettle({ 'data-act': 'settings' }, 80);
+  assert.ok(dom.html('panel-root').includes('data-act="verify-installs"'), 'the button is under Storage');
+  assert.ok(!dom.html('panel-root').includes('audit-row'), 'and claims nothing before it runs');
+
+  await clickAndSettle({ 'data-act': 'verify-installs' }, 300);
+  const panel = dom.html('panel-root');
+  assert.ok(panel.includes('class="audit-row is-bad"'), 'the broken installs are listed');
+  assert.ok(panel.includes('class="audit-row is-ok"'), 'and the clean ones are too');
+  assert.ok(panel.includes('MISSING BINARY'), 'each problem names its check');
+  assert.ok(panel.includes('audit-path'), 'and the path that failed');
+  assert.ok(panel.includes('data-act="repair-install"'));
+  assert.match(dom.html('toasts'), /need|attention/);
+
+  await clickAndSettle(
+    { 'data-act': 'repair-install', 'data-app': 'oscgoesbrrr-nx-patches', 'data-art': 'appimage-linux' },
+    400
+  );
+  assert.match(dom.html('toasts'), /Reinstalling/, 'the repair hands off to the normal job');
+  assert.ok(dom.html('grid').includes('class="bar'), 'which reports on the app’s own card');
+
+  // Re-verifying after the reinstall lands shows the row clean again.
+  await tick(2600);
+  await clickAndSettle({ 'data-act': 'verify-installs' }, 300);
+  const fixed = dom.html('panel-root');
+  assert.equal((fixed.match(/audit-row is-bad/g) || []).length, 1, 'one down, one to go');
+  await clickAndSettle({ 'data-act': 'close-settings' });
+});
+
+test('painting a host keeps the reader where they were scrolled to', () => {
+  // These surfaces re-render wholesale on every state change, and a fresh
+  // innerHTML always starts at scroll 0. "Verify installs" sits at the bottom of
+  // a long Settings panel and renders its answer there — without this, asking the
+  // question throws the reader away from the answer. (The stub DOM does not parse
+  // innerHTML into nodes, so the hosts here are hand-made.)
+  // Assigning innerHTML throws the old nodes away, so each paint gets a FRESH
+  // body at scroll 0 — modelling that is the whole point of the fixture.
+  const fakeHost = (bodyClass = '.panel-body') => ({
+    body: { scrollTop: 0 },
+    _html: '',
+    get innerHTML() {
+      return this._html;
+    },
+    set innerHTML(v) {
+      this._html = v;
+      this.body = { scrollTop: 0 };
+    },
+    querySelector(sel) {
+      return sel === bodyClass ? this.body : null;
+    },
+  });
+
+  const host = fakeHost();
+  app.paint(host, '<div class="panel-body">first</div>', 'settings');
+  host.body.scrollTop = 900;
+  app.paint(host, '<div class="panel-body">second</div>', 'settings');
+  assert.equal(host.innerHTML, '<div class="panel-body">second</div>', 'the markup did change');
+  assert.equal(host.body.scrollTop, 900, 'the position survived the re-render');
+
+  // A different key is a different thing to read: it starts at the top.
+  host.body.scrollTop = 900;
+  app.paint(host, '<div class="panel-body">other</div>', 'fleet');
+  assert.equal(host.body.scrollTop, 0);
+
+  // Sheets scroll in .sheet-body instead, and both are handled.
+  const sheet = fakeHost('.sheet-body');
+  app.paint(sheet, '<div class="sheet-body">a</div>', 'activity');
+  sheet.body.scrollTop = 480;
+  app.paint(sheet, '<div class="sheet-body">b</div>', 'activity');
+  assert.equal(sheet.body.scrollTop, 480);
+
+  // A host with nothing scrollable in it must simply paint.
+  const bare = { innerHTML: '', querySelector: () => null };
+  app.paint(bare, '<p>hi</p>', 'x');
+  assert.equal(bare.innerHTML, '<p>hi</p>');
+  // …as must one that cannot be queried at all.
+  const dumb = { innerHTML: '' };
+  app.paint(dumb, 'ok', 'y');
+  assert.equal(dumb.innerHTML, 'ok');
+});
+
 test('the controller never throws on a junk event', () => {
-  for (const ev of [null, 'nope', {}, { type: 'unknown' }, { type: 'update-available' }]) {
+  for (const ev of [
+    null,
+    'nope',
+    {},
+    { type: 'unknown' },
+    { type: 'update-available' },
+    // v0.10 — a progress event with nothing usable in it must still fold.
+    { type: 'checkpoint-progress' },
+    { type: 'checkpoint-progress', phase: 7, appId: [] },
+  ]) {
     app.onHubEvent(ev);
   }
   assert.ok(true);

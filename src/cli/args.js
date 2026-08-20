@@ -18,6 +18,11 @@ const BOOL_FLAGS = new Set([
   "help",
   "version",
   "follow", // v0.8: `nx log --follow` (tail the flight recorder)
+  // v0.10 [audit]: `nx doctor --deep [--repair]` — the install fsck.
+  "deep",
+  "repair",
+  // v0.10 [replay]: `nx checkpoint restore <when> --configs`.
+  "configs",
 ]);
 
 // v0.6: `--port` lets `nx fleet pair` reach a hub that is not on :9023.

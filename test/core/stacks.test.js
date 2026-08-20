@@ -107,10 +107,13 @@ function fakeEngine({ devices = [], available = true } = {}) {
  * unreachable are two different stories, and both have to reach the user.
  */
 function fakeFleet({ peers = [{ id: "peer-1", name: "Workshop PC", online: true }] } = {}) {
-  const calls = { launch: [], probe: [], stop: [], wake: [] };
+  const calls = { launch: [], probe: [], stop: [], wake: [], remoteClients: 0 };
   const open = new Set();
+  // v0.10: peerId -> the app ids that peer's relayed bus roster is showing
+  const remote = new Map();
   const f = {
     calls,
+    remote,
     peers: peers.map((p) => Object.assign({ online: true, name: p.id }, p)),
     launchAck: { ok: true, pid: 4242 },
     stopAck: { ok: true },
@@ -140,7 +143,21 @@ function fakeFleet({ peers = [{ id: "peer-1", name: "Workshop PC", online: true 
       if (f.throws.wake) throw new Error(f.throws.wake);
       return f.wakeResult;
     },
+    /** v0.10 [fabric2]: SPEC "Bus federation" — every peer's relayed roster. */
+    getRemoteClients() {
+      calls.remoteClients += 1;
+      if (f.throws.getRemoteClients) throw new Error(f.throws.getRemoteClients);
+      return [...remote.entries()].map(([peerId, apps]) => ({
+        peerId,
+        peerName: (f.peers.find((p) => p.id === peerId) || {}).name || peerId,
+        clients: apps.map((app) => ({ app, version: "1.0.0", since: 1, fields: {}, history: {} })),
+      }));
+    },
     /* what the test does to the world on the other side */
+    /** v0.10: an app announces itself on THAT peer's bus. */
+    announce(peerId, ...apps) {
+      remote.set(peerId, [...(remote.get(peerId) || []), ...apps]);
+    },
     setOnline(id, online) {
       const peer = f.peers.find((p) => p.id === id);
       if (peer) peer.online = Boolean(online);
@@ -263,6 +280,44 @@ test("stacks: the model is sanitized — ids slugified, junk steps dropped", (t)
   assert.strictEqual(saved.steps[1].artifactId, "ogb" === saved.steps[1].appId ? "linux" : null);
   assert.deepStrictEqual(saved.steps[2].health, { type: "port", timeoutMs: 30000, port: 8080 });
   assert.strictEqual(saved.steps[0].health.timeoutMs, 5000);
+});
+
+test("stacks: v0.10 — save stamps updatedAt, the sanitizer preserves it, nobody invents one", (t) => {
+  const { env } = setup(t);
+  const before = Date.now();
+
+  const saved = stacks.save({ id: "vr", name: "VR", steps: [step("wivrn-nx", { type: "delay", timeoutMs: 0 })] });
+  assert.ok(saved.updatedAt >= before && saved.updatedAt <= Date.now(), "a local save is stamped now");
+  assert.strictEqual(stacks.get("vr").updatedAt, saved.updatedAt, "and the stamp survives the store");
+
+  // reading is not editing — a stack with no stamp keeps none, however often
+  // it is read back. (A stamp minted on read would beat the machine the user
+  // actually typed on, next time the two hubs compare notes.)
+  const file = path.join(env.dataDir, "stacks.json");
+  const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+  delete raw.stacks[0].updatedAt;
+  fs.writeFileSync(file, JSON.stringify(raw));
+  assert.ok(!("updatedAt" in stacks.get("vr")), "never invented");
+  assert.ok(!("updatedAt" in stacks.get("vr")), "and still not, on the second read");
+
+  // junk stamps are not stamps
+  for (const junk of [0, -1, "yesterday", null, NaN, {}, []]) {
+    const s = stacks.sanitizeStack({ id: "x", steps: [step("a", {})], updatedAt: junk });
+    assert.ok(!("updatedAt" in s), `updatedAt: ${JSON.stringify(junk)}`);
+  }
+  assert.strictEqual(stacks.sanitizeStack({ id: "x", steps: [step("a", {})], updatedAt: 1700000000000.4 }).updatedAt, 1700000000000);
+
+  // {stamp:false} is the sync applying a PEER's stack: the stamp travels with
+  // the record instead of this hub claiming authorship of somebody else's edit
+  const adopted = stacks.save(
+    { id: "audio", name: "Audio", steps: [step("ogb", {})], updatedAt: 1_700_000_000_000 },
+    { stamp: false }
+  );
+  assert.strictEqual(adopted.updatedAt, 1_700_000_000_000);
+  assert.strictEqual(stacks.get("audio").updatedAt, 1_700_000_000_000);
+  // …while an ordinary save of the same record re-stamps it, because that IS
+  // an edit made here
+  assert.ok(stacks.save({ id: "audio", name: "Audio", steps: [step("ogb", {})], updatedAt: 1_700_000_000_000 }).updatedAt >= before);
 });
 
 test("stacks: save refuses what cannot become a stack", (t) => {
@@ -896,14 +951,18 @@ test("stacks: a peered step is sanitized — peer verbatim, and only gates that 
     assert.ok(!("peer" in step), `junk peer: ${JSON.stringify(junk)}`);
   }
 
-  // SPEC: a connector gate on a peered step is INVALID — the remote's bus is not
-  // visible from here — so it drops to delay, and the hub says so exactly once
-  const dropped = s({ appId: "pulsenx", peer: "peer-1", health: { type: "connector", timeoutMs: 5000 } });
-  assert.deepStrictEqual(dropped.health, { type: "delay", timeoutMs: 0 });
-  assert.strictEqual(dropped.peer, "peer-1", "the step still runs over there — it is just not waited on");
-  s({ appId: "ogb", peer: "peer-2", health: { type: "connector" } }); // a second offender
-  const said = ctx.logs.filter((l) => /connector gate cannot see a peer's bus/.test(l));
-  assert.strictEqual(said.length, 1, "sanitizing happens on every read — the complaint is said once");
+  // v0.10 [fabric2]: a connector gate on a peered step used to be rewritten to
+  // delay, because the remote's bus was invisible from here. Bus federation
+  // makes it visible, so the gate now survives sanitizing and means what it
+  // says: wait for the app on THAT hub's bus.
+  const peered = s({ appId: "pulsenx", peer: "peer-1", health: { type: "connector", timeoutMs: 5000 } });
+  assert.deepStrictEqual(peered.health, { type: "connector", timeoutMs: 5000 });
+  assert.strictEqual(peered.peer, "peer-1");
+  assert.strictEqual(
+    ctx.logs.filter((l) => /connector gate cannot see a peer's bus/.test(l)).length,
+    0,
+    "the old complaint is gone — the gate is not a mistake any more"
+  );
 
   // peer-online is the mirror image: it only means something WITH a peer
   assert.deepStrictEqual(s({ appId: "pulsenx", peer: "peer-1", health: { type: "peer-online" } }).health, {
@@ -1081,6 +1140,106 @@ test("stacks: a wake that cannot be sent fails the step; one that never lands ti
   assert.match(timedOut.failed.message, /Workshop PC did not come online/);
   assert.deepStrictEqual(ctx.phases(), ["0:launching", "0:waiting", "0:failed", "*:failed"]);
   assert.strictEqual(ctx.events[ctx.events.length - 1].peer, "peer-1", "the run's verdict names the peer too");
+});
+
+/* ------------------------------------------- v0.10 the peered connector gate */
+
+test("stacks: a connector gate on a peered step waits on THAT peer's relayed bus", async (t) => {
+  const fleet = fakeFleet();
+  const ctx = setup(t, { fleet });
+  stacks.save({
+    id: "vr",
+    name: "VR",
+    steps: [step("pulsenx", { type: "connector", timeoutMs: 3000 }, { peer: "peer-1", artifactId: "linux" })],
+  });
+
+  // the app announces itself on the remote bus a moment after it is launched
+  const timer = setTimeout(() => fleet.announce("peer-1", "pulsenx"), 120);
+  t.after(() => clearTimeout(timer));
+
+  const result = await stacks.run("vr");
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(ctx.jobs.launched.length, 0, "nothing was started on THIS hub");
+  assert.deepStrictEqual(fleet.calls.launch, [{ peerId: "peer-1", appId: "pulsenx", artifactId: "linux" }]);
+  assert.ok(fleet.calls.remoteClients >= 2, "the roster was really polled");
+  assert.deepStrictEqual(ctx.phases(), ["0:launching", "0:waiting", "0:healthy", "*:done"]);
+  assert.deepStrictEqual(result.started, [
+    { stepIndex: 0, appId: "pulsenx", artifactId: "linux", pid: null, reached: "healthy", peer: "peer-1" },
+  ]);
+});
+
+test("stacks: a peered connector gate looks at ONE peer's bus, never at another's", async (t) => {
+  const fleet = fakeFleet({
+    peers: [
+      { id: "peer-1", name: "Workshop PC" },
+      { id: "peer-2", name: "Living Room" },
+    ],
+  });
+  const ctx = setup(t, { fleet });
+  stacks.save({
+    id: "vr",
+    name: "VR",
+    steps: [step("pulsenx", { type: "connector", timeoutMs: 350 }, { peer: "peer-1" })],
+  });
+
+  // pulsenx IS up — on the wrong machine, and on this one
+  fleet.announce("peer-2", "pulsenx");
+  const connector = fakeConnector(["pulsenx"]);
+  stacks.init({ connector });
+
+  const result = await stacks.run("vr");
+  assert.strictEqual(result.ok, false);
+  assert.match(result.failed.message, /pulsenx did not announce itself on Workshop PC's bus/);
+  assert.deepStrictEqual(ctx.phases(), ["0:launching", "0:waiting", "0:failed", "*:failed"]);
+});
+
+test("stacks: a peered connector gate needs no local bus, and survives a fleet that throws", async (t) => {
+  const fleet = fakeFleet();
+  // connector: null — this hub has no bus of its own at all
+  const ctx = setup(t, { fleet, connector: null });
+  stacks.save({
+    id: "vr",
+    name: "VR",
+    steps: [step("pulsenx", { type: "connector", timeoutMs: 400 }, { peer: "peer-1" })],
+  });
+
+  // …which used to be an instant "the connector bus is not running"
+  const result = await stacks.run("vr");
+  assert.strictEqual(result.ok, false);
+  assert.match(result.failed.message, /did not announce itself on Workshop PC's bus/);
+  assert.ok(!/connector bus is not running/.test(result.failed.message));
+
+  // a fleet that cannot answer is "not yet", never a thrown run
+  fleet.throws.getRemoteClients = "fleet is closing";
+  stacks.save({ id: "vr2", name: "VR2", steps: [step("pulsenx", { type: "connector", timeoutMs: 200 }, { peer: "peer-1" })] });
+  const again = await stacks.run("vr2");
+  assert.strictEqual(again.ok, false);
+  assert.ok(ctx.logs.some((l) => /fleet.getRemoteClients failed: fleet is closing/.test(l)));
+
+  // …and a local connector gate is completely unchanged: no bus, no waiting
+  stacks.save({ id: "local", name: "Local", steps: [step("wivrn-nx", { type: "connector", timeoutMs: 30000 })] });
+  const local = await stacks.run("local");
+  assert.strictEqual(local.ok, false);
+  assert.match(local.failed.message, /the connector bus is not running/);
+});
+
+test("stacks: a peered connector gate survives a roster full of nonsense", async (t) => {
+  const fleet = fakeFleet();
+  setup(t, { fleet });
+  fleet.getRemoteClients = () => [
+    null,
+    "not a roster",
+    { peerId: "peer-1" }, // no clients array
+    { peerId: "peer-1", clients: [null, {}, { app: 42 }, { app: "  PulseNX  " }] },
+  ];
+  stacks.save({ id: "vr", name: "VR", steps: [step("pulsenx", { type: "connector", timeoutMs: 400 }, { peer: "peer-1" })] });
+  // the FIRST entry for peer-1 wins and has no clients — so the gate keeps
+  // waiting rather than believing a malformed roster
+  assert.strictEqual((await stacks.run("vr")).ok, false);
+
+  fleet.getRemoteClients = () => [{ peerId: "peer-1", clients: [{ app: "  PulseNX  " }] }];
+  stacks.save({ id: "vr2", name: "VR2", steps: [step("pulsenx", { type: "connector", timeoutMs: 400 }, { peer: "peer-1" })] });
+  assert.strictEqual((await stacks.run("vr2")).ok, true, "an id is matched trimmed and case-insensitively");
 });
 
 test("stacks: with no fleet wired, peered and wake steps fail fast", async (t) => {

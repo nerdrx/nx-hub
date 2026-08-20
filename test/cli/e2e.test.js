@@ -44,6 +44,17 @@ test("cli e2e: refresh → list → install → list → uninstall against the m
   process.env.XDG_DATA_HOME = xdg;
   fs.mkdirSync(xdg, { recursive: true });
 
+  // Point adb at something that cannot exist. Without this the sandbox asks the
+  // developer's REAL headset what it has installed, and an apk-adb artifact comes
+  // back "installed" at whatever version is actually on the device — so this test
+  // passed only while nothing was plugged in.
+  config.save({
+    owners: ["nerdrx"],
+    extraRepos: [],
+    checkIntervalHours: 6,
+    adbPath: path.join(env.root, "no-such-adb"),
+  });
+
   // fresh module state — other suites in this process may have left some
   jobs._reset();
   discovery._setCached({ apps: [], releases: {}, repos: [], releasesByRepo: {}, errors: [], lastRefresh: null });

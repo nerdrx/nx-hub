@@ -144,7 +144,21 @@ async function main() {
   for (const d of [dataDir, installRoot, fakeHome]) fs.mkdirSync(d, { recursive: true });
   fs.writeFileSync(
     path.join(dataDir, "settings.json"),
-    JSON.stringify({ owners: ["nerdrx"], extraRepos: [], checkIntervalHours: 6, installRoot, adbPath: "adb", token: null }, null, 2)
+    JSON.stringify(
+      {
+        owners: ["nerdrx"],
+        extraRepos: [],
+        checkIntervalHours: 6,
+        installRoot,
+        // Deliberately unreachable: a real headset plugged into the developer's
+        // machine would otherwise answer "what have you got installed?" and put
+        // its own versions in this sandbox's state.
+        adbPath: path.join(root, "no-such-adb"),
+        token: null,
+      },
+      null,
+      2
+    )
   );
 
   const mock = await helpers.startMockGitHub({ overlay: OVERLAY });

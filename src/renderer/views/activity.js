@@ -17,7 +17,23 @@ import {
   emptyText,
 } from '../lib/events.js';
 import { renderSheet, renderSheetLoading, renderSheetError } from './sheet.js';
+import { renderRestoreControl } from './checkpoint.js';
 import * as icons from './icons.js';
+
+/**
+ * v0.10 [replay] — which rows carry their own "restore to here…" control.
+ *
+ * The day separator always gets one (its label IS a moment), and so does any row
+ * that marks the machine CHANGING state: an install landing, a stack run
+ * finishing. A bus join or a rate-limit notice is not a point worth going back
+ * to — it changed nothing on disk — and putting the control on every row would
+ * turn a timeline into a wall of buttons.
+ */
+const RESTORE_TYPES = new Set(['job-done', 'stack-progress']);
+
+export function canRestoreAt(event) {
+  return !!event && RESTORE_TYPES.has(event.type) && Number(event.ts) > 0;
+}
 
 /** One filter chip. Sharp-cut, uppercase micro-label — DESIGN §5. */
 function filterChip(f, active) {
@@ -36,26 +52,35 @@ export function renderFilterBar(current) {
  * toLocaleTimeString) and the tone class carries the palette — the chip's own
  * text never repeats the summary.
  */
-export function renderEventRow(event) {
+export function renderEventRow(event, ctx = {}) {
   const tone = eventTone(event);
   const app = event && event.appId ? ` <span class="act-app">${esc(event.appId)}</span>` : '';
-  return `<li class="act-row act-${esc(tone)}" data-ev-type="${esc(event.type)}">
+  // The row control only exists when the bridge can actually reconstruct a
+  // checkpoint; a build without getCheckpoint() shows the timeline unchanged.
+  const restore = ctx.canRestore && canRestoreAt(event) ? renderRestoreControl(event.ts) : '';
+  return `<li class="act-row act-${esc(tone)}${restore ? ' has-restore' : ''}" data-ev-type="${esc(event.type)}">
       <span class="act-time">${esc(formatClock(event.ts))}</span>
       <span class="act-chip">${esc(eventChip(event))}</span>
       <span class="act-sum">${esc(event.summary)}${app}</span>
+      ${restore}
     </li>`;
 }
 
 /** A day separator plus its rows. */
-export function renderDayGroup(group) {
+export function renderDayGroup(group, ctx = {}) {
+  // The separator's own moment is the NEWEST event of that day — the list is
+  // newest-first, so the top of the group is where "here" actually is.
+  const head = group.events && group.events[0];
+  const restore = ctx.canRestore && head && Number(head.ts) > 0 ? renderRestoreControl(head.ts) : '';
   return `<section class="act-day" data-day="${esc(group.key)}">
-      <h4 class="act-day-head"><span>${esc(group.label)}</span></h4>
-      <ul class="act-list">${group.events.map(renderEventRow).join('')}</ul>
+      <h4 class="act-day-head"><span>${esc(group.label)}</span>${restore}</h4>
+      <ul class="act-list">${group.events.map((e) => renderEventRow(e, ctx)).join('')}</ul>
     </section>`;
 }
 
 /**
- * @param {object} ctx { events, filter, loading, error, more, paging, now }
+ * @param {object} ctx { events, filter, loading, error, more, paging, now,
+ *                       canRestore }
  */
 export function renderActivitySheet(ctx = {}) {
   const filter = ctx.filter || 'all';
@@ -70,8 +95,11 @@ export function renderActivitySheet(ctx = {}) {
   } else if (!events.length) {
     list = `<p class="sheet-empty">${esc(emptyText(filter))}</p>`;
   } else {
+    const rowCtx = { canRestore: !!ctx.canRestore };
     list =
-      groupByDay(events, ctx.now || Date.now()).map(renderDayGroup).join('') +
+      groupByDay(events, ctx.now || Date.now())
+        .map((g) => renderDayGroup(g, rowCtx))
+        .join('') +
       (ctx.more
         ? `<div class="act-more"><button class="btn btn-ghost btn-sm" data-act="activity-more"${
             ctx.paging ? ' disabled' : ''

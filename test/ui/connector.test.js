@@ -38,8 +38,10 @@ const CLIENT = {
 /* --------------------------------------------------------------- normalize */
 
 test('the bus roster survives every shape main could hand over', () => {
-  assert.deepEqual(normalizeConnector(null), { clients: [] });
-  assert.deepEqual(normalizeConnector({ clients: 'nope' }), { clients: [] });
+  // v0.10 widened the shape: `remote` is always an array, so every consumer can
+  // index it without asking whether this build federates.
+  assert.deepEqual(normalizeConnector(null), { clients: [], remote: [] });
+  assert.deepEqual(normalizeConnector({ clients: 'nope' }), { clients: [], remote: [] });
 
   const out = normalizeConnector({
     clients: [

@@ -258,9 +258,38 @@ function getEngineModule() {
   }
 }
 
+/* ==== v0.10 [fabric2]: the federated bus (SPEC "Bus federation") ==== */
+
+/**
+ * Every PEER's connector bus, as it was last relayed over the fleet:
+ *
+ *   [{ peerId, peerName, clients: [{app, version, since, fields, history}] }]
+ *
+ * Same three empty-safe cases as getFleet(): the setting is off, the fleet
+ * never came up, or this build has no fleet at all — all of them `[]`, so the
+ * renderer only ever has one shape to draw.
+ */
+function remoteClients() {
+  if (!fleet || typeof fleet.getRemoteClients !== "function") return [];
+  try {
+    const list = fleet.getRemoteClients();
+    return Array.isArray(list) ? list : [];
+  } catch (e) {
+    config.log(`fleet.getRemoteClients failed: ${e.message}`);
+    return [];
+  }
+}
+
+/** The connector block the renderer reads, local bus + federated peers. */
+function connectorView() {
+  return { clients: clients(), remote: remoteClients() };
+}
+
+/* ==== end v0.10 [fabric2] ==== */
+
 /** `getConnector()` — SPEC IPC addition. Empty-safe with no bus at all. */
 function getConnector() {
-  return { clients: clients() };
+  return connectorView(); // v0.10 [fabric2]
 }
 
 /**
@@ -423,7 +452,8 @@ async function buildState() {
     },
     hubVersion: hubVersion(),
     // v0.5: whoever is on the bus right now (empty when the hub runs without one)
-    connector: { clients: clients() },
+    // v0.10 [fabric2]: plus `remote` — the same, on every paired hub
+    connector: connectorView(),
     refreshing: cached.refreshing,
     rateLimit: cached.rateLimit || null,
     errors: cached.errors || [],
@@ -777,6 +807,65 @@ function register() {
     const result = snapshots.remove(appId, file);
     return Object.assign({}, result, { snapshots: snapshots.list(appId) });
   });
+
+  /* ---- v0.10 [audit]: the deep audit (SPEC "Deep audit") ----------------
+   *
+   * getAudit(appId?)              → [{appId, artifactId, ok, kind, version,
+   *                                   path, deviceResident, notes:[…],
+   *                                   problems:[{kind, path?, detail}]}] — one
+   *   row per recorded install, in state.json order. `problems` is empty
+   *   exactly when `ok`.
+   *   Kinds: missing-dir · bad-manifest · missing-binary · not-executable ·
+   *   missing-file · missing-desktop-entry · hash-mismatch.
+   *   deviceResident (apk-adb) rows come back ok with a note — their files
+   *   live on a headset, so there is nothing on this disk to check.
+   *   It never rejects: an unreadable install is a problem, not an error.
+   * repairInstall(appId, artifactId) → the JOB ID of an ordinary install job.
+   *   Watch it through the usual job-progress / job-done events; the row goes
+   *   green on the next getAudit().
+   */
+  handle("nxhub:getAudit", (appId) => require("./audit").audit(appId || null));
+
+  handle("nxhub:repairInstall", (appId, artifactId) => {
+    const jobId = require("./audit").repair(appId, artifactId);
+    const app = discovery.findApp(appId);
+    emit({ type: "toast", level: "info", message: `Repairing ${(app && app.name) || appId}…` });
+    return jobId;
+  });
+
+  /* ---- v0.10 [replay]: ecosystem checkpoints (SPEC "Ecosystem checkpoints") --
+   *
+   * getCheckpoint(when) → {ts, iso, apps:[{appId, appName, artifactId,
+   *   version, currentVersion, action: none|install|remove, tag, snapshot,
+   *   snapshotAt, uncertain, why, skipReason}], uncertain, actionable,
+   *   skipped, horizon}. `when` takes epoch ms or the recorder's own strings
+   *   ("24h", "2d", "2026-08-15"); an unreadable one rejects.
+   *   `version` is what was installed THEN (null = not installed then, or
+   *   unknown when `uncertain` — the two are told apart by the flag, never
+   *   guessed). Rows with nothing to do AND nothing in doubt are left out, so
+   *   a checkpoint on `now` comes back with an empty `apps`.
+   * restoreCheckpoint(when, {configs}) → the verdict {ok, ts, results, counts}
+   *   AFTER the whole plan has run. Watch it live through `checkpoint-progress`
+   *   {phase: planning|installing|removing|restoring-config|done|failed,
+   *   appId, artifactId} — the run's own verdict carries `appId: null`.
+   *   Uncertain rows and deleted releases are skipped and reported, never
+   *   acted on; one restore runs at a time (a second call rejects).
+   */
+  handle("nxhub:getCheckpoint", (when) => require("./checkpoints").checkpointAt(when));
+
+  handle("nxhub:restoreCheckpoint", async (when, opts) => {
+    const checkpoints = require("./checkpoints");
+    const result = await checkpoints.restore(when, { configs: Boolean(opts && opts.configs), emit });
+    const c = result.counts;
+    emit({
+      type: "toast",
+      level: c.failed ? "error" : "info",
+      message: `Checkpoint applied — ${c.done} done${c.failed ? `, ${c.failed} failed` : ""}${
+        c.skipped ? `, ${c.skipped} skipped` : ""
+      }`,
+    });
+    return result;
+  });
 }
 
 /**
@@ -847,6 +936,9 @@ module.exports = {
   connectorSnapshotPath,
   readConnectorSnapshot,
   writeConnectorSnapshot,
+  // v0.10 [fabric2]: the federated bus
+  remoteClients,
+  connectorView,
   // v0.6: fleet
   getFleet,
   getEngineModule,

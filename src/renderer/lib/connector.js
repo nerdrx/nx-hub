@@ -1,10 +1,24 @@
-// NX Connector — the renderer's view of the local rendezvous bus.
+// NX Connector — the renderer's view of the rendezvous bus, local and federated.
 //
 // `getState().connector = { clients: [{app, version, pid, since, lastSeen,
 // fields}] }` per SPEC v0.5. EVERYTHING in a client is app-supplied: the app id,
 // the field KEYS and the field VALUES all arrive over a socket from another
 // process. Nothing here builds markup — the views escape every string that
 // leaves these functions — and nothing here trusts a type.
+//
+// v0.10 [fabric2] widens that in two ways, and both arrive from even further
+// away, so the same rule applies twice over:
+//
+//   * clients gain `history: {field: [{ts, v}, ...]}` for numeric fields — the
+//     series behind the sparklines (lib/sparkline.js does the geometry).
+//   * the connector gains `remote: [{peerId, peerName, clients: [...]}]` — a
+//     roster another HUB relayed over its fleet session. A peer name is a
+//     hostname somebody else chose, an app id in there was never validated by
+//     this machine, and the whole array may simply be absent in a build whose
+//     main process predates federation. Every consumer below degrades to the
+//     local-only answer instead of assuming.
+
+import { normalizeHistories, MAX_POINTS, REMOTE_MAX_POINTS } from './sparkline.js';
 
 /** Field kinds an overlay may declare (`app.connectorFields[].kind`). */
 export const FIELD_KINDS = ['number', 'text', 'bool'];
@@ -22,7 +36,7 @@ function isPlainObject(v) {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
 
-export function normalizeClient(raw) {
+export function normalizeClient(raw, opts = {}) {
   const c = isPlainObject(raw) ? raw : {};
   const pid = Math.round(Number(c.pid));
   return {
@@ -34,17 +48,109 @@ export function normalizeClient(raw) {
     since: c.since || '',
     lastSeen: c.lastSeen || '',
     fields: isPlainObject(c.fields) ? c.fields : {},
+    // v0.10 — absent in a pre-federation build, and absent per field for
+    // anything non-numeric. `{}` is the shape the views can always index into.
+    history: normalizeHistories(c.history, { max: opts.maxPoints || MAX_POINTS }),
   };
 }
 
-/** `{ clients: [...] }`, deduped by app id — latest hello wins, as on the bus. */
-export function normalizeConnector(raw) {
-  const source = isPlainObject(raw) ? raw : {};
+/** Clients from one source, deduped by app id — latest hello wins, as on the bus. */
+function clientList(raw, opts) {
   const byApp = new Map();
-  for (const client of asArray(source.clients).map(normalizeClient)) {
+  for (const client of asArray(raw).map((c) => normalizeClient(c, opts))) {
     if (client.app) byApp.set(client.app, client);
   }
-  return { clients: [...byApp.values()] };
+  return [...byApp.values()];
+}
+
+/**
+ * One relayed roster: {peerId, peerName, clients}. A roster with no usable peer
+ * id is dropped — it could not be attributed to a hub, and an unattributed
+ * "somewhere on the fleet" chip is worse than no chip.
+ */
+export function normalizeRemotePeer(raw) {
+  const p = isPlainObject(raw) ? raw : {};
+  const peerId = String(p.peerId || p.id || '').trim();
+  if (!peerId) return null;
+  return {
+    peerId,
+    // Falls back to the id so the microchip always has something to say; the
+    // views escape it either way.
+    peerName: String(p.peerName || p.name || '').trim() || peerId,
+    clients: clientList(p.clients, { maxPoints: REMOTE_MAX_POINTS }),
+  };
+}
+
+/**
+ * `{ clients: [...], remote: [{peerId, peerName, clients}] }`.
+ *
+ * `remote` is always an array — a build without federation simply produces an
+ * empty one, which is what keeps every remote surface off the screen instead of
+ * half-rendered.
+ */
+export function normalizeConnector(raw) {
+  const source = isPlainObject(raw) ? raw : {};
+  const byPeer = new Map();
+  for (const entry of asArray(source.remote)) {
+    const peer = normalizeRemotePeer(entry);
+    // Two rosters from one peer: the newer session's wins, same rule as a
+    // duplicate hello on the local bus.
+    if (peer) byPeer.set(peer.peerId, peer);
+  }
+  return { clients: clientList(source.clients), remote: [...byPeer.values()] };
+}
+
+/* ------------------------------------------------------------- federation */
+
+export function remotePeers(connector) {
+  const list = (connector && connector.remote) || [];
+  return Array.isArray(list) ? list : [];
+}
+
+/**
+ * Every hub that is currently seeing `appId` on ITS bus.
+ * @returns {{peerId:string, peerName:string, client:object}[]}
+ */
+export function remoteClientsFor(connector, appId) {
+  const id = String(appId || '').trim().toLowerCase();
+  if (!id) return [];
+  const out = [];
+  for (const peer of remotePeers(connector)) {
+    const client = (peer.clients || []).find((c) => c.app === id);
+    if (client) out.push({ peerId: peer.peerId, peerName: peer.peerName, client });
+  }
+  return out;
+}
+
+/** appId → [{peerId, peerName, client}], built once per render. */
+export function remoteByApp(connector) {
+  const map = new Map();
+  for (const peer of remotePeers(connector)) {
+    for (const client of peer.clients || []) {
+      if (!client.app) continue;
+      const list = map.get(client.app) || [];
+      list.push({ peerId: peer.peerId, peerName: peer.peerName, client });
+      map.set(client.app, list);
+    }
+  }
+  return map;
+}
+
+/** The roster one peer relayed, by peer id. */
+export function rosterFor(connector, peerId) {
+  const id = String(peerId || '').trim();
+  if (!id) return [];
+  const peer = remotePeers(connector).find((p) => p.peerId === id);
+  return peer ? peer.clients || [] : [];
+}
+
+/**
+ * Presence anywhere on the fleet. `isPresent()` deliberately stays local-only:
+ * a card's own LIVE dot means "running here", and widening it silently would
+ * have made every launcher tile claim a process this machine does not have.
+ */
+export function isPresentAnywhere(connector, appId) {
+  return isPresent(connector, appId) || remoteClientsFor(connector, appId).length > 0;
 }
 
 export function clientsByApp(connector) {
@@ -195,10 +301,25 @@ export function captionFor(client, defs) {
 }
 
 /** Tooltip for the presence dot / LIVE chip. */
-export function presenceTitle(client, relative = '') {
+export function presenceTitle(client, relative = '', peerName = '') {
   if (!client) return '';
   const bits = [client.app];
   if (client.version) bits.push(client.version);
   const head = bits.join(' ');
-  return relative ? `${head} · connected ${relative}` : `${head} · connected`;
+  // "connected" alone would read as "connected here" on a peer's strip.
+  const where = peerName ? `connected on ${peerName}` : 'connected';
+  return relative ? `${head} · ${where} ${relative}` : `${head} · ${where}`;
+}
+
+/** One field's series off a client, `[]` when the hub sent none. */
+export function historyFor(client, key) {
+  const bag = client && isPlainObject(client.history) ? client.history : null;
+  if (!bag || !key) return [];
+  const series = bag[key];
+  return Array.isArray(series) ? series : [];
+}
+
+/** Does this client carry a series for any field at all? */
+export function hasHistory(client) {
+  return !!(client && isPlainObject(client.history) && Object.keys(client.history).length);
 }

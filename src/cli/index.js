@@ -24,6 +24,13 @@ const bisect = require("./bisect");
 const logCmd = require("./log");
 // v0.8 [timemachine]: `nx snapshots` / `nx restore` over src/main/snapshots.js.
 const snapshotsCli = require("./snapshots");
+// v0.10 [daemon]: `nx daemon run|install|uninstall|status` over
+// src/main/daemon.js — the hub without electron, plus its systemd user unit.
+const daemonCli = require("./daemon");
+// v0.10 [audit]: `nx doctor --deep` — the install fsck over src/main/audit.js.
+const auditCli = require("./audit");
+// v0.10 [replay]: `nx checkpoint show|restore <when>` over src/main/checkpoints.js.
+const checkpointCli = require("./checkpoint");
 
 const EXIT_OK = 0;
 const EXIT_USER = 1;
@@ -136,6 +143,15 @@ async function run(argv, opts = {}) {
     // drive the tail without waiting on wall-clock seconds.
     recorder: opts.recorder || null,
     follow: opts.follow || null,
+    // v0.10 [audit]: src/main/audit.js, injectable so `doctor --deep` can be
+    // tested without a real install tree.
+    audit: opts.audit || null,
+    // v0.10 [daemon]: src/main/daemon.js, injectable so `nx daemon run` can be
+    // driven in a test without ever composing the real hub.
+    daemon: opts.daemon || null,
+    // v0.10 [replay]: src/main/checkpoints.js, injectable so `nx checkpoint`
+    // can be rendered against a synthetic plan.
+    checkpoints: opts.checkpoints || null,
   };
 
   // v0.7 [dev-tools]: the shared helpers, reachable from ./dev.js and
@@ -168,6 +184,10 @@ async function run(argv, opts = {}) {
     // v0.8 [timemachine]
     snapshots: snapshotsCli.cmdSnapshots,
     restore: snapshotsCli.cmdRestore,
+    // v0.10 [daemon]
+    daemon: daemonCli.cmdDaemon,
+    // v0.10 [replay]
+    checkpoint: checkpointCli.cmdCheckpoint,
     shim: cmdShim,
   };
 
@@ -478,11 +498,19 @@ async function cmdDoctor(ctx) {
     }
     return ctx.runtime.doctor();
   });
+  // v0.10 [audit]: `--deep` appends the install fsck (and `--repair` reinstalls
+  // what it found). Plain `nx doctor` is untouched — same output, same exit 0.
+  const deep = ctx.flags.deep ? auditCli : null;
   if (ctx.json) {
-    ctx.out(JSON.stringify(info, null, 2));
-    return EXIT_OK;
+    const result = deep ? await deep.runDeep(ctx) : null;
+    ctx.out(JSON.stringify(result ? Object.assign({}, info, result.json) : info, null, 2));
+    return result && !result.ok ? EXIT_FAIL : EXIT_OK;
   }
   ctx.out(render.renderDoctor(info, { style: ctx.st }));
+  if (deep) {
+    const result = await deep.runDeep(ctx);
+    return result.ok ? EXIT_OK : EXIT_FAIL;
+  }
   return EXIT_OK;
 }
 

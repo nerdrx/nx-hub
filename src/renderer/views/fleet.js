@@ -20,7 +20,10 @@ import {
   codeGroups,
   codeMsLeft,
   formatCountdown,
+  syncNote,
 } from '../lib/fleet.js';
+import { renderStatusStrip } from './status.js';
+import { REMOTE_MAX_POINTS } from '../lib/sparkline.js';
 import * as icons from './icons.js';
 
 /**
@@ -33,10 +36,17 @@ export function renderPeerChip(peers, ctx = {}) {
   const label = counts.online
     ? `${counts.online} hub${counts.online === 1 ? '' : 's'}`
     : `${counts.peers} offline`;
+  // v0.10 — the header chip is the closest thing the renderer has to the tray,
+  // so it is where "something is running over there" belongs. It stays in the
+  // TOOLTIP: the fleet is ambient, and a second number on the chip would
+  // compete with the update badge that is already there.
+  const live = Number(ctx.remoteLive) || 0;
   const title = counts.online
-    ? `${counts.online} of ${counts.peers} paired hub${counts.peers === 1 ? '' : 's'} online — click to manage`
+    ? `${counts.online} of ${counts.peers} paired hub${counts.peers === 1 ? '' : 's'} online${
+        live ? ` · ${live} app${live === 1 ? '' : 's'} live there` : ''
+      } — click to manage`
     : 'No paired hub is answering — click to manage';
-  return `<button class="peer-chip peer-${esc(state)}" data-act="fleet" title="${esc(title)}" aria-label="Fleet">
+  return `<button class="peer-chip peer-${esc(state)}${live ? ' peer-live' : ''}" data-act="fleet" title="${esc(title)}" aria-label="Fleet">
       <span class="peer-dot" aria-hidden="true"></span>
       ${icons.fleet}<span class="peer-chip-text">${esc(label)}</span>
       ${counts.updates ? `<span class="peer-updates" title="${esc(`${counts.updates} update${counts.updates === 1 ? '' : 's'} waiting across the fleet`)}">${esc(String(counts.updates))}</span>` : ''}
@@ -160,11 +170,49 @@ function jobRow(job) {
     </div>`;
 }
 
+/**
+ * v0.10 [fabric2] — the roster this peer relayed over its fleet session: the
+ * apps running on ITS bus right now, with their fields and (short) histories.
+ *
+ * These are the same strips the local cards wear, peer-tagged. They sit inside
+ * the peer block rather than in a separate list because "what is running there"
+ * is a property of that hub, not a second fleet-wide surface.
+ */
+function relayedRoster(clients, ctx) {
+  const list = Array.isArray(clients) ? clients : [];
+  if (!list.length) return '';
+  const defsFor = (appId) => {
+    const app = (ctx.apps || []).find((a) => a && a.id === appId);
+    return (app && app.connectorFields) || null;
+  };
+  return `
+    <div class="peer-bus">
+      <span class="peer-bus-label">Live there</span>
+      ${list
+        .map((c) =>
+          renderStatusStrip(c, defsFor(c.app), {
+            now: ctx.now,
+            peerName: ctx.peerName,
+            peerId: ctx.peerId,
+            maxPoints: REMOTE_MAX_POINTS,
+          })
+        )
+        .join('')}
+    </div>`;
+}
+
 function peerBlock(peer, ctx) {
   const rows = peerAppTable(peer, { apps: ctx.apps });
   const jobs = peerJobs(ctx.jobs, peer.id);
   const updates = rows.reduce((n, r) => n + r.updates, 0);
   const seen = relativeTime(peerSince(peer), ctx.now);
+  const sync = syncNote(peer, ctx.settings);
+  const roster = relayedRoster((ctx.remote instanceof Map ? ctx.remote.get(peer.id) : null) || [], {
+    apps: ctx.apps,
+    now: ctx.now,
+    peerName: peer.name,
+    peerId: peer.id,
+  });
 
   return `
     <section class="peer${peer.online ? ' is-online' : ' is-offline'}" data-peer="${esc(peer.id)}">
@@ -175,6 +223,7 @@ function peerBlock(peer, ctx) {
           <span class="peer-host mono">${esc(peer.host || 'unknown address')}</span>
         </div>
         <span class="peer-seen">${esc(peer.online ? 'online' : seen ? `last seen ${seen}` : 'never seen')}</span>
+        ${sync ? `<span class="peer-sync" title="${esc('App options and stacks are merged between these hubs automatically')}">${esc(sync)}</span>` : ''}
         <span class="peer-tools">
           ${
             ctx.canWake && canWake(peer)
@@ -207,13 +256,16 @@ function peerBlock(peer, ctx) {
               peer.online ? 'That hub has not sent its app summary yet.' : 'No summary — the hub is offline.'
             }</p>`
       }
+      ${roster}
       ${jobs.length ? `<div class="fleet-jobs">${jobs.map(jobRow).join('')}</div>` : ''}
     </section>`;
 }
 
 /**
  * @param {{peers?:Array, apps?:Array, pair?:object, jobs?:object, now?:number,
- *          busy?:boolean, caps?:object}} ctx
+ *          busy?:boolean, caps?:object, settings?:object, remote?:Map}} ctx
+ *   `remote` is peerId → relayed bus clients (lib/connector.js), absent in a
+ *   build whose main process predates federation.
  */
 export function renderFleetSheet(ctx = {}) {
   const peers = Array.isArray(ctx.peers) ? ctx.peers : [];
@@ -237,6 +289,9 @@ export function renderFleetSheet(ctx = {}) {
                   now,
                   // No fleetWake() in this build → no button, whatever the peer says.
                   canWake: !ctx.caps || ctx.caps.fleetWake !== false,
+                  // v0.10 — settings + relayed bus rosters, both absent-safe.
+                  settings: ctx.settings,
+                  remote: ctx.remote,
                 })
               )
               .join('')}</div>`

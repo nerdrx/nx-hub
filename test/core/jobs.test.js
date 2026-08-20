@@ -13,6 +13,7 @@ const github = require("../../src/main/github");
 const discovery = require("../../src/main/discovery");
 const jobs = require("../../src/main/jobs");
 const stateStore = require("../../src/main/state");
+const recorder = require("../../src/main/recorder");
 
 /** Build an app model straight from the mock release, with an optional overlay. */
 function appFromMock(mock, fullName, { id, name, overlayArtifacts } = {}) {
@@ -381,6 +382,62 @@ test("uninstall calls the engine with the recorded path and clears state", async
   assert.deepStrictEqual(seen, [{ app: app.id, artifact: artifact.id, installedPath }]);
   assert.ok(!fs.existsSync(installedPath));
   assert.strictEqual(stateStore.getInstall(app.id, artifact.id), null);
+});
+
+test("job-done carries the job's own facts, including what it replaced", async (t) => {
+  const env = helpers.useTempEnv();
+  const mock = await helpers.startMockGitHub({});
+  t.after(async () => {
+    recorder._reset();
+    await mock.close();
+    env.cleanup();
+  });
+
+  const engine = {
+    async install({ artifact, ctx }) {
+      const dest = path.join(ctx.installRoot, "nx", "wivrn-nx", artifact.id);
+      fs.mkdirSync(dest, { recursive: true });
+      return { version: artifact.version, path: dest, launchable: true };
+    },
+    async uninstall({ installedPath }) {
+      fs.rmSync(installedPath, { recursive: true, force: true });
+    },
+  };
+
+  const h = harness(mock, env, { engine });
+  const app = h.addApp(
+    appFromMock(mock, "nerdrx/wivrn-nx", {
+      overlayArtifacts: [{ assetPattern: "*-linux-x86_64.tar.gz", label: "Server", kind: "archive-dir", platform: "linux" }],
+    })
+  );
+  const artifact = app.artifacts.find((a) => a.kind === "archive-dir");
+
+  const first = await h.wait(jobs.install(app.id, artifact.id));
+  assert.strictEqual(first.type, "job-done", first.message);
+  assert.strictEqual(first.jobType, "install");
+  assert.strictEqual(first.appName, app.name);
+  assert.strictEqual(first.version, "1.4.0");
+  assert.strictEqual(first.previousVersion, null);
+  assert.strictEqual(first.previouslyInstalled, false, "there was nothing here — and the event says so");
+
+  const again = await h.wait(jobs.install(app.id, artifact.id));
+  assert.strictEqual(again.type, "job-done", again.message);
+  assert.strictEqual(again.previouslyInstalled, true);
+  assert.strictEqual(again.previousVersion, "1.4.0", "read BEFORE the record was overwritten");
+
+  const gone = await h.wait(jobs.uninstall(app.id, artifact.id));
+  assert.strictEqual(gone.type, "job-done", gone.message);
+  assert.strictEqual(gone.jobType, "uninstall");
+  assert.strictEqual(gone.version, null, "nothing is installed once an uninstall is done");
+  assert.strictEqual(gone.previousVersion, "1.4.0");
+
+  // …and the journal can now tell a first install from an update, which is the
+  // whole point: both jobs wrote the same "Installed <app> 1.4.0" sentence.
+  assert.strictEqual(first.message, again.message);
+  recorder._reset();
+  assert.strictEqual(recorder.record(first)[0].summary, `installed ${app.name} v1.4.0`);
+  assert.strictEqual(recorder.record(again)[0].summary, `updated ${app.name} v1.4.0`);
+  assert.strictEqual(recorder.record(gone)[0].data.previousVersion, "1.4.0");
 });
 
 test("launch delegates to engine.launch with the installed path", async (t) => {

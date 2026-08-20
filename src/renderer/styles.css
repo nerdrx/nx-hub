@@ -2881,6 +2881,291 @@ select.input option {
 }
 .banner-sup { margin: 0 0 var(--sp-2); gap: 9px; }
 
+/* =====================================================================
+   v0.10 "nervous system" — sparklines, remote presence, checkpoints, audit
+   ===================================================================== */
+
+/* ------------------------------------------------------------- sparklines */
+
+/* Cyan is light inside the material and live data is where it leads (DESIGN
+   §1). No axes, no fill, no grid: the line is movement, the tabular number
+   beside it is the reading. It never animates — the points change several times
+   a second while an app streams, and an eased redraw would make a status strip
+   flicker like a toy. */
+.spark {
+  display: inline-block;
+  width: 64px;
+  height: 16px;
+  margin-left: 7px;
+  vertical-align: middle;
+  overflow: visible;
+  flex: 0 0 auto;
+}
+.spark polyline {
+  fill: none;
+  stroke: var(--cyan);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  /* preserveAspectRatio="none" would stretch the stroke with the box. */
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 3px rgba(0, 229, 255, 0.45));
+}
+/* A value that has not moved still says so — just quietly. */
+.spark-flat polyline {
+  stroke: rgba(0, 229, 255, 0.4);
+  filter: none;
+}
+.live-f.has-spark { align-items: center; }
+
+/* --------------------------------------------------- remote bus presence */
+
+/* Violet, never cyan: cyan is THIS machine's live light, and whose machine a
+   process is on is identity — violet's job (DESIGN §1). */
+.live-peer {
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #dcc9ff;
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  border: 1px solid rgba(154, 60, 255, 0.42);
+  background: linear-gradient(180deg, rgba(154, 60, 255, 0.24), rgba(119, 0, 255, 0.1));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  white-space: nowrap;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* A relayed strip is one hop further away, and reads one step quieter. */
+.live-remote {
+  box-shadow: inset 0 0 0 1px rgba(154, 60, 255, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+.live-remote .live-dot {
+  background: var(--violet-soft);
+  box-shadow: 0 0 10px 1px rgba(154, 60, 255, 0.75);
+}
+.live-remote .live-chip {
+  color: #dcc9ff;
+  border-color: rgba(154, 60, 255, 0.34);
+  background: rgba(119, 0, 255, 0.14);
+}
+
+/* The header chip when the fleet is relaying live apps — one shade brighter,
+   nothing more. The count itself lives in the tooltip. */
+.peer-live .peer-dot {
+  box-shadow: 0 0 10px 1px rgba(154, 60, 255, 0.85), 0 0 18px 3px rgba(0, 229, 255, 0.28);
+}
+
+/* The relayed roster inside a peer block in the Fleet sheet. */
+.peer-bus { margin-top: 9px; }
+.peer-bus-label {
+  display: block;
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 5px;
+}
+.peer-bus .live { margin-top: 6px; }
+.peer-sync {
+  font-size: 11px;
+  color: var(--muted);
+  padding-left: 9px;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* ------------------------------------------------------------ checkpoints */
+
+/* The affordance in the Activity timeline. Quiet by construction: putting the
+   whole machine back is not something to invite with a primary button. */
+.act-restore {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 2px 7px;
+  font: inherit;
+  font-size: 10.5px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-soft), color var(--dur-fast) var(--ease-soft);
+}
+.act-restore svg { width: 13px; height: 13px; }
+.act-day-head .act-restore { opacity: 0.55; }
+.act-row:hover .act-restore,
+.act-day:hover .act-day-head .act-restore,
+.act-restore:focus-visible {
+  opacity: 1;
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.12);
+  background: var(--glass-chip);
+}
+.act-day-head { display: flex; align-items: center; gap: var(--sp-1); }
+.act-row.has-restore { position: relative; }
+
+.cp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  margin-top: 6px;
+}
+.cp-table th {
+  text-align: left;
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0 var(--sp-1) 6px 0;
+}
+.cp-row td {
+  padding: 7px var(--sp-1) 7px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  vertical-align: middle;
+}
+.cp-row.is-uncertain { opacity: 0.72; }
+.cp-name { min-width: 0; }
+.cp-title { font-weight: 600; }
+/* Only shown when one app contributes several rows — it answers "which build?",
+   so it sits quiet next to the name rather than competing with it. */
+.cp-art {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.cp-snap {
+  margin-left: 6px;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+}
+.cp-ver { font-size: 11.5px; white-space: nowrap; }
+.cp-from { color: var(--muted); }
+.cp-arrow { color: var(--muted); margin: 0 5px; }
+.cp-to { color: var(--text); }
+.cp-chip {
+  display: inline-block;
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: var(--radius-xs);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--glass-chip);
+  color: var(--muted);
+}
+.cp-chip-cyan { color: var(--cyan); border-color: rgba(0, 229, 255, 0.32); background: rgba(0, 229, 255, 0.09); }
+.cp-chip-violet { color: #dcc9ff; border-color: rgba(154, 60, 255, 0.42); background: rgba(119, 0, 255, 0.16); }
+.cp-chip-amber { color: var(--amber); border-color: rgba(255, 179, 0, 0.38); background: rgba(255, 179, 0, 0.1); }
+
+.cp-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: var(--sp-1) 0 0;
+  padding: 9px 11px;
+  font-size: 12px;
+  color: #ffd98a;
+  border: 1px solid rgba(255, 179, 0, 0.28);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, rgba(255, 179, 0, 0.09), rgba(255, 179, 0, 0.03));
+}
+.cp-note svg { width: 15px; height: 15px; flex: 0 0 auto; margin-top: 1px; }
+.cp-configs { margin-top: var(--sp-2); }
+
+.cp-progress { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.cp-prow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-1);
+  padding: 6px 9px;
+  font-size: 12.5px;
+  border-radius: var(--radius-sm);
+  background: var(--well);
+}
+.cp-phase {
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  min-width: 96px;
+}
+.cp-prow.cp-cyan .cp-phase { color: var(--cyan); }
+.cp-prow.cp-violet .cp-phase { color: #dcc9ff; }
+.cp-prow.cp-danger .cp-phase { color: var(--danger); }
+.cp-papp { font-size: 11.5px; color: var(--text); }
+.cp-pmsg { font-size: 11.5px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* ------------------------------------------------------------ deep audit */
+
+.audit { margin-top: var(--sp-2); }
+.audit-list { display: flex; flex-direction: column; gap: 6px; margin: var(--sp-1) 0; }
+.audit-row {
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  background: var(--well);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+.audit-row.is-bad { border-color: rgba(255, 179, 0, 0.28); }
+.audit-top { display: flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; }
+.audit-mark {
+  width: 16px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--cyan);
+}
+.audit-row.is-bad .audit-mark { color: var(--amber); }
+/* Nothing on this disk to check is not the same as verified — muted, not cyan. */
+.audit-row.is-device .audit-mark { color: var(--muted); }
+.audit-name { font-size: 12.5px; font-weight: 600; }
+.audit-art { font-size: 11px; color: var(--muted); }
+.audit-sum { font-size: 11.5px; color: var(--muted); margin-left: auto; }
+.audit-row .btn { margin-left: 6px; }
+.audit-problems { list-style: none; margin: 7px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.audit-problem {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+}
+.audit-kind {
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  color: var(--amber);
+  border: 1px solid rgba(255, 179, 0, 0.32);
+  background: rgba(255, 179, 0, 0.09);
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+.audit-what { color: var(--text); }
+.audit-path {
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.audit-detail { font-size: 11px; color: var(--muted); }
+
 /* ------------------------------------------------------- reduced motion */
 
 @media (prefers-reduced-motion: reduce) {
@@ -2906,6 +3191,12 @@ select.input option {
   /* The watchdog's pulse is decoration; the line reads fine without it. */
   .sup-spark { animation: none !important; opacity: 1; transform: none; }
   .act-filter:hover { transform: none; }
+  /* v0.10 — sparklines are DATA, not decoration: they stay. The global rule
+     above already stripped the (nonexistent) animation; what matters here is
+     that nothing hides them. The restore affordance stops fading in and simply
+     stands there instead. */
+  .spark { display: inline-block; }
+  .act-restore { opacity: 1; transition: none !important; }
   .bar > span::after { display: none; }
   /* No sliding specular highlights without motion — the edge does the work. */
   .card::after, .tile-hit::after { display: none; }

@@ -30,5 +30,10 @@ import './fabric.test.js';
 import './activity.test.js';
 import './snapshots.test.js';
 import './guardian.test.js';
+// v0.10 — sparklines, bus federation, ecosystem checkpoints and the deep audit
+import './spark.test.js';
+import './remote.test.js';
+import './checkpoint.test.js';
+import './audit.test.js';
 // Last on purpose: this one installs a stub DOM on globalThis and boots app.js.
 import './smoke.test.js';

@@ -315,10 +315,12 @@ const JOB_VERBS = [
 ];
 
 /**
- * jobs.js emits only {jobId, appId, artifactId, message} — the job's TYPE never
- * makes it onto the wire — so the verb and the app's display name are read back
- * out of the message it wrote ("Installed WiVRn NX 1.4.0", "Removed WiVRn NX —
- * Headset APK"). An emitter that does pass `jobType`/`appName` wins over this.
+ * The fallback for an emitter that says nothing but the sentence it wrote: read
+ * the verb, the app's display name and the version back out of it ("Installed
+ * WiVRn NX 1.4.0", "Removed WiVRn NX — Headset APK"). jobs.js has passed
+ * `jobType`/`appName`/`version`/`previousVersion` since v0.10 and those always
+ * win; this still runs for a fleet relay, an older journal, and anything else
+ * that only ever had the message.
  */
 function parseJobMessage(message) {
   const out = { verb: null, name: "", version: "" };
@@ -363,7 +365,20 @@ function jobDone(evt, ts) {
     appId: evt.appId,
     artifactId: evt.artifactId,
     summary: `${verb} ${name}${version ? ` v${version}` : ""}`,
-    data: { jobId: evt.jobId, verb, version, message },
+    // v0.10: what the job REPLACED, kept verbatim rather than folded into the
+    // verb, because [replay] undoes entries one at a time and this is the only
+    // record of what an install covered up. `previouslyInstalled: false` is
+    // the load-bearing one — it says "nothing was there", which no re-reading
+    // of the sentence could ever establish, and its absence is what marks a
+    // pre-v0.10 line as unable to say either way.
+    data: {
+      jobId: evt.jobId,
+      verb,
+      version,
+      previousVersion: ver(evt.previousVersion),
+      previouslyInstalled: typeof evt.previouslyInstalled === "boolean" ? evt.previouslyInstalled : null,
+      message,
+    },
   });
 }
 

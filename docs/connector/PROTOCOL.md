@@ -131,6 +131,14 @@ Field names are yours. The hub's app overlay maps known keys to labels and
 units (`hr` → "Heart rate", `bpm`); anything unrecognised renders generically as
 `key: value`. Keep keys short, stable, lowercase.
 
+**Numbers get a history.** Every field you send as a finite JSON *number* is
+remembered — up to 120 samples over a rolling 10 minute window — and drawn as a
+sparkline beside its value. Booleans and strings get none. Two consequences
+worth designing around: send a number as a number (`72`, never `"72"`) if you
+want the line, and do not switch a key's type mid-run — a field that arrives as
+something other than a number drops its history rather than drawing a half
+line. The history is per connection: reconnecting starts a fresh one.
+
 ## 5. Liveness
 
 Presence on the bus **is** an open socket. There is no separate registration to

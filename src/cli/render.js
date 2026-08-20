@@ -725,7 +725,8 @@ const COMMANDS = [
   ["rollback", "<app> [artifact]", "restore the kept previous version"],
   ["versions", "<app> [--json]", "every published release"],
   ["refresh", "[--json]", "re-run discovery (--force bypasses the ETag cache)"],
-  ["doctor", "[--offline] [--json]", "environment: adb, token, paths, rate limit"],
+  // v0.10 [audit]: --deep checks every install against its manifest
+  ["doctor", "[--deep] [--repair] [--offline] [--json]", "environment: adb, token, paths, rate limit"],
   ["status", "[--json]", "the NX Connector bus: who is live right now"],
   ["stack", "ls | run <id> | stop <id>", "multi-app stacks"],
   ["fleet", "ls | pair <host> | install <peer> <app> | update <peer> | wake <peer>", "the other NX Hubs on your LAN"],
@@ -737,6 +738,10 @@ const COMMANDS = [
   ["restore", "<app> [file] [-y]", "put a config snapshot back (newest by default)"],
   // v0.8 [recorder]
   ["log", "[--since 24h] [--type x] [--app y] [--follow]", "what the hub has been doing (the flight recorder)"],
+  // v0.10 [daemon]
+  ["daemon", "run | install | uninstall | status", "the hub as a background service, no window"],
+  // v0.10 [replay]
+  ["checkpoint", "show <when> | restore <when> [--configs]", "what was installed then — and put it back"],
   ["help", "", "this text"],
 ];
 
@@ -746,6 +751,8 @@ const GLOBALS = [
   ["--verbose", "let the hub's log lines through"],
   ["--force", "ignore cached ETags on the discovery pass"],
   ["--offline", "doctor: report what is on disk, no network"],
+  // v0.10 [audit]
+  ["--deep / --repair", "doctor: check every install against its manifest, and fix it"],
   ["--yes / -y", "skip confirmations (uninstall)"],
   ["--version", "print the hub version"],
 ];

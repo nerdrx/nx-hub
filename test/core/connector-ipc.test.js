@@ -106,9 +106,10 @@ test("every v0.5 channel is registered, and works with no bus at all", async (t)
   for (const name of V05_METHODS) assert.ok(ipcMain.handlers.has(`nxhub:${name}`), `channel nxhub:${name} not registered`);
 
   // no connector module → an EMPTY client list, never a crash
-  assert.deepStrictEqual(await ipcMain.invoke("nxhub:getConnector"), { clients: [] });
+  // v0.10 [fabric2]: `remote` joins it — every PEER's bus, empty with no fleet
+  assert.deepStrictEqual(await ipcMain.invoke("nxhub:getConnector"), { clients: [], remote: [] });
   const state = await ipcMain.invoke("nxhub:getState");
-  assert.deepStrictEqual(state.connector, { clients: [] }, "getState().connector is always present");
+  assert.deepStrictEqual(state.connector, { clients: [], remote: [] }, "getState().connector is always present");
   assert.deepStrictEqual(await ipcMain.invoke("nxhub:getStacks"), []);
 });
 
@@ -128,7 +129,57 @@ test("getState()/getConnector() report whoever is on the bus", async (t) => {
   connector.getClients = () => {
     throw new Error("socket exploded");
   };
-  assert.deepStrictEqual((await ipcMain.invoke("nxhub:getState")).connector, { clients: [] });
+  assert.deepStrictEqual((await ipcMain.invoke("nxhub:getState")).connector, { clients: [], remote: [] });
+});
+
+test("v0.10 — getState().connector.remote carries every PEER's bus", async (t) => {
+  const connector = fakeConnector([client("wivrn-nx", { fields: { fps: 90 } })]);
+  const { ipcMain } = boot(t, { connector });
+
+  // A real fleet on loopback + an ephemeral port (the user's own hub owns
+  // :9023 on this machine), with a roster planted where a peer's would land.
+  const fleet = require("../../src/main/fleet");
+  const handle = fleet.init({
+    dataDir: path.join(helpers.tempDir("nxhub-fleet-ipc-"), "data"),
+    port: 0,
+    host: "127.0.0.1",
+    beacon: false,
+    connector: null,
+    stacks: null,
+    syncConfig: { load: () => ({ fleetSync: false }) },
+  });
+  await handle.ready;
+  t.after(() => fleet.close());
+
+  handle.rosters.set("peer-1", {
+    peerId: "peer-1",
+    peerName: "Workshop PC",
+    clients: [{ app: "pulsenx", version: "2.0.0", since: 1, fields: { hr: 72 }, history: { hr: [{ ts: 1, v: 72 }] } }],
+    at: Date.now(),
+  });
+
+  const state = await ipcMain.invoke("nxhub:getState");
+  assert.deepStrictEqual(state.connector.clients.map((c) => c.app), ["wivrn-nx"], "the LOCAL bus is unchanged");
+  assert.deepStrictEqual(state.connector.remote, [
+    {
+      peerId: "peer-1",
+      peerName: "Workshop PC",
+      clients: [{ app: "pulsenx", version: "2.0.0", since: 1, fields: { hr: 72 }, history: { hr: [{ ts: 1, v: 72 }] } }],
+    },
+  ]);
+  // getConnector() answers with exactly the same block
+  assert.deepStrictEqual(await ipcMain.invoke("nxhub:getConnector"), state.connector);
+
+  // …and a fleet that throws is [] rather than a broken getState()
+  const broken = handle.getRemoteClients;
+  handle.getRemoteClients = () => {
+    throw new Error("fleet exploded");
+  };
+  assert.deepStrictEqual(ipc.remoteClients(), []);
+  handle.getRemoteClients = broken;
+
+  await fleet.close();
+  assert.deepStrictEqual(ipc.remoteClients(), [], "a hub with no fleet reports no peers, never undefined");
 });
 
 /* ------------------------------------------------------------- stacks */

@@ -182,6 +182,12 @@ function baseApps() {
       order: 2,
       unpublished: false,
       latest: { tag: 'v0.4.1', version: '0.4.1', publishedAt: iso(9), notes: '', prerelease: true },
+      // v0.10 — this app never runs on THIS machine, but NX-WIN relays it over
+      // the fleet, so its card still needs labelled fields for the remote strip.
+      connectorFields: [
+        { key: 'bitrate', label: 'Bitrate', unit: 'Mbit/s', kind: 'number' },
+        { key: 'fps', label: 'Frames', unit: 'fps', kind: 'number' },
+      ],
       artifacts: [
         artifact({
           id: 'windows-zip-windows',
@@ -578,6 +584,9 @@ export function createMock() {
           fields: { bitrate: 98, latency_ms: 43 },
         },
       ],
+      // v0.10 [fabric2] — rosters relayed by other hubs over the fleet session.
+      // Filled by syncRemote() below from whichever peers are online.
+      remote: [],
     },
     refreshing: false,
     platform: 'linux',
@@ -751,6 +760,114 @@ export function createMock() {
 
   const busChanged = () => emit({ type: 'connector-changed' });
 
+  /* ------------------------------------------- v0.10: field history buffers */
+
+  // SPEC [fabric2]: max 120 samples over a 10-minute window, downsampled to ≤60
+  // on getClients() and to ≤20 on the bus. The mock ships the downsampled
+  // numbers directly — that is what the renderer actually receives.
+  const HISTORY_MAX = 60;
+  const REMOTE_HISTORY_MAX = 20;
+  const HISTORY_STEP_MS = 2400;
+
+  /**
+   * A believable series: a slow sine (the app's own rhythm — a bitrate ramp, a
+   * heart settling) plus noise, clamped. A pure random walk drifts off to one
+   * edge and sits there, which makes every sparkline eventually look the same.
+   */
+  function seedSeries(current, { lo, hi, amp, points = 34, phase = 0 }) {
+    const now = Date.now();
+    const out = [];
+    for (let i = points - 1; i >= 0; i--) {
+      const t = (points - 1 - i) / points;
+      const wave = Math.sin(phase + t * Math.PI * 2.2) * amp;
+      const noise = (Math.random() - 0.5) * amp * 0.45;
+      const v = Math.max(lo, Math.min(hi, Math.round(current + wave + noise)));
+      out.push({ ts: now - i * HISTORY_STEP_MS, v });
+    }
+    return out;
+  }
+
+  /** Per-field ranges, so a bitrate and a heart rate move at their own scale. */
+  const FIELD_RANGE = {
+    hr: { lo: 52, hi: 148, amp: 11 },
+    bitrate: { lo: 12, hi: 150, amp: 18 },
+    latency_ms: { lo: 14, hi: 120, amp: 9 },
+    receivers: { lo: 0, hi: 40, amp: 4 },
+    fps: { lo: 45, hi: 120, amp: 7 },
+  };
+
+  function seedHistories(fields, opts = {}) {
+    const out = {};
+    let phase = 0;
+    for (const [key, value] of Object.entries(fields || {})) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+      const range = FIELD_RANGE[key] || { lo: 0, hi: Math.max(1, value * 2), amp: Math.max(1, value * 0.12) };
+      out[key] = seedSeries(value, { ...range, points: opts.points || 34, phase });
+      // Offset each field so two lines on one strip are not the same shape.
+      phase += 1.1;
+    }
+    return out;
+  }
+
+  /** Append the current numeric fields as one more sample, then trim. */
+  function pushHistory(client, max = HISTORY_MAX) {
+    if (!client) return;
+    const bag = client.history || (client.history = {});
+    const ts = Date.now();
+    for (const [key, value] of Object.entries(client.fields || {})) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+      const series = bag[key] || (bag[key] = []);
+      series.push({ ts, v: value });
+      if (series.length > max) series.splice(0, series.length - max);
+    }
+  }
+
+  for (const client of state.connector.clients) client.history = seedHistories(client.fields);
+
+  /* -------------------------------------------- v0.10: federated rosters */
+
+  /**
+   * What each peer would be relaying if its session were up. Kept separately
+   * from `state.connector.remote` because SPEC clears a received roster the
+   * moment the session drops — syncRemote() is that rule, in one place.
+   *
+   * workshop-pc relays an app that is NOT on this machine's bus, which is the
+   * state the card surface is really about: LIVE, but somewhere else.
+   */
+  const remoteRosters = {
+    a1b2c3d4e5f60718: () => [
+      {
+        app: 'oscgoesbrrr-nx-patches',
+        version: '1.6.0',
+        pid: 8123,
+        since: new Date(Date.now() - 52 * 60000).toISOString(),
+        lastSeen: new Date().toISOString(),
+        fields: { receivers: 22, smoothing: true },
+        history: seedHistories({ receivers: 22 }, { points: REMOTE_HISTORY_MAX }),
+      },
+    ],
+    c0ffee11deadbeef: () => [
+      {
+        app: 'wivrn-nx-windows',
+        version: '0.4.1',
+        pid: 6612,
+        since: new Date(Date.now() - 4 * 60000).toISOString(),
+        lastSeen: new Date().toISOString(),
+        fields: { bitrate: 112, fps: 90 },
+        history: seedHistories({ bitrate: 112, fps: 90 }, { points: REMOTE_HISTORY_MAX }),
+      },
+    ],
+  };
+
+  /** Rebuild connector.remote from the peers that are actually answering. */
+  function syncRemote(opts = {}) {
+    state.connector.remote = peers
+      .filter((p) => p.online && remoteRosters[p.id])
+      .map((p) => ({ peerId: p.id, peerName: p.name, clients: remoteRosters[p.id]() }));
+    if (!opts.quiet) busChanged();
+    return state.connector.remote;
+  }
+
   function clientIndex(appId) {
     return state.connector.clients.findIndex((c) => c.app === appId);
   }
@@ -773,6 +890,9 @@ export function createMock() {
       since: new Date().toISOString(),
       lastSeen: new Date().toISOString(),
       fields: fieldsFor(appId),
+      // A client that just joined has one sample, which is exactly the
+      // single-point case the sparkline has to survive.
+      history: seedHistories(fieldsFor(appId), { points: 1 }),
     });
     busChanged();
     return true;
@@ -801,6 +921,21 @@ export function createMock() {
       if (typeof f.latency_ms === 'number') f.latency_ms = jitter(f.latency_ms, 14, 120, 12);
       if (typeof f.receivers === 'number') f.receivers = jitter(f.receivers, 0, 40, 3);
       client.lastSeen = new Date().toISOString();
+      // v0.10 — every tick is one more sample in the ring buffer, which is what
+      // makes the sparklines move on screen instead of sitting there seeded.
+      pushHistory(client);
+    }
+    // A peer's relayed roster ticks too (its own hub is doing the same thing),
+    // so the remote strips are alive rather than a frozen screenshot.
+    for (const peer of state.connector.remote || []) {
+      for (const client of peer.clients || []) {
+        const f = client.fields;
+        if (typeof f.bitrate === 'number') f.bitrate = jitter(f.bitrate, 12, 150, 20);
+        if (typeof f.fps === 'number') f.fps = jitter(f.fps, 45, 120, 8);
+        if (typeof f.receivers === 'number') f.receivers = jitter(f.receivers, 0, 40, 3);
+        client.lastSeen = new Date().toISOString();
+        pushHistory(client, REMOTE_HISTORY_MAX);
+      }
     }
     if (state.connector.clients.length) busChanged();
     if (ticking) later(tickFields, 2400);
@@ -1218,8 +1353,246 @@ export function createMock() {
     return snap;
   }
 
-  const fleetChanged = () => emit({ type: 'fleet-changed' });
+  /* ------------------------------------------ v0.10: ecosystem checkpoints */
+
+  /**
+   * `when` accepts what the recorder accepts: epoch ms, an ISO string, or a
+   * relative form ("24h", "3d", "90m"). Everything else falls back to "an hour
+   * ago", because a checkpoint sheet with no moment at all is not a state worth
+   * being able to reach.
+   */
+  function resolveWhen(when) {
+    if (typeof when === 'number' && Number.isFinite(when) && when > 0) return Math.round(when);
+    const raw = String(when || '').trim();
+    const rel = /^(\d+)\s*(m|h|d)$/i.exec(raw);
+    if (rel) {
+      const n = Number(rel[1]);
+      const unit = rel[2].toLowerCase();
+      const ms = unit === 'm' ? 60000 : unit === 'h' ? 3600000 : 86400000;
+      return Date.now() - n * ms;
+    }
+    const parsed = Date.parse(raw);
+    if (Number.isFinite(parsed)) return parsed;
+    return Date.now() - 3600000;
+  }
+
+  /**
+   * The reconstruction. Deliberately mixed: something to install, something to
+   * remove, several apps already where they belong, and TWO rows that cannot be
+   * placed because their tag is gone — the uncertain path is the one that is
+   * easy to get wrong and impossible to see without a fixture for it.
+   */
+  const CHECKPOINT_SEED = [
+    { appId: 'wivrn-nx', artifactId: 'tarball-prefix-linux', version: '1.9.1', action: 'install', snapshot: true },
+    { appId: 'pulsenx', artifactId: 'appimage-linux', action: 'none' },
+    { appId: 'quadforge', artifactId: 'blender-addon-linux', version: '', action: 'remove', snapshot: true },
+    // The SAME app, its other artifact, moving the other way: at that moment the
+    // headset APK was not on the Pico yet. Two rows under one name is the case
+    // the table has to disambiguate, and the one a plan keyed only by app id
+    // would silently swallow — so the fixture insists on it.
+    { appId: 'wivrn-nx', artifactId: 'apk-adb-android', version: '', action: 'remove' },
+    { appId: 'nx-hub', artifactId: 'appimage-linux', action: 'none' },
+    {
+      appId: 'oscgoesbrrr-nx-patches',
+      artifactId: 'appimage-linux',
+      version: '1.4.1',
+      action: 'install',
+      uncertain: true,
+      reason: 'release v1.4.1 is no longer published',
+    },
+    {
+      appId: 'banish-protocol',
+      artifactId: 'archive-dir-linux',
+      version: '0.2.0',
+      action: 'install',
+      uncertain: true,
+      reason: 'the recorder never saw which asset was installed',
+    },
+  ];
+
+  function checkpointPlan(when) {
+    const ts = resolveWhen(when);
+    const apps = [];
+    for (const row of CHECKPOINT_SEED) {
+      const { art } = find(row.appId, row.artifactId);
+      const currentVersion = (art && art.installed && art.installed.version) || '';
+      // Nothing installed, nothing to remove. Main computes the action from the
+      // two versions and so can never emit this pair; the seed is written by hand
+      // and can, which would put "not installed → not installed · REMOVE" on the
+      // screen the moment the app it names has not been installed yet.
+      if (row.action === 'remove' && !currentVersion) continue;
+      // `none` rows are the reconstruction saying "already right" — so their
+      // target IS whatever is installed now.
+      const version = row.action === 'none' ? currentVersion : row.version || '';
+      const snap = row.snapshot ? snapsFor(row.appId)[0] : null;
+      apps.push({
+        appId: row.appId,
+        artifactId: row.artifactId,
+        version,
+        currentVersion,
+        action: row.action,
+        ...(snap ? { snapshot: snap.file } : {}),
+        ...(row.uncertain ? { uncertain: true, reason: row.reason } : {}),
+      });
+    }
+    return { ts, apps };
+  }
+
+  // Flipped by the toolbar so the failure ending is reachable without breaking
+  // anything: the restore stops partway and says so.
+  let checkpointFails = false;
+
+  /**
+   * The vocabulary here is [replay]'s, verbatim: `planning` with `appId: null`,
+   * then `installing`/`removing` per app, a per-app `failed` when a step breaks
+   * (the walk CONTINUES — a failing step does not abort the rest), and one
+   * closing verdict with `appId: null`. There is deliberately NO per-app
+   * `done`: main never emits one, and the renderer's rule that the verdict
+   * closes every still-open row only gets exercised if the mock is that honest.
+   */
+  function restoreCheckpointSim(when, opts = {}) {
+    const plan = checkpointPlan(when);
+    const work = plan.apps.filter((a) => !a.uncertain && a.action !== 'none');
+    const configs = !!(opts && opts.configs);
+    let failures = 0;
+    let i = 0;
+
+    emit({ type: 'checkpoint-progress', phase: 'planning', appId: null, artifactId: null });
+
+    const step = () => {
+      if (i >= work.length) {
+        emit({ type: 'checkpoint-progress', phase: failures ? 'failed' : 'done', appId: null, artifactId: null });
+        record({
+          type: 'job-done',
+          summary: `Restored ${work.length} app${work.length === 1 ? '' : 's'} to an earlier checkpoint`,
+        });
+        recompute(state.apps, state.settings);
+        changed();
+        emit({ type: 'toast', level: 'info', message: 'Checkpoint restored' });
+        return;
+      }
+      const row = work[i++];
+      const phase = row.action === 'remove' ? 'removing' : 'installing';
+      emit({ type: 'checkpoint-progress', phase, appId: row.appId, artifactId: row.artifactId });
+
+      // Halfway through, if armed: a plausible failure (a tag that 404s now).
+      // The walk goes ON — that is what main does, and the closing verdict is
+      // what turns the run red.
+      if (checkpointFails && i === Math.ceil(work.length / 2)) {
+        failures += 1;
+        later(() => {
+          emit({
+            type: 'checkpoint-progress',
+            phase: 'failed',
+            appId: row.appId,
+            artifactId: row.artifactId,
+            error: `${row.appId}: that release asset is no longer downloadable`,
+          });
+          later(step, 260);
+        }, 420);
+        return;
+      }
+
+      later(() => {
+        // The plan really is applied — the cards behind the sheet have to end up
+        // agreeing with the table, or the sheet is theatre.
+        const { art } = find(row.appId, row.artifactId);
+        if (art) {
+          if (row.action === 'remove') art.installed = null;
+          else {
+            art.installed = {
+              version: row.version,
+              path: `/home/nerdrx/Applications/nx/${row.appId}/${row.artifactId}`,
+              installedAt: new Date().toISOString(),
+            };
+          }
+        }
+        // No per-app "done": main does not send one, so neither does this.
+        if (configs && row.snapshot) {
+          emit({ type: 'checkpoint-progress', phase: 'config', appId: row.appId, artifactId: row.artifactId });
+          later(step, 320);
+          return;
+        }
+        later(step, 260);
+      }, 460);
+    };
+
+    later(step, 200);
+    return { ok: true, planned: work.length };
+  }
+
+  /* ------------------------------------------------------ v0.10: deep audit */
+
+  // Two broken installs, each with a different failure class, plus clean rows —
+  // and one path with characters that would break naive markup, because the
+  // audit prints filesystem paths and a filename can contain anything.
+  const AUDIT_SEED = () => [
+    { appId: 'pulsenx', artifactId: 'appimage-linux', ok: true, problems: [] },
+    {
+      appId: 'oscgoesbrrr-nx-patches',
+      artifactId: 'appimage-linux',
+      ok: false,
+      problems: [
+        {
+          kind: 'missing-binary',
+          path: '/home/nerdrx/Applications/nx/oscgoesbrrr-nx-patches/OGB-NX.AppImage',
+          detail: 'recorded by the installer, not on disk now',
+        },
+        {
+          kind: 'missing-desktop-entry',
+          path: '~/.local/share/applications/nx-oscgoesbrrr-nx-patches.desktop',
+          detail: '',
+        },
+      ],
+    },
+    {
+      appId: 'wivrn-nx',
+      artifactId: 'tarball-prefix-linux',
+      ok: false,
+      problems: [
+        {
+          kind: 'hash-mismatch',
+          path: '/home/nerdrx/Applications/nx/wivrn-nx/bin/wivrn-server',
+          detail: 'sha256 differs from the published asset',
+        },
+        {
+          kind: 'not-executable',
+          path: '/home/nerdrx/Applications/nx/wivrn-nx/bin/"wivrn helper" & co',
+          detail: 'mode 0644',
+        },
+      ],
+    },
+    { appId: 'quadforge', artifactId: 'blender-addon-linux', ok: true, problems: [] },
+    { appId: 'nx-hub', artifactId: 'appimage-linux', ok: true, problems: [] },
+    // [audit] cannot check a payload that lives on a headset. "ok" on this row
+    // means "nothing here to look at" — the UI has to say that, not tick it.
+    {
+      appId: 'wivrn',
+      artifactId: 'apk-android',
+      ok: true,
+      deviceResident: true,
+      problems: [],
+      notes: ['apk: installed on a device — files not checked here'],
+    },
+  ];
+
+  let auditRows = AUDIT_SEED();
+
+  /**
+   * A peer going up or down changes TWO things: the fleet list, and the bus
+   * rosters that hub was relaying (SPEC clears a roster when its session drops).
+   * Doing both here means no caller can remember one and forget the other.
+   */
+  const fleetChanged = () => {
+    syncRemote({ quiet: true });
+    emit({ type: 'fleet-changed' });
+    emit({ type: 'connector-changed' });
+  };
   const findPeer = (id) => peers.find((p) => p.id === id) || null;
+
+  // The bus roster the online peers are relaying right now (workshop-pc from
+  // the first frame; NX-WIN joins the moment it is woken).
+  syncRemote({ quiet: true });
 
   /**
    * v0.7 wake-on-LAN. Magic packets are fire-and-forget, so the bool only says
@@ -1698,6 +2071,46 @@ export function createMock() {
       return { ok: true, restored: restored.slice(), preRestore };
     },
 
+    /* -------------------------------------------------------- v0.10 surface */
+
+    async getCheckpoint(when) {
+      return JSON.parse(JSON.stringify(checkpointPlan(when)));
+    },
+
+    /**
+     * Answers as soon as the walk is ARMED, not when it finishes — the
+     * checkpoint-progress events are the real narration, and a renderer that
+     * waited for this promise would show nothing for ten seconds and then
+     * everything at once.
+     */
+    async restoreCheckpoint(when, opts) {
+      return restoreCheckpointSim(when, opts || {});
+    },
+
+    async getAudit(appId) {
+      const rows = appId ? auditRows.filter((r) => r.appId === appId) : auditRows;
+      return JSON.parse(JSON.stringify(rows));
+    },
+
+    /**
+     * Repair is a reinstall through the normal pipeline, so it returns a jobId
+     * and everything after that arrives as ordinary job events. The row only
+     * goes green once the job lands — a button that instantly declares success
+     * would be lying for the duration of the download.
+     */
+    async repairInstall(appId, artifactId) {
+      const row = auditRows.find((r) => r.appId === appId && r.artifactId === artifactId);
+      const jobId = runJob(appId, artifactId);
+      if (row) {
+        later(() => {
+          row.ok = true;
+          row.problems = [];
+          emit({ type: 'toast', level: 'info', message: `${appId} reinstalled — the install verifies clean now` });
+        }, 2400);
+      }
+      return jobId;
+    },
+
     /** Hands back the fresh list, so the section never needs a second trip. */
     async deleteSnapshot(appId, file) {
       const before = snapsFor(appId);
@@ -2105,6 +2518,79 @@ export function createMock() {
       });
       return link.exists;
     },
+    /* -------------------------------------------------------- v0.10 helpers */
+
+    /**
+     * Take a peer's relayed roster away, or give it back, WITHOUT touching
+     * whether the peer is online — the two are separate in main (a session can
+     * be up before the first bus-roster arrives) and the UI has to survive both.
+     */
+    toggleRemoteRoster(peerId = 'a1b2c3d4e5f60718') {
+      const peer = findPeer(peerId);
+      if (!peer) return null;
+      const had = (state.connector.remote || []).some((r) => r.peerId === peerId);
+      if (had) {
+        state.connector.remote = (state.connector.remote || []).filter((r) => r.peerId !== peerId);
+      } else if (remoteRosters[peerId]) {
+        state.connector.remote = [
+          ...(state.connector.remote || []),
+          { peerId, peerName: peer.name, clients: remoteRosters[peerId]() },
+        ];
+      }
+      busChanged();
+      emit({
+        type: 'toast',
+        level: had ? 'warn' : 'info',
+        message: had ? `${peer.name} stopped relaying its bus` : `${peer.name} is relaying its bus`,
+      });
+      return !had;
+    },
+
+    /** Bring NX-WIN up WITH its roster — the "wivrn on NX-WIN" state in one click. */
+    relayNxWin(peerId = 'c0ffee11deadbeef') {
+      const p = findPeer(peerId);
+      if (!p) return null;
+      p.online = true;
+      p.lastSeen = new Date().toISOString();
+      fleetChanged();
+      emit({ type: 'toast', level: 'info', message: `${p.name} is on the network and relaying its bus` });
+      return JSON.parse(JSON.stringify(state.connector.remote));
+    },
+
+    /** The plan, without going through the sheet — for tests and screenshots. */
+    checkpoint(when = Date.now() - 3600000) {
+      return JSON.parse(JSON.stringify(checkpointPlan(when)));
+    },
+
+    /** Run the restore simulation directly (the sheet does the same thing). */
+    runCheckpoint(when = Date.now() - 3600000, opts = {}) {
+      return restoreCheckpointSim(when, opts);
+    },
+
+    /** Arm (or disarm) the failure ending of the next restore. */
+    toggleCheckpointFailure() {
+      checkpointFails = !checkpointFails;
+      emit({
+        type: 'toast',
+        level: checkpointFails ? 'warn' : 'info',
+        message: checkpointFails
+          ? 'The next checkpoint restore will stop partway'
+          : 'Checkpoint restores will run to the end again',
+      });
+      return checkpointFails;
+    },
+
+    audit() {
+      return JSON.parse(JSON.stringify(auditRows));
+    },
+
+    /** Put the two broken installs back after a repair fixed them. */
+    breakInstalls() {
+      auditRows = AUDIT_SEED();
+      emit({ type: 'toast', level: 'warn', message: 'Two installs are damaged again' });
+      return auditRows.filter((r) => !r.ok).length;
+    },
+
     /** Begin drifting the live values (page mode only — see tickFields). */
     startTicking() {
       if (ticking) return;
@@ -2159,7 +2645,13 @@ function toolbar(dev) {
     <button class="btn btn-ghost btn-sm" data-mock="restarting">watchdog: restarting</button>
     <button class="btn btn-ghost btn-sm" data-mock="gave-up">watchdog: gave up</button>
     <button class="btn btn-ghost btn-sm" data-mock="arm-rollback">arm rollback + config snapshot</button>
-    <button class="btn btn-ghost btn-sm" data-mock="log-event">record a live event</button>`;
+    <button class="btn btn-ghost btn-sm" data-mock="log-event">record a live event</button>
+    <button class="btn btn-ghost btn-sm" data-mock="relay">NX-WIN relays its bus</button>
+    <button class="btn btn-ghost btn-sm" data-mock="roster">toggle relayed roster</button>
+    <button class="btn btn-ghost btn-sm" data-mock="checkpoint">run checkpoint restore</button>
+    <button class="btn btn-ghost btn-sm" data-mock="checkpoint-configs">checkpoint restore + configs</button>
+    <button class="btn btn-ghost btn-sm" data-mock="checkpoint-fail">toggle checkpoint failure</button>
+    <button class="btn btn-ghost btn-sm" data-mock="break">damage two installs</button>`;
   bar.addEventListener('click', (ev) => {
     const el = ev.target instanceof Element ? ev.target.closest('[data-mock]') : null;
     if (!el) return;
@@ -2191,6 +2683,12 @@ function toolbar(dev) {
     else if (what === 'gave-up') dev.simulateSupervisor('gave-up');
     else if (what === 'arm-rollback') dev.armRollback();
     else if (what === 'log-event') dev.logEvent();
+    else if (what === 'relay') dev.relayNxWin();
+    else if (what === 'roster') dev.toggleRemoteRoster();
+    else if (what === 'checkpoint') dev.runCheckpoint();
+    else if (what === 'checkpoint-configs') dev.runCheckpoint(Date.now() - 3600000, { configs: true });
+    else if (what === 'checkpoint-fail') dev.toggleCheckpointFailure();
+    else if (what === 'break') dev.breakInstalls();
   });
   document.body.appendChild(bar);
 }

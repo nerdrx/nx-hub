@@ -148,6 +148,11 @@ onEvent(cb)           // → unsubscribe. Events:
 //  { type: "job-progress", jobId, appId, artifactId, phase, pct, message }
 //      phase: "download" | "verify" | "extract" | "install" | "cleanup"
 //  { type: "job-done" | "job-error", jobId, appId, artifactId, message? }
+//      job-done also: jobType, appName, version, previousVersion,
+//      previouslyInstalled  — the run's own facts, so the flight recorder and
+//      [replay] never re-parse `message`. previousVersion/previouslyInstalled
+//      describe the state BEFORE the job; they are what tell a first install
+//      from an update.
 //  { type: "toast", level: "info"|"warn"|"error", message }
 ```
 

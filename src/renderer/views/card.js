@@ -24,7 +24,7 @@ import {
   effectiveSandbox,
 } from '../lib/guardian.js';
 import { renderDeviceLine } from './devices.js';
-import { renderStatusStrip } from './status.js';
+import { renderStatusStrip, renderRemoteStrips } from './status.js';
 import * as icons from './icons.js';
 
 const HUB_ID = 'nx-hub';
@@ -401,6 +401,10 @@ export function renderAppCard(app, ctx = {}) {
   const skipped = isSkipped(pref, latestVersion);
   // The live strip only exists while this app id is announced on the bus.
   const client = (ctx.clients instanceof Map && ctx.clients.get(app.id)) || null;
+  // v0.10 [fabric2] — and the same app may be running on ANOTHER hub. That gets
+  // its own peer-tagged strip, whether or not it is also running here: a card
+  // whose app is live only remotely still says LIVE, it just says where.
+  const remote = (ctx.remote instanceof Map && ctx.remote.get(app.id)) || [];
 
   const pinNotes = (app.artifacts || [])
     .filter(
@@ -481,6 +485,7 @@ export function renderAppCard(app, ctx = {}) {
         <a class="repo-link" href="#" data-act="open" data-url="${esc(githubUrl(app.repo))}" title="${esc(app.repo)}">${icons.external}<span>${esc(app.repo)}</span></a>
       </div>
       ${renderStatusStrip(client, app.connectorFields, { now: ctx.now })}
+      ${renderRemoteStrips(remote, app.connectorFields, { now: ctx.now })}
     </div>
     ${supBanners}
     ${crashBanners}

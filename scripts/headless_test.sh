@@ -59,6 +59,13 @@ export GAMESCOPE_WAYLAND_DISPLAY=""
 export ELECTRON_DISABLE_SANDBOX=1
 export ELECTRON_ENABLE_LOGGING=1
 
+# Every gamescope socket that already exists belongs to somebody else.
+PRE_SOCKS=""
+for s in "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/gamescope-*; do
+    [[ -S "$s" ]] || continue
+    PRE_SOCKS+=" $(basename "$s")"
+done
+
 gamescope "${GS_ARGS[@]}" -- \
     env "${ENVS[@]+"${ENVS[@]}"}" "$ELECTRON" "${APP_ARGS[@]}" >"$LOG" 2>&1 &
 GS_PID=$!
@@ -66,12 +73,20 @@ cleanup() { kill "$GS_PID" 2>/dev/null; wait "$GS_PID" 2>/dev/null; }
 trap cleanup EXIT
 
 # Wait for the nested compositor to publish its socket.
+#
+# Only `gamescope-<N>` counts: the runtime dir also carries `gamescope-limiter-*`
+# sockets and `-ei`/`.lock` siblings, and screenshotting one of those just fails.
+# And only a socket that was NOT there before we started is ours — a real
+# gamescope session, or another agent's headless one, must never be the thing we
+# photograph or kill.
+RUNDIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+is_gs_sock() { [[ -S "$1" && "$(basename "$1")" =~ ^gamescope-[0-9]+$ ]]; }
 SOCK=""
 for _ in $(seq 1 100); do
-    for s in "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/gamescope-*; do
-        [[ -S "$s" ]] || continue
+    for s in "$RUNDIR"/gamescope-*; do
+        is_gs_sock "$s" || continue
         cand=$(basename "$s")
-        [[ "$cand" == *.lock || "$cand" == *-ei ]] && continue
+        [[ " $PRE_SOCKS " == *" $cand "* ]] && continue   # someone else's, already running
         SOCK="$cand"
     done
     [[ -n "$SOCK" ]] && break

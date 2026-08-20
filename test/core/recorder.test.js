@@ -78,6 +78,7 @@ test("recorder: job-done reads the verb, the app and the version out of the mess
   assert.equal(installed.data.verb, "installed");
   assert.equal(installed.data.version, "1.4.0");
   assert.equal(installed.data.jobId, "j1");
+  assert.equal(installed.data.previouslyInstalled, undefined, "a message-only emitter cannot say what it replaced");
 
   const [removed] = rec({ type: "job-done", appId: "wivrn-nx", message: "Removed WiVRn NX — Headset APK" });
   assert.equal(removed.summary, "uninstalled WiVRn NX", "the artifact label is not part of the sentence");
@@ -96,10 +97,28 @@ test("recorder: job-done reads the verb, the app and the version out of the mess
     appName: "WiVRn NX",
     jobType: "install",
     previousVersion: "1.3.2",
+    previouslyInstalled: true,
     version: "v1.4.0",
     message: "Installed WiVRn NX 1.4.0",
   });
   assert.equal(updated.summary, "updated WiVRn NX v1.4.0", "an install over an existing one is an update");
+  assert.equal(updated.data.previousVersion, "1.3.2", "…and what it replaced is kept, not just folded into the verb");
+  assert.equal(updated.data.previouslyInstalled, true);
+
+  // A first install still reads "installed" — but it now SAYS so, which is
+  // what [replay] needs to undo it to "not installed" rather than to a guess.
+  const [fresh] = rec({
+    type: "job-done",
+    appId: "limbo",
+    appName: "Limbo NX",
+    jobType: "install",
+    previouslyInstalled: false,
+    version: "2.0",
+    message: "Installed. Enable the add-on in Blender",
+  });
+  assert.equal(fresh.summary, "installed Limbo NX v2.0", "the note never has to stand in for the app or the version");
+  assert.equal(fresh.data.previouslyInstalled, false);
+  assert.equal(fresh.data.previousVersion, undefined);
 });
 
 test("recorder: job-error keeps the reason, and a cancellation says so", (t) => {

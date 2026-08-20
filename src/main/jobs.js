@@ -227,6 +227,14 @@ function enqueue(type, appId, artifactId, opts = {}) {
     phase: type === "install" ? "download" : "install",
     pct: 0,
     message: "queued",
+    // v0.10: the facts only the run itself knows, filled in by run*() below and
+    // handed to the journal by finish(). `version` is what is installed once
+    // the job is done (null when nothing is); `previousVersion` is what it
+    // replaced, and `previouslyInstalled` tells "nothing was there" apart from
+    // "something was there whose version we never recorded".
+    version: null,
+    previousVersion: null,
+    previouslyInstalled: null,
     startedAt: new Date().toISOString(),
     endedAt: null,
     error: null,
@@ -284,7 +292,23 @@ function finish(job, status, message) {
   job.message = message || job.message;
   if (status === "done") {
     job.pct = 100;
-    emit({ type: "job-done", jobId: job.id, appId: job.appId, artifactId: job.artifactId, message: job.message });
+    emit({
+      type: "job-done",
+      jobId: job.id,
+      appId: job.appId,
+      artifactId: job.artifactId,
+      // v0.10: the run's own facts, so the flight recorder never has to parse
+      // the human sentence below to learn them. `previousVersion` is the one
+      // that cannot be recovered any other way — it is what tells a first
+      // install from an update, and it is what [replay] needs to undo this
+      // job exactly instead of reporting `uncertain`.
+      jobType: job.type,
+      appName: job.appName,
+      version: job.version,
+      previousVersion: job.previousVersion,
+      previouslyInstalled: job.previouslyInstalled,
+      message: job.message,
+    });
   } else {
     job.error = message || "failed";
     emit({
@@ -795,6 +819,13 @@ async function runInstall(job) {
   const settings = config.load();
   setDownloadLimit(settings.maxConcurrentDownloads);
 
+  // v0.10: read BEFORE step 3 overwrites the record. An install over nothing
+  // and an install over 1.3.2 both end up writing "Installed <app> <version>",
+  // so this is the only moment the difference is knowable.
+  const replaced = stateStore.getInstall(app.id, liveArtifact.id);
+  job.previouslyInstalled = Boolean(replaced);
+  job.previousVersion = replaced && replaced.version != null ? String(replaced.version) : null;
+
   // pick the release to install: an explicit tag (installVersion) or the
   // artifact's own source release (which may be older than app.latest when a
   // release only patched a different platform)
@@ -888,8 +919,9 @@ async function runInstall(job) {
   if (!result || typeof result !== "object") result = {};
 
   // 3. record
+  job.version = result.version || version;
   stateStore.recordInstall(app.id, artifact.id, {
-    version: result.version || version,
+    version: job.version,
     path: result.path || null,
     launchable: result.launchable !== false,
     iconPath: result.iconPath || null,
@@ -1024,6 +1056,11 @@ async function runUninstall(job) {
   const settings = config.load();
   const rec = stateStore.getInstall(job.appId, job.artifactId);
   const installedPath = (rec && rec.path) || (artifact.installed && artifact.installed.path) || null;
+  // v0.10: nothing is installed when this finishes, and the version that is
+  // going away is what an undo of this uninstall would have to put back.
+  job.previouslyInstalled = Boolean(rec);
+  job.previousVersion = rec && rec.version != null ? String(rec.version) : null;
+  job.version = null;
 
   // v0.8 [timemachine]: the last config snapshot before the app goes away.
   await require("./snapshots").maybeSnapshot(app, settings, "pre-uninstall");
@@ -1059,6 +1096,8 @@ async function runRollback(job) {
   const settings = config.load();
   const rec = stateStore.getInstall(job.appId, job.artifactId);
   const installedPath = (rec && rec.path) || (artifact.installed && artifact.installed.path) || null;
+  job.previouslyInstalled = Boolean(rec); // v0.10
+  job.previousVersion = rec && rec.version != null ? String(rec.version) : null;
 
   const engine = getEngine();
   if (typeof engine.rollback !== "function") throw new Error("This build cannot roll installs back");
@@ -1067,6 +1106,7 @@ async function runRollback(job) {
   const result = (await engine.rollback({ app, artifact, installedPath, ctx: makeCtx(job, settings) })) || {};
 
   const version = result.version != null ? result.version : artifact.prevVersion || null;
+  job.version = version;
   stateStore.recordInstall(app.id, artifact.id, {
     version,
     path: result.path || installedPath || null,

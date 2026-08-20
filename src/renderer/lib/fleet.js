@@ -210,6 +210,44 @@ export function peerSince(peer) {
   return str(raw);
 }
 
+/* --------------------------------------------------- v0.10 settings sync */
+
+/**
+ * SPEC v0.10 [fabric2]: `fleetSync` defaults to TRUE — absent means on. Only
+ * an explicit `false` turns it off, which is why every check below is
+ * `!== false` and not a truthiness test.
+ */
+export function fleetSyncEnabled(settings) {
+  return !settings || settings.fleetSync !== false;
+}
+
+/**
+ * Does this peer share preferences with us right now?
+ *
+ * Sync is ambient — it happens over a live session, so an offline peer is not
+ * syncing anything at this moment even though it will again when it comes back.
+ * Saying "syncs with this hub" under an offline peer would be a promise the
+ * fleet cannot keep while it is dark.
+ */
+export function peerSyncs(peer, settings) {
+  return fleetSyncEnabled(settings) && !!(peer && peer.online);
+}
+
+/**
+ * The note itself. Deliberately one quiet line and nothing else: SPEC says
+ * "nothing louder (sync is ambient)", so there is no toggle here, no count, no
+ * last-synced clock — the Settings panel owns the switch.
+ */
+export function syncNote(peer, settings) {
+  return peerSyncs(peer, settings) ? 'preferences sync with this hub' : '';
+}
+
+/** Peers currently in the sync circle — used for the sheet's own subtitle. */
+export function syncingPeers(peers, settings) {
+  if (!fleetSyncEnabled(settings)) return [];
+  return (Array.isArray(peers) ? peers : []).filter((p) => p && p.online);
+}
+
 /* ------------------------------------------------------- pairing state machine */
 
 export const PAIR_MODES = ['idle', 'show', 'enter'];
