@@ -5,6 +5,22 @@
   "nerdrx/petri"
  ],
  "apps": {
+  "vencord-nx-plugins": {
+   "name": "Vencord NX Plugins",
+   "tagline": "Voice-focused Vencord userplugins — auto-rejoin, soundboard, net HUD, fake deafen & more",
+   "order": 10,
+   "artifacts": [
+    {
+     "assetPattern": "nx-vencord-plugins-*-linux.tar.gz",
+     "label": "Vencord build (Linux)",
+     "kind": "tarball-prefix",
+     "platform": "linux",
+     "stripPrefix": "",
+     "prefix": "~/.config/Vencord",
+     "postInstallNote": "Fully restart Discord (or Ctrl+R) to load the plugins, then enable them in Vencord → Plugins. Turn OFF Vencord's auto-updater so it doesn't overwrite this build."
+    }
+   ]
+  },
   "wivrn-nx": {
    "name": "WiVRn NX",
    "tagline": "OpenXR streaming to the Pico — NX transport stack",
