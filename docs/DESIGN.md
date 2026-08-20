@@ -1,7 +1,8 @@
 # The NX Design Language
 
-**Version 1.3 · extracted from NX Hub v0.3.6 · amendments from PulseNX v1.2.1
-and the pointer-bound specular rule (2026-08-16)**
+**Version 1.4 · extracted from NX Hub v0.3.6 · amendments from PulseNX v1.2.1
+and the pointer-bound specular rule (2026-08-16) · §12 reskin rules from the
+Vencord NX theme (2026-08-20)**
 
 This document is the canonical specification of the NX visual language —
 "liquid glass on deep space." It is written to be dropped into any project's
@@ -363,8 +364,58 @@ are invisible in a diff. Before shipping any NX-branded surface, verify:
       actions, danger, or generic status.
 - [ ] Copy is sentence-case, concrete, and tells the user what to do next.
 
+## 12. Reskinning a host UI you don't own
+
+Everything above assumes we build the markup. Sometimes we don't — we drop NX
+onto a host we can't rebuild (a Discord client mod, an injected userstyle, a
+browser extension). You get one lever: CSS over someone else's DOM. That
+inverts several defaults, and the mistakes here are the ones that make a skin
+read as *a hack* instead of a product. Learned building the Vencord NX theme.
+
+- **Recolor at the host's design-token layer, not its class names.** Modern apps
+  expose their palette as CSS custom properties; override those and the whole
+  app turns at once. Set **both** the legacy and current token names (Discord:
+  `--background-*`/`--brand-experiment` *and* the newer `--bg-base-*` semantic
+  set) so you survive the app mid-migration. Targeting hashed class names is a
+  treadmill — they churn every release; tokens are stable surface area.
+
+- **Opaque structural surfaces; glass only on what truly floats.** §4's budget
+  rule becomes absolute here: in a host you don't own you can't guarantee
+  stacking order, so a translucent *flat* panel will let an unrelated layer
+  bleed through it — the single ugliest tell. Give the always-present frame
+  (rails, sidebars, header, content) an **opaque** deep-violet elevation ramp;
+  depth comes from surface steps, not see-through. Reserve translucency + real
+  blur for genuinely floating layers (menus, modals, popouts, tooltips), and
+  keep their fill alpha **≥ 0.85** so nothing behind them shows.
+
+- **The field is one ambient bloom on the root — not a layer behind every
+  panel.** §3's nebula+starfield assumes you own the stack and can park two
+  fixed layers *below* everything. Injected into a host you don't, a field
+  repeated behind each surface fights legibility and looks cheap. Deliver "deep
+  space" as a single upper-left violet glow painted on the host's root
+  background. If the field is visible through more than the outermost frame,
+  it's too much — halve it, then halve it again.
+
+- **Never touch the host's z-index or stacking.** Forcing children into a
+  stacking context so you can slip a background pseudo-element behind them
+  reorders the host's own popout/overlay layers and produces ghosting and
+  cut-off content. Paint the field on the root element's *own* `background`
+  (layered `background-image`); add nothing to the stacking order.
+
+- **Consistency is the entire game.** One hairline, one hover, one selected
+  state, one radius scale, reused everywhere. When you're overriding a UI you
+  didn't design, a *single* panel with a different alpha or a stray rounded
+  corner is the difference between "designed" and "userstyle." Uniformity reads
+  as intent.
+
+Review addendum for skins: screenshot the host with menus, modals, and a
+settings page **open**, and confirm no layer shows through another; then confirm
+every structural panel shares one fill and one separator.
+
 ---
 
 *Reference implementation: [nerdrx/nx-hub](https://github.com/nerdrx/nx-hub) —
 `src/renderer/styles.css` (tokens & components), `src/renderer/views/`
-(component markup), `assets/` (the mark).*
+(component markup), `assets/` (the mark). Reskin reference:
+[nerdrx/vencord-nx-plugins](https://github.com/nerdrx/vencord-nx-plugins) —
+`themes/nx.theme.css`.*
