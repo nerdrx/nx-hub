@@ -1101,6 +1101,117 @@ test('Settings → Storage verifies every install and repairs a broken one', asy
   await clickAndSettle({ 'data-act': 'close-settings' });
 });
 
+/* ------------------------------------------------------------------ v0.11 */
+
+test('the launcher offers a Stop on anything running, without touching the launch click', async () => {
+  await clickAndSettle({ 'data-act': 'view', 'data-view': 'launch' }, 120);
+  const launch = dom.html('launch');
+  assert.ok(launch.includes('data-act="stop-app"'), 'the running tiles carry a Stop');
+  assert.match(launch, /data-act="stop-app"[^>]*data-app="pulsenx"/, 'PulseNX is live on the bus');
+  assert.ok(launch.includes('class="tile-running"'), 'and OGB is running without one');
+  assert.match(
+    launch,
+    /data-act="stop-app"[^>]*data-app="oscgoesbrrr-nx-patches"/,
+    'which is exactly the app a bus-only design would have stranded'
+  );
+
+  // The stop is a sibling of the hit target, not a child of it: a stop must
+  // never be a mis-click away from a relaunch.
+  const stop = launch.indexOf('data-act="stop-app"');
+  const hitEnd = launch.lastIndexOf('</button>', stop);
+  assert.ok(hitEnd > 0 && launch.slice(hitEnd, stop).indexOf('tile-hit') < 0, 'the launch button closed first');
+  const button = launch.slice(stop, launch.indexOf('</button>', stop));
+  assert.ok(!button.includes('tabindex'), `the tile Stop stays in the tab order: ${button}`);
+
+  // A tile that is neither live nor running has nothing to stop.
+  const idle = launch.indexOf('data-app="nx-hub"');
+  assert.ok(idle > 0, 'the hub’s own tile is there');
+});
+
+test('the card’s LIVE strip stops an app that takes the hint', async () => {
+  await clickAndSettle({ 'data-act': 'view', 'data-view': 'manage' }, 100);
+  assert.match(dom.html('grid'), /data-act="stop-app"[^>]*data-app="pulsenx"/, 'the strip ends in a Stop');
+
+  click({ 'data-act': 'stop-app', 'data-app': 'pulsenx', 'data-art': 'appimage-linux' });
+  await tick(120);
+  let grid = dom.html('grid');
+  assert.ok(grid.includes('Stopping…'), 'the control says what is happening');
+  assert.ok(grid.includes('aria-busy="true"'));
+  assert.match(grid, /data-act="stop-app"[^>]*disabled/, 'and takes no second click');
+
+  await tick(900);
+  grid = dom.html('grid');
+  assert.ok(!grid.includes('data-live="pulsenx"'), 'the strip left with the app');
+  assert.ok(!/data-act="stop-app"[^>]*data-app="pulsenx"/.test(grid), 'and the control went with it');
+  assert.ok(!grid.includes('Stopping…'), 'nothing is left pending');
+  assert.ok(!dom.html('toasts').includes('Could not stop'), 'a stop that worked says nothing at all');
+});
+
+test('a stop that has to be signalled stays pending for the whole ladder', async () => {
+  // wivrn-nx is the mock's app that ignores shutdown-request: the hub waits its
+  // 2.5s and only then signals, which is the state the pending label exists for.
+  // (An earlier test's stack stop took it off the bus — put it back first.)
+  mock().toggleBusClient('wivrn-nx');
+  await tick(140);
+  assert.match(dom.html('grid'), /data-live="wivrn-nx"/, 'it is announced again');
+  // A bus-only client: the hub did not start it, so it names no artifact.
+  assert.match(dom.html('grid'), /data-act="stop-app" data-app="wivrn-nx" data-art=""/, 'and can still be stopped');
+
+  click({ 'data-act': 'stop-app', 'data-app': 'wivrn-nx', 'data-art': '' });
+  await tick(120);
+  assert.ok(dom.html('grid').includes('Stopping…'), 'it opens immediately');
+  await tick(1400);
+  assert.ok(dom.html('grid').includes('Stopping…'), 'and is still there while the hub waits');
+
+  await tick(1600);
+  const grid = dom.html('grid');
+  assert.ok(!grid.includes('data-live="wivrn-nx"'), 'the client is gone');
+  assert.ok(!grid.includes('Stopping…'), 'and presence dropping is what resolved the control');
+  assert.ok(!dom.html('toasts').includes('Could not stop'), 'SIGTERM working is not an error');
+});
+
+test('an app the hub launched but never heard from is still stoppable, and "gone" is quiet', async () => {
+  let grid = dom.html('grid');
+  assert.ok(grid.includes('class="run"'), 'the silent one gets its own strip');
+  assert.match(grid, /data-running="oscgoesbrrr-nx-patches"/);
+  assert.ok(grid.includes('>RUNNING<'), 'muted — it is streaming nothing to be cyan about');
+  assert.match(grid, /started .*ago/, 'and says how long it has been up');
+
+  // It died on its own between the click and the signal. The user wanted it
+  // gone and it is gone: no error, no toast, just the row leaving.
+  mock().armGoneStop('oscgoesbrrr-nx-patches');
+  await tick(60);
+  await clickAndSettle(
+    { 'data-act': 'stop-app', 'data-app': 'oscgoesbrrr-nx-patches', 'data-art': 'appimage-linux' },
+    400
+  );
+  grid = dom.html('grid');
+  assert.ok(!grid.includes('data-running="oscgoesbrrr-nx-patches"'), 'the quiet strip left');
+  assert.ok(!grid.includes('class="run"'), 'and it was the only one');
+  assert.ok(!dom.html('toasts').includes('Could not stop'), '“gone” is a success, not an error toast');
+});
+
+test('an app that is live on a peer stops through that peer', async () => {
+  const grid = dom.html('grid');
+  assert.match(grid, /data-live-peer="a1b2c3d4e5f60718"/, 'workshop-pc is still relaying OGB');
+  assert.match(grid, /data-act="stop-app"[^>]*data-peer="a1b2c3d4e5f60718"/, 'the stop is addressed to it');
+  assert.match(grid, /Stop OGB NX-Patches on workshop-pc/, 'and the tooltip says where it lands');
+
+  await clickAndSettle(
+    { 'data-act': 'stop-app', 'data-app': 'oscgoesbrrr-nx-patches', 'data-art': '', 'data-peer': 'a1b2c3d4e5f60718' },
+    1000
+  );
+  const after = dom.html('grid');
+  assert.ok(!after.includes('data-live-peer="a1b2c3d4e5f60718"'), 'that peer’s strip is gone');
+  assert.ok(!/data-peer="a1b2c3d4e5f60718"/.test(after), 'and with it the button');
+  assert.match(after, /data-live-peer="c0ffee11deadbeef"/, 'while NX-WIN keeps relaying its own app');
+  assert.match(dom.html('toasts'), /stopped on workshop-pc/, 'the far hub confirmed it');
+
+  mock().restoreRemoteRun();
+  await tick(160);
+  assert.match(dom.html('grid'), /data-live-peer="a1b2c3d4e5f60718"/, 'and it can come back');
+});
+
 test('painting a host keeps the reader where they were scrolled to', () => {
   // These surfaces re-render wholesale on every state change, and a fresh
   // innerHTML always starts at scroll 0. "Verify installs" sits at the bottom of

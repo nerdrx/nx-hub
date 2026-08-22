@@ -1238,6 +1238,24 @@ function isTracked(appId, artifactId) {
   return false;
 }
 
+/**
+ * v0.11 [stopper]: a READ-ONLY view of the launches this hub is watching —
+ * `src/main/running.js` builds `getState().running` from it. Copies, not the
+ * live entries: nothing outside this module may reach a timer or a child.
+ * @returns {Array<{appId, appName, artifactId, version, pid, startedAt, mode}>}
+ */
+function listTracked() {
+  return [...tracked.values()].map((e) => ({
+    appId: e.appId,
+    appName: e.appName || e.appId,
+    artifactId: e.artifactId || null,
+    version: e.version == null ? null : String(e.version),
+    pid: e.pid,
+    startedAt: e.startedAt,
+    mode: e.mode,
+  }));
+}
+
 function untrack(pid) {
   const entry = tracked.get(pid);
   if (!entry) return null;
@@ -1645,6 +1663,7 @@ module.exports = {
   onLaunchExit,
   noteHubStop,
   isTracked,
+  listTracked, // v0.11 [stopper]
   findZstd,
   _reset,
   _setCrashConfig,

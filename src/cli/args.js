@@ -30,7 +30,8 @@ const BOOL_FLAGS = new Set([
 // and command-line arguments land in shell history and in `ps` output.
 // v0.7 [dev-tools]: `nx dev link <path> [--app <id>] [--cmd <c>] [--name <n>]`.
 // v0.8 [recorder]: `nx log [--since 24h] [--type a,b] [--app x] [--limit n]`.
-const VALUE_FLAGS = new Set(["tag", "port", "app", "cmd", "name", "since", "type", "limit"]);
+// v0.11 [stopper]: `nx stop <app> [artifact] --peer <name>`.
+const VALUE_FLAGS = new Set(["tag", "port", "app", "cmd", "name", "since", "type", "limit", "peer"]);
 
 const SHORT = { h: "help", y: "yes", v: "verbose", f: "follow" };
 

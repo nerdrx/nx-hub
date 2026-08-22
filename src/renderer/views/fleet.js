@@ -23,6 +23,7 @@ import {
   syncNote,
 } from '../lib/fleet.js';
 import { renderStatusStrip } from './status.js';
+import { stopOptions } from '../lib/running.js';
 import { REMOTE_MAX_POINTS } from '../lib/sparkline.js';
 import * as icons from './icons.js';
 
@@ -181,8 +182,9 @@ function jobRow(job) {
 function relayedRoster(clients, ctx) {
   const list = Array.isArray(clients) ? clients : [];
   if (!list.length) return '';
+  const appFor = (appId) => (ctx.apps || []).find((a) => a && a.id === appId) || null;
   const defsFor = (appId) => {
-    const app = (ctx.apps || []).find((a) => a && a.id === appId);
+    const app = appFor(appId);
     return (app && app.connectorFields) || null;
   };
   return `
@@ -195,6 +197,14 @@ function relayedRoster(clients, ctx) {
             peerName: ctx.peerName,
             peerId: ctx.peerId,
             maxPoints: REMOTE_MAX_POINTS,
+            // v0.11 — this sheet says LIVE too, so it offers the ending too.
+            // The strip is peer-tagged, so the control stops through that hub;
+            // an app relayed from over there may not even exist here, hence the
+            // fall back to the id for its name.
+            stop: stopOptions(appFor(c.app) || { name: c.app }, null, {
+              caps: ctx.caps,
+              stopping: ctx.stopping,
+            }),
           })
         )
         .join('')}
@@ -212,6 +222,8 @@ function peerBlock(peer, ctx) {
     now: ctx.now,
     peerName: peer.name,
     peerId: peer.id,
+    caps: ctx.caps,
+    stopping: ctx.stopping,
   });
 
   return `
@@ -292,6 +304,10 @@ export function renderFleetSheet(ctx = {}) {
                   // v0.10 — settings + relayed bus rosters, both absent-safe.
                   settings: ctx.settings,
                   remote: ctx.remote,
+                  // v0.11 — the relayed strips carry Stop, on the same terms as
+                  // a card's: no stopApp in this build, no control.
+                  caps: ctx.caps,
+                  stopping: ctx.stopping,
                 })
               )
               .join('')}</div>`

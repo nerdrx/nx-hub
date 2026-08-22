@@ -31,6 +31,8 @@ const daemonCli = require("./daemon");
 const auditCli = require("./audit");
 // v0.10 [replay]: `nx checkpoint show|restore <when>` over src/main/checkpoints.js.
 const checkpointCli = require("./checkpoint");
+// v0.11 [stopper]: `nx stop <app> [artifact]` over src/main/running.js.
+const stopCli = require("./stop");
 
 const EXIT_OK = 0;
 const EXIT_USER = 1;
@@ -152,6 +154,10 @@ async function run(argv, opts = {}) {
     // v0.10 [replay]: src/main/checkpoints.js, injectable so `nx checkpoint`
     // can be rendered against a synthetic plan.
     checkpoints: opts.checkpoints || null,
+    // v0.11 [stopper]: src/main/running.js and its wiring options, injectable
+    // so `nx stop` can be driven without a hub, a bus or a real process.
+    running: opts.running || null,
+    stopOptions: opts.stopOptions || null,
   };
 
   // v0.7 [dev-tools]: the shared helpers, reachable from ./dev.js and
@@ -188,6 +194,8 @@ async function run(argv, opts = {}) {
     daemon: daemonCli.cmdDaemon,
     // v0.10 [replay]
     checkpoint: checkpointCli.cmdCheckpoint,
+    // v0.11 [stopper]
+    stop: stopCli.cmdStop,
     shim: cmdShim,
   };
 

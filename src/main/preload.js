@@ -111,6 +111,17 @@ const api = {
   getCheckpoint: (when) => ipcRenderer.invoke("nxhub:getCheckpoint", when),
   restoreCheckpoint: (when, opts) => ipcRenderer.invoke("nxhub:restoreCheckpoint", when, opts || {}),
 
+  // ---- v0.11 [stopper] (SPEC "Stopping one app") ----
+  // getState().running is the companion read: [{appId, appName, artifactId|null,
+  // version, pid|null, since, source: "hub"|"bus"|"both", canStop}], newest
+  // first, ALWAYS an array — one row per (appId, artifactId).
+  // stopApp(appId, artifactId?, {peer}?) → {ok, how, pid, appId, artifactId,
+  // appName} where how ∈ shutdown-request | sigterm | remote | gone |
+  // not-running. `gone` means the process had already ended: a success, not an
+  // error. `not-running` (ok:false) means there was nothing to stop. One call,
+  // no confirmation — stopping is not destructive, and never SIGKILLs.
+  stopApp: (appId, artifactId, opts) => ipcRenderer.invoke("nxhub:stopApp", appId, artifactId || null, opts || {}),
+
   onEvent: (cb) => {
     if (typeof cb !== "function") return () => {};
     const handler = (_event, payload) => {

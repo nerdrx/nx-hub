@@ -863,7 +863,14 @@ export function createMock() {
   function syncRemote(opts = {}) {
     state.connector.remote = peers
       .filter((p) => p.online && remoteRosters[p.id])
-      .map((p) => ({ peerId: p.id, peerName: p.name, clients: remoteRosters[p.id]() }));
+      .map((p) => ({
+        peerId: p.id,
+        peerName: p.name,
+        // v0.11 — an app this hub stopped THROUGH that peer stays stopped: the
+        // rosters are factories, so without this the next sync would relay it
+        // straight back and the Stop would look like it did nothing.
+        clients: remoteRosters[p.id]().filter((c) => !remoteStopped.has(`${p.id}::${c.app}`)),
+      }));
     if (!opts.quiet) busChanged();
     return state.connector.remote;
   }
@@ -904,6 +911,93 @@ export function createMock() {
     state.connector.clients.splice(i, 1);
     busChanged();
     return true;
+  }
+
+  /* ------------------------------------------------- v0.11: what is running */
+
+  /**
+   * Processes this fake hub "launched" and still holds a pid for. Kept apart
+   * from the bus roster on purpose: `running` is the UNION of the two, and the
+   * only way to exercise that union is to have rows that exist in one and not
+   * the other.
+   *
+   *  * pulsenx — launched here AND announced on the bus → source "both"
+   *  * oscgoesbrrr-nx-patches — launched here and SILENT. No LIVE strip, no
+   *    tile dot, a real pid: the case a bus-only design misses, and the reason
+   *    the quiet "running" affordance exists.
+   *
+   * wivrn-nx is deliberately absent — it is on the bus only, so the roster has
+   * to invent its row from the client alone (artifactId null, source "bus").
+   */
+  const hubRuns = [
+    // `since` is epoch ms here and an ISO string on the bus clients below —
+    // which is exactly the split the real bridge has (a launch record times in
+    // Date.now(), a hello in whatever the client sent). The renderer reads both.
+    { appId: 'pulsenx', artifactId: 'appimage-linux', pid: 40211, version: '2.2.0', since: Date.now() - 26 * 60000 },
+    {
+      appId: 'oscgoesbrrr-nx-patches',
+      artifactId: 'appimage-linux',
+      pid: 41522,
+      version: '1.4.2',
+      since: Date.now() - 3 * 60000,
+    },
+  ];
+
+  /** Apps whose next stop finds the process already dead (`how: "gone"`). */
+  const goneOnStop = new Set();
+  /** Apps that ignore `shutdown-request` and have to be signalled. */
+  const stubbornApps = new Set(['wivrn-nx']);
+  /** `${peerId}::${appId}` a remote stop has already taken off that peer's bus. */
+  const remoteStopped = new Set();
+
+  const appName = (appId) => {
+    const app = state.apps.find((a) => a.id === appId);
+    return (app && app.name) || appId;
+  };
+
+  /** SPEC's union, newest first, one row per (appId, artifactId). */
+  function buildRunning() {
+    const rows = [];
+    for (const run of hubRuns) {
+      const client = state.connector.clients.find((c) => c.app === run.appId) || null;
+      rows.push({
+        appId: run.appId,
+        appName: appName(run.appId),
+        artifactId: run.artifactId,
+        version: (client && client.version) || run.version || '',
+        pid: run.pid,
+        since: run.since,
+        source: client ? 'both' : 'hub',
+        canStop: true,
+      });
+    }
+    for (const client of state.connector.clients) {
+      if (hubRuns.some((r) => r.appId === client.app)) continue;
+      rows.push({
+        appId: client.app,
+        appName: appName(client.app),
+        // The hub did not start it and cannot know which build it is.
+        artifactId: null,
+        version: client.version || '',
+        pid: client.pid || null,
+        since: client.since || '',
+        source: 'bus',
+        canStop: true,
+      });
+    }
+    // Newest first. The two halves time differently (epoch vs ISO), so both are
+    // read through Date before they are compared.
+    const at = (r) => {
+      const t = typeof r.since === 'number' ? r.since : new Date(r.since).getTime();
+      return Number.isFinite(t) ? t : 0;
+    };
+    return rows.sort((a, b) => at(b) - at(a));
+  }
+
+  function dropHubRun(appId) {
+    const i = hubRuns.findIndex((r) => r.appId === appId);
+    if (i < 0) return null;
+    return hubRuns.splice(i, 1)[0];
   }
 
   // Live values drift the way a real app's status would.
@@ -1686,6 +1780,9 @@ export function createMock() {
         await new Promise((r) => later(r, 2500));
       }
       firstState = false;
+      // v0.11 — computed per read, never stored: it is a view over the pids the
+      // mock holds and the bus roster, and both move underneath it.
+      state.running = buildRunning();
       return JSON.parse(JSON.stringify(state));
     },
     async refresh(force) {
@@ -1722,6 +1819,77 @@ export function createMock() {
         message: art ? `Launching ${app.name} — ${art.label}…` : `Cannot launch ${appId}`,
       });
       return true;
+    },
+    /**
+     * v0.11 — SPEC's ladder, at SPEC's speed.
+     *
+     * 1. on the bus → ask politely, wait up to shutdownWaitMs (2500) for the
+     *    client to leave. wivrn-nx is the app that ignores the request, so the
+     *    fall-through is reachable without editing anything.
+     * 2. still there and a pid is known → SIGTERM. Never SIGKILL.
+     * 3. {peer} → the far hub does it, `how: "remote"`.
+     * 4. nothing running → `{ok: false, how: "not-running"}`.
+     *
+     * It stays silent on success: the roster row, the LIVE strip and the tile
+     * dot disappearing together IS the confirmation, and a toast on top of that
+     * would be the hub congratulating itself.
+     */
+    async stopApp(appId, artifactId, opts) {
+      const id = String(appId || '').trim().toLowerCase();
+      const peer = (opts && opts.peer) || '';
+      if (!id) return { ok: false, how: 'not-running', pid: null, appId: id };
+
+      if (peer) {
+        const p = findPeer(peer);
+        await new Promise((r) => later(r, 700));
+        const key = `${peer}::${id}`;
+        const wasThere = ((remoteRosters[peer] && remoteRosters[peer]()) || []).some((c) => c.app === id);
+        remoteStopped.add(key);
+        syncRemote();
+        if (!wasThere) return { ok: true, how: 'gone', pid: null, appId: id };
+        emit({
+          type: 'toast',
+          level: 'info',
+          message: `${appName(id)} stopped on ${(p && p.name) || peer}`,
+        });
+        return { ok: true, how: 'remote', pid: null, appId: id };
+      }
+
+      // The process died on its own between the click and the signal. Not an
+      // error — the user wanted it gone and it is gone.
+      if (goneOnStop.has(id)) {
+        goneOnStop.delete(id);
+        const run = dropHubRun(id);
+        dropClient(id);
+        changed();
+        return { ok: true, how: 'gone', pid: (run && run.pid) || null, appId: id };
+      }
+
+      const run = hubRuns.find((r) => r.appId === id) || null;
+      const onBus = clientIndex(id) >= 0;
+      if (!run && !onBus) return { ok: false, how: 'not-running', pid: null, appId: id };
+      // A bus-only client reported its own pid at hello — that is the pid the
+      // signal would go to when the polite request is ignored.
+      const pid =
+        (run && run.pid) || (state.connector.clients.find((c) => c.app === id) || {}).pid || null;
+
+      if (onBus) {
+        const stubborn = stubbornApps.has(id);
+        await new Promise((r) => later(r, stubborn ? 2500 : 450));
+        dropClient(id);
+        if (!stubborn) {
+          dropHubRun(id);
+          changed();
+          return { ok: true, how: 'shutdown-request', pid, appId: id };
+        }
+      } else {
+        // No bus to ask: straight to the signal, which is the whole reason the
+        // silent case still gets a Stop control.
+        await new Promise((r) => later(r, 250));
+      }
+      dropHubRun(id);
+      changed();
+      return { ok: true, how: 'sigterm', pid, appId: id };
     },
     async cancelJob(jobId) {
       const job = state.jobs.find((j) => j.id === jobId);
@@ -2597,6 +2765,56 @@ export function createMock() {
       ticking = true;
       later(tickFields, 2400);
     },
+    /* ------------------------------------------------------- v0.11 helpers */
+
+    /** The roster as getState() would hand it over. */
+    running() {
+      return buildRunning();
+    },
+    /** Press Stop without a click — the same path the button takes. */
+    stopMockApp(appId = 'pulsenx', opts) {
+      return nxhub.stopApp(appId, undefined, opts);
+    },
+    /**
+     * Arm the "it died on its own" ending for one app. The next stop reports
+     * `gone`, which the UI must fold quietly — it is a success, not a failure.
+     */
+    armGoneStop(appId = 'oscgoesbrrr-nx-patches') {
+      goneOnStop.add(appId);
+      emit({
+        type: 'toast',
+        level: 'info',
+        message: `${appName(appId)} will already be gone when you press Stop`,
+      });
+      return appId;
+    },
+    /**
+     * Give an app a hub-held pid, or take it away. With no bus client this is
+     * the silent-but-running state; with one it flips the row hub ↔ both.
+     */
+    toggleHubRun(appId = 'quadforge', artifactId = '') {
+      const had = !!dropHubRun(appId);
+      if (!had) {
+        const app = state.apps.find((a) => a.id === appId);
+        const art = (app && app.artifacts.find((a) => a.installed)) || null;
+        hubRuns.push({
+          appId,
+          artifactId: artifactId || (art && art.id) || null,
+          pid: 42000 + Math.floor(Math.random() * 900),
+          version: (art && art.installed && art.installed.version) || '',
+          since: new Date().toISOString(),
+        });
+      }
+      changed();
+      return !had;
+    },
+    /** Let a peer relay an app it stopped earlier again. */
+    restoreRemoteRun(peerId = 'a1b2c3d4e5f60718', appId = 'oscgoesbrrr-nx-patches') {
+      remoteStopped.delete(`${peerId}::${appId}`);
+      syncRemote();
+      return true;
+    },
+
     /** One field update on demand, for tests and screenshots. */
     tickBus() {
       tickFields();
@@ -2651,7 +2869,14 @@ function toolbar(dev) {
     <button class="btn btn-ghost btn-sm" data-mock="checkpoint">run checkpoint restore</button>
     <button class="btn btn-ghost btn-sm" data-mock="checkpoint-configs">checkpoint restore + configs</button>
     <button class="btn btn-ghost btn-sm" data-mock="checkpoint-fail">toggle checkpoint failure</button>
-    <button class="btn btn-ghost btn-sm" data-mock="break">damage two installs</button>`;
+    <button class="btn btn-ghost btn-sm" data-mock="break">damage two installs</button>
+    <button class="btn btn-ghost btn-sm" data-mock="stop-polite">stop PulseNX (asks nicely)</button>
+    <button class="btn btn-ghost btn-sm" data-mock="stop-slow">stop WiVRn NX (ignores → SIGTERM)</button>
+    <button class="btn btn-ghost btn-sm" data-mock="stop-silent">stop OGB (no bus, pid only)</button>
+    <button class="btn btn-ghost btn-sm" data-mock="stop-gone">arm "already gone" stop</button>
+    <button class="btn btn-ghost btn-sm" data-mock="stop-remote">stop OGB on workshop-pc</button>
+    <button class="btn btn-ghost btn-sm" data-mock="hub-run">toggle hub-launched QuadForge</button>
+    <button class="btn btn-ghost btn-sm" data-mock="relay-back">let workshop-pc relay OGB again</button>`;
   bar.addEventListener('click', (ev) => {
     const el = ev.target instanceof Element ? ev.target.closest('[data-mock]') : null;
     if (!el) return;
@@ -2689,6 +2914,14 @@ function toolbar(dev) {
     else if (what === 'checkpoint-configs') dev.runCheckpoint(Date.now() - 3600000, { configs: true });
     else if (what === 'checkpoint-fail') dev.toggleCheckpointFailure();
     else if (what === 'break') dev.breakInstalls();
+    else if (what === 'stop-polite') dev.stopMockApp('pulsenx');
+    else if (what === 'stop-slow') dev.stopMockApp('wivrn-nx');
+    else if (what === 'stop-silent') dev.stopMockApp('oscgoesbrrr-nx-patches');
+    else if (what === 'stop-gone') dev.armGoneStop('oscgoesbrrr-nx-patches');
+    else if (what === 'stop-remote') {
+      dev.stopMockApp('oscgoesbrrr-nx-patches', { peer: 'a1b2c3d4e5f60718' });
+    } else if (what === 'hub-run') dev.toggleHubRun('quadforge');
+    else if (what === 'relay-back') dev.restoreRemoteRun();
   });
   document.body.appendChild(bar);
 }

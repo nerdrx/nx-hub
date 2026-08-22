@@ -3221,3 +3221,106 @@ select.input option {
   font-size: 13px;
   z-index: 90;
 }
+
+/* ------------------------------------------------------------------ v0.11 */
+/* The Stop control.
+ *
+ * Ghost, and violet on hover — never red. DESIGN §1 keeps --danger for
+ * destructive actions, and ending an app you launched a minute ago is the other
+ * half of Launch, not a deletion. It also has to sit beside a cyan LIVE strip
+ * without competing with the numbers there, so at rest it is muted glass and
+ * only the hover lifts it into the brand's action colour. */
+
+.live-stop { margin-left: auto; display: inline-flex; align-items: center; }
+
+.stop-btn { flex: 0 0 auto; }
+.stop-btn svg { display: block; }
+.stop-strip:hover:not([disabled]) {
+  color: #dcc9ff;
+  border-color: rgba(154, 60, 255, 0.5);
+  background: linear-gradient(180deg, rgba(154, 60, 255, 0.22), rgba(119, 0, 255, 0.09));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 0 18px -6px rgba(119, 0, 255, 0.75);
+}
+/* "Stopping…" is disabled, but it is also the most informative the control ever
+   gets — the global 40% disabled wash would make it the hardest to read. */
+.stop-btn.is-stopping[disabled] { opacity: 0.82; cursor: progress; }
+.stop-btn.is-stopping svg { animation: stop-pulse 1.2s var(--ease-soft) infinite; }
+@keyframes stop-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* The quiet strip: hub-launched, silent on the bus. Muted throughout — cyan is
+   for values arriving live, and this app is sending none. */
+.run {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+  margin-top: 11px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--well);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+.run-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--muted);
+  box-shadow: 0 0 0 3px rgba(154, 143, 192, 0.12);
+}
+.run-chip {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--glass-chip);
+}
+.run-note { font-size: 12px; color: var(--muted); }
+
+/* On a tile: the muted twin of .tile-live, and a corner Stop that never steals
+   the tile's own click. It stays visible (dimmed) rather than hover-only — a
+   control you cannot see is a control a keyboard user cannot find either. */
+.tile-running {
+  position: absolute;
+  top: 9px;
+  left: 9px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  box-shadow: 0 0 0 3px rgba(154, 143, 192, 0.14);
+  z-index: 3;
+}
+.tile-stop {
+  position: absolute;
+  bottom: 7px;
+  right: 7px;
+  z-index: 4;
+  opacity: 0.5;
+  border-radius: var(--pill);
+  background: rgba(10, 7, 20, 0.55);
+  backdrop-filter: var(--blur-chip);
+  -webkit-backdrop-filter: var(--blur-chip);
+  transition: opacity var(--dur) var(--ease-soft), color var(--dur-fast) var(--ease-soft),
+    background var(--dur-fast) var(--ease-soft);
+}
+.tile:hover .tile-stop,
+.tile:focus-within .tile-stop,
+.tile-stop:focus-visible { opacity: 1; }
+.tile-stop:hover:not([disabled]) {
+  color: #dcc9ff;
+  background: linear-gradient(180deg, rgba(154, 60, 255, 0.28), rgba(10, 7, 20, 0.7));
+}
+.tile-stop.is-stopping { opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  /* The pending pulse is decoration; the word "Stopping…" already carries it. */
+  .stop-btn.is-stopping svg { animation: none; }
+  .tile-stop { opacity: 1; transition: none !important; }
+}

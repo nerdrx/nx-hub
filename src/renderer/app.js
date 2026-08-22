@@ -48,6 +48,12 @@ import {
 import { normalizeReleases, isDowngrade, downgradeConfirmText, rollbackConfirmText, rollbackTargets } from './lib/releases.js';
 import { clientsByApp, remoteByApp } from './lib/connector.js';
 import {
+  runningMap,
+  stopKey,
+  prunePending,
+  stopOutcome,
+} from './lib/running.js';
+import {
   normalizeStacks,
   stackTiles,
   applyStackProgress,
@@ -185,6 +191,13 @@ const V08_METHODS = ['getEvents', 'getSnapshots', 'restoreSnapshot', 'deleteSnap
  */
 const V10_METHODS = ['getCheckpoint', 'restoreCheckpoint', 'getAudit', 'repairInstall'];
 
+/**
+ * Optional v0.11 bridge method. The roster itself rides getState().running, so
+ * ending an app is the only new call — and a build without it simply shows no
+ * Stop control anywhere rather than offering a button that cannot work.
+ */
+const V11_METHODS = ['stopApp'];
+
 const ui = {
   loaded: false,
   view: 'manage', // 'launch' | 'manage'
@@ -258,6 +271,10 @@ const ui = {
   // v0.10 — the deep audit, run on demand from Settings → Storage. `ran` is
   // what separates "no problems" from "not checked yet".
   audit: { loading: false, error: '', rows: [], ran: false, repairing: '' },
+  // v0.11 — stops the ladder is still walking: key → {appId, artifactId, peer,
+  // at}. A key in here is a control reading "Stopping…" and refusing clicks;
+  // prunePending() takes it back out when presence drops (see render()).
+  stopping: new Map(),
 };
 
 let state = normalizeState(null);
@@ -328,6 +345,7 @@ function detectCaps() {
     ...V07_METHODS,
     ...V08_METHODS,
     ...V10_METHODS,
+    ...V11_METHODS,
   ]) {
     caps[m] = !!(nx && typeof nx[m] === 'function');
   }
@@ -459,6 +477,14 @@ function remoteClients() {
   return remoteByApp(state.connector);
 }
 
+/**
+ * v0.11 — appId → the running row that speaks for it. Cards index into this to
+ * decide whether to offer Stop, and which artifact id to hand `stopApp`.
+ */
+function runningApps() {
+  return runningMap(state.running);
+}
+
 /** peerId → the clients that peer relayed, for the fleet sheet's own rosters. */
 function remoteByPeer() {
   const map = new Map();
@@ -481,6 +507,8 @@ function currentTiles() {
     platform: state.platform || ui.platform,
     prefs: prefsMap(),
     clients: busClients(),
+    // v0.11 — a hub-launched app that never joined the bus still gets a Stop.
+    running: state.running,
   });
   return [...orderTiles(tiles, { recents: ui.recents }), ...devTiles(ui.devLinks, { filter: ui.filter })];
 }
@@ -610,6 +638,8 @@ function renderSheet() {
       caps: ui.caps,
       settings: state.settings,
       remote: remoteByPeer(),
+      // v0.11 — the sheet's "Live there" strips carry the same Stop as a card's.
+      stopping: ui.stopping,
     }), 'fleet');
     return;
   }
@@ -702,6 +732,15 @@ function render() {
   // relaunch worked) or after it has simply aged out. Pruning at render time
   // means no timer has to exist for it.
   ui.supervisor = pruneSupervisor(ui.supervisor, { now: Date.now(), live: busClients() });
+  // v0.11 — the same idea for stops in flight: SPEC says the control resolves
+  // when presence drops, so the state that arrives IS the resolution. Pruning
+  // here means no per-click timer has to exist for it.
+  ui.stopping = prunePending(ui.stopping, {
+    running: state.running,
+    clients: busClients(),
+    remote: remoteClients(),
+    now: Date.now(),
+  });
   const ctx = {
     settings: state.settings,
     prefs: prefsMap(),
@@ -716,6 +755,9 @@ function render() {
     clients: busClients(),
     // v0.10 — the same app, seen on another hub's bus.
     remote: remoteClients(),
+    // v0.11 — what is running here, and which stops are still walking the ladder.
+    running: runningApps(),
+    stopping: ui.stopping,
     // v0.7 — cards of apps that also have a checkout linked wear a DEV mark.
     devIds: devIds(ui.devLinks),
     // v0.8 — the watchdog's restarting lines and give-up banners.
@@ -763,6 +805,8 @@ function render() {
       openMenu: ui.openMenu,
       filter: ui.filter,
       caps: ui.caps,
+      // v0.11 — so a tile whose stop is in flight reads "Stopping…" too.
+      stopping: ui.stopping,
       stacks: currentStackTiles(),
       canEditStacks: !!ui.caps.saveStack,
     });
@@ -1902,6 +1946,32 @@ async function onAction(act, el, ev) {
       setView('manage');
       scrollToCard(appId);
       break;
+    /* ------------------------------------------------------------ v0.11 */
+    case 'stop-app': {
+      ui.openMenu = '';
+      if (!appId) break;
+      const peer = el.getAttribute('data-peer') || '';
+      const key = stopKey(appId, artId, peer);
+      // A second click while the ladder runs is not a second stop. The control
+      // is disabled, but Enter on a focused button can still land mid-render.
+      if (ui.stopping.has(key)) break;
+      ui.stopping.set(key, { appId, artifactId: artId, peer, at: Date.now() });
+      schedule();
+
+      // SPEC's signature: the artifact is optional, and passing '' for "I do not
+      // know which build" would be a lie the backend has to unpick.
+      const res = await call('stopApp', appId, artId || undefined, peer ? { peer } : undefined);
+      const name = (state.apps.find((a) => a.id === appId) || {}).name || appId;
+      const outcome = stopOutcome(res, name);
+      if (!outcome.quiet) toast(outcome.level, outcome.message);
+      // Pull the truth back: the roster is what makes the strip, the tile dot
+      // and this control disappear together. Whatever survives that (an app
+      // that ignored the request and outlived SIGTERM) gets its button back.
+      await pullState();
+      ui.stopping.delete(key);
+      schedule();
+      break;
+    }
     case 'uninstall': {
       ui.openMenu = '';
       const { app, artifact } = findArtifact(appId, artId);

@@ -5,6 +5,8 @@ import { esc } from '../lib/html.js';
 import { tileMenu } from '../lib/launcher.js';
 import { devTileMenu } from '../lib/dev.js';
 import { renderStackTiles } from './stacktile.js';
+import { renderStopControl } from './stop.js';
+import { stopKey, isStopping } from '../lib/running.js';
 import * as icons from './icons.js';
 
 /** file:// URL for an icon recorded by the install manifest. */
@@ -33,6 +35,34 @@ function menuMarkup(tile, open, caps) {
       <button class="btn btn-icon tile-dots" data-act="tile-menu" data-tile="${esc(tile.key)}" aria-haspopup="menu" aria-expanded="${open ? 'true' : 'false'}" title="More actions" tabindex="-1">${icons.dots}</button>
       ${open ? `<div class="menu" role="menu">${items}</div>` : ''}
     </div>`;
+}
+
+/**
+ * v0.11 — the tile's Stop.
+ *
+ * It is a SIBLING of `.tile-hit`, never inside it: the tile's main click must
+ * stay "launch", and a stop one mis-click away from a relaunch is exactly the
+ * failure this separation exists to prevent. It sits in the bottom-right corner
+ * — the ⋮ menu already owns top-right and the presence dot owns top-left — and
+ * it keeps its place in the tab order (no `tabindex="-1"`, unlike the ⋮ which
+ * the menu itself makes reachable), because a keyboard user who can start an
+ * app must be able to end it.
+ *
+ * A dev tile gets none: `devRun` starts a checkout the hub does not track as an
+ * app install, so there is no `running` row to stop.
+ */
+function tileStopMarkup(tile, ctx) {
+  const caps = ctx.caps || {};
+  if (caps.stopApp === false) return '';
+  if (tile.dev || !(tile.live || tile.running) || tile.canStop === false) return '';
+  const artifactId = tile.runArtifactId || tile.artifactId || '';
+  return renderStopControl(
+    { appId: tile.appId, appName: tile.name, artifactId },
+    {
+      variant: 'tile',
+      pending: isStopping(ctx.stopping, stopKey(tile.appId, artifactId, '')),
+    }
+  );
 }
 
 export function renderTile(tile, ctx = {}) {
@@ -77,6 +107,14 @@ export function renderTile(tile, ctx = {}) {
       }
     </button>
     ${tile.live ? `<span class="tile-live" title="${esc(tile.liveTitle || 'live on the bus')}" aria-label="live"></span>` : ''}
+    ${
+      // Running, but not on the bus: a muted twin of the cyan presence dot.
+      // Cyan is reserved for values arriving live, and this app is sending none.
+      !tile.live && tile.running
+        ? `<span class="tile-running" title="${esc(tile.runningTitle || 'running — started by the hub')}" aria-label="running"></span>`
+        : ''
+    }
+    ${tileStopMarkup(tile, ctx)}
     ${tile.updateAvailable ? '<span class="tile-dot" title="update available"></span>' : ''}
     ${
       tile.crashLoop

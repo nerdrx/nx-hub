@@ -722,6 +722,8 @@ const COMMANDS = [
   ["uninstall", "<app> [artifact]", "remove an installed artifact"],
   ["update", "[<app>] [--all]", "install pending updates"],
   ["launch", "<app> [artifact]", "start an installed app"],
+  // v0.11 [stopper]
+  ["stop", "<app> [artifact] [--peer <name>]", "end a running app — politely, never SIGKILL"],
   ["rollback", "<app> [artifact]", "restore the kept previous version"],
   ["versions", "<app> [--json]", "every published release"],
   ["refresh", "[--json]", "re-run discovery (--force bypasses the ETag cache)"],

@@ -18,6 +18,7 @@ import { formatFields, captionFor, presenceTitle, historyFor } from '../lib/conn
 import { relativeTime } from '../lib/version.js';
 import { renderSparkline } from './spark.js';
 import { REMOTE_MAX_POINTS } from '../lib/sparkline.js';
+import { renderStripStop } from './stop.js';
 
 /** How many fields a card's strip shows before it stops (cards stay compact). */
 export const CARD_FIELD_LIMIT = 6;
@@ -63,7 +64,13 @@ export function renderPeerMark(peerName, peerId = '') {
  * @param {object|null} client  a bus client from getState().connector
  * @param {Array} defs          app.connectorFields (absent → generic rendering)
  * @param {{now?:number, limit?:number, peerName?:string, peerId?:string,
- *          maxPoints?:number}} opts
+ *          maxPoints?:number, stop?:object}} opts
+ *
+ * v0.11 — `stop` is lib/running.js's stopOptions() bundle. Absent means the
+ * strip renders exactly as it did before, which is what a build whose bridge
+ * has no `stopApp` gets. Present, the strip ends in a ghost Stop pushed to its
+ * right; on a peer-tagged strip that same control carries the peer, because an
+ * app running over there stops over there.
  */
 export function renderStatusStrip(client, defs, opts = {}) {
   if (!client) return '';
@@ -84,6 +91,36 @@ export function renderStatusStrip(client, defs, opts = {}) {
           ? `<span class="live-fields">${fields.map((f) => fieldMarkup(f, ctx)).join('')}</span>`
           : '<span class="live-none">connected — no status yet</span>'
       }
+      ${renderStripStop(opts.stop, { appId: client.app, peerName, peerId: opts.peerId })}
+    </div>`;
+}
+
+/**
+ * v0.11 — the quiet strip for an app the hub LAUNCHED that never joined the bus.
+ *
+ * This is the case a bus-only design misses entirely: `getState().running`
+ * knows the pid, so the hub can end the process, but the app is streaming no
+ * fields and has no business claiming a cyan LIVE chip — cyan is for values
+ * arriving live. So it gets a muted chip, the time it started, and the same
+ * Stop control the LIVE strip carries. Without this a user who pressed Launch
+ * has a running process and no way back.
+ *
+ * @param {object} row   a normalized running row
+ * @param {{now?:number, appName?:string, stop?:object}} opts
+ */
+export function renderRunningStrip(row, opts = {}) {
+  if (!row || !row.appId) return '';
+  const name = String(opts.appName || row.appName || row.appId);
+  const since = relativeTime(row.since, opts.now || Date.now());
+  const title = `${name} was started by the hub${
+    row.pid ? ` (pid ${row.pid})` : ''
+  } and has not reported in on the connector — the hub can still stop it`;
+  return `
+    <div class="run" data-running="${esc(row.appId)}" role="status">
+      <span class="run-dot" aria-hidden="true"></span>
+      <span class="run-chip" title="${esc(title)}">RUNNING</span>
+      <span class="run-note">${esc(since ? `started ${since}` : 'started by the hub')}</span>
+      ${renderStripStop(opts.stop, { appId: row.appId })}
     </div>`;
 }
 

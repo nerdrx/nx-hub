@@ -287,6 +287,60 @@ function connectorView() {
 
 /* ==== end v0.10 [fabric2] ==== */
 
+/* ==== v0.11 [stopper]: what is running, and stopping it ============ */
+
+// eslint-disable-next-line global-require
+const running = require("./running");
+
+let runningWired = false;
+
+/**
+ * src/main/running.js, wired the same way stacks is: the bus and the fleet
+ * arrive as GETTERS, because either may come up (or not) long after this
+ * module was loaded. Wiring is idempotent and lazy so the whole feature lives
+ * in one block instead of leaking a line into init().
+ */
+function runningMod() {
+  if (!runningWired) {
+    running.init({
+      connector: getConnectorModule,
+      jobs,
+      config,
+      discovery,
+      fleet: () => (fleet.isRunning && fleet.isRunning() ? fleet : null),
+    });
+    runningWired = true;
+  }
+  return running;
+}
+
+/**
+ * `getState().running` — SPEC: always present, always an array, so a renderer
+ * never has to ask whether this build can stop things.
+ */
+function runningView() {
+  try {
+    const rows = runningMod().list();
+    return Array.isArray(rows) ? rows : [];
+  } catch (e) {
+    config.log(`running.list failed: ${e.message}`);
+    return [];
+  }
+}
+
+/** `stopApp(appId, artifactId?, opts?)` — the ladder. Never rejects. */
+async function stopApp(appId, artifactId, opts) {
+  const result = await runningMod().stop(appId, artifactId || null, opts || {});
+  if (result && result.ok === false && result.how === "not-running") {
+    emit({ type: "toast", level: "info", message: `${result.appName || appId} was not running.` });
+  }
+  // Presence and launch tracking both just moved — let the UI re-read them.
+  emit({ type: "state-changed" });
+  return result;
+}
+
+/* ==== end v0.11 [stopper] ========================================== */
+
 /** `getConnector()` — SPEC IPC addition. Empty-safe with no bus at all. */
 function getConnector() {
   return connectorView(); // v0.10 [fabric2]
@@ -454,6 +508,8 @@ async function buildState() {
     // v0.5: whoever is on the bus right now (empty when the hub runs without one)
     // v0.10 [fabric2]: plus `remote` — the same, on every paired hub
     connector: connectorView(),
+    // v0.11 [stopper]: hub launches ∪ bus clients, newest first — always an array
+    running: runningView(),
     refreshing: cached.refreshing,
     rateLimit: cached.rateLimit || null,
     errors: cached.errors || [],
@@ -661,6 +717,9 @@ function register() {
   /* ---------------- v0.5: connector + stacks ---------------- */
 
   handle("nxhub:getConnector", () => getConnector());
+
+  // v0.11 [stopper]
+  handle("nxhub:stopApp", (appId, artifactId, opts) => stopApp(appId, artifactId, opts));
 
   handle("nxhub:getStacks", () => stacks.list());
 
@@ -939,6 +998,9 @@ module.exports = {
   // v0.10 [fabric2]: the federated bus
   remoteClients,
   connectorView,
+  // v0.11 [stopper]
+  runningView,
+  stopApp,
   // v0.6: fleet
   getFleet,
   getEngineModule,

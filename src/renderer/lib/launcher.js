@@ -4,6 +4,7 @@
 import { isLaunchable, platformLabel } from './actions.js';
 import { isHiddenApp } from './prefs.js';
 import { captionFor } from './connector.js';
+import { runningFor } from './running.js';
 
 /**
  * Two-letter monogram for the generated tiles.
@@ -43,14 +44,20 @@ export function tileHue(seed) {
  * - hidden apps (per-app pref or main's localHidden) never get a tile
  * - an app that is live on the connector bus carries its presence and the
  *   first streamed field as a caption
+ * - v0.11: an app the hub LAUNCHED carries `running` even when it never joined
+ *   the bus. That is a weaker claim than `live` (no fields, no caption) but it
+ *   is the one that says the tile can be stopped, which is the whole point:
+ *   Launch already worked, and the process is still there.
  *
  * @param {Array} apps normalized apps
- * @param {{adb?:object, platform?:string, prefs?:object, clients?:Map}} ctx
+ * @param {{adb?:object, platform?:string, prefs?:object, clients?:Map,
+ *          running?:Array}} ctx
  */
 export function launchTiles(apps, ctx = {}) {
   const adb = ctx.adb || { connected: false, devices: [], versions: {} };
   const prefs = ctx.prefs || {};
   const clients = ctx.clients instanceof Map ? ctx.clients : new Map();
+  const running = Array.isArray(ctx.running) ? ctx.running : [];
   const list = Array.isArray(apps) ? apps : [];
   const tiles = [];
 
@@ -68,6 +75,7 @@ export function launchTiles(apps, ctx = {}) {
       const needsDevice = art.kind === 'apk-adb';
       const disabled = needsDevice && !adb.connected;
       const installed = art.installed || {};
+      const run = runningFor(running, app.id, art.id);
       tiles.push({
         key: `${app.id}::${art.id}`,
         appId: app.id,
@@ -86,6 +94,19 @@ export function launchTiles(apps, ctx = {}) {
         live: !!client,
         liveCaption: caption,
         liveTitle: client ? `${client.app}${client.version ? ` ${client.version}` : ''} is live on the bus` : '',
+        // v0.11 — presence the hub knows from the pid it holds, not from the bus.
+        // A row it cannot stop has neither a live pid nor bus presence, which
+        // means it is a stale launch record rather than a running app.
+        running: !!run && run.canStop !== false,
+        // The artifact to pass to stopApp(): the row's own when it has one (a
+        // hub launch knows exactly which build it started), else this tile's.
+        runArtifactId: (run && run.artifactId) || art.id,
+        canStop: run ? run.canStop !== false : true,
+        runningTitle: run
+          ? `${app.name} is running${run.pid ? ` (pid ${run.pid})` : ''}${
+              client ? '' : ' — started by the hub, not reporting on the bus'
+            }`
+          : '',
         updateAvailable: !!(art.updateAvailable || art.readyToInstall),
         // v0.6 — a tile whose artifact keeps dying gets an amber corner mark;
         // the card carries the banner and the roll-back button.

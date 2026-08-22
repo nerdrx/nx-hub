@@ -196,6 +196,20 @@ export const archive = `
   <rect x="3" y="4.5" width="18" height="4.5"/><path d="M4.8 9v9.3a1.2 1.2 0 0 0 1.2 1.2h12a1.2 1.2 0 0 0 1.2-1.2V9"/><path d="M10 13h4"/>
 </svg>`;
 
+/* ------------------------------------------------------------------ v0.11 */
+
+/**
+ * Stop — a filled square inside a cut ring. Not a power symbol: power is
+ * already the fleet's "wake this machine", and a ■ says "end this one process"
+ * without borrowing that meaning. Angular per DESIGN §1; 13px, because it sits
+ * inline in a status strip and in a tile's corner.
+ */
+export const stop = `
+<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round">
+  <rect x="4.2" y="4.2" width="15.6" height="15.6" rx="2"/>
+  <rect x="9.4" y="9.4" width="5.2" height="5.2" fill="currentColor" stroke="none"/>
+</svg>`;
+
 /** Warning triangle — the crash-loop banner. */
 export const warn = `
 <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">

@@ -7,6 +7,7 @@
 import { artifactHasUpdate } from './version.js';
 import { normalizeAppPrefs, normalizeAppPref, isHiddenApp, isSkipped, GLOBAL_POLICIES } from './prefs.js';
 import { normalizeConnector, normalizeFieldDefs } from './connector.js';
+import { normalizeRunning } from './running.js';
 import { sandboxValue } from './guardian.js';
 
 export const DEFAULT_SETTINGS = {
@@ -237,6 +238,10 @@ export function normalizeState(state) {
     hasToken: !!(s.hasToken || s.tokenSource || (s.settings && s.settings.token)),
     // v0.5 — the bus roster. An older main process simply has none.
     connector: normalizeConnector(s.connector),
+    // v0.11 — what is actually running (hub launches ∪ bus clients). SPEC
+    // promises an array; an older main process sends nothing, and an empty
+    // array is exactly the right answer for it — it knows of no processes.
+    running: normalizeRunning(s.running),
   };
 }
 

@@ -24,7 +24,8 @@ import {
   effectiveSandbox,
 } from '../lib/guardian.js';
 import { renderDeviceLine } from './devices.js';
-import { renderStatusStrip, renderRemoteStrips } from './status.js';
+import { renderStatusStrip, renderRemoteStrips, renderRunningStrip } from './status.js';
+import { stopOptions } from '../lib/running.js';
 import * as icons from './icons.js';
 
 const HUB_ID = 'nx-hub';
@@ -405,6 +406,11 @@ export function renderAppCard(app, ctx = {}) {
   // its own peer-tagged strip, whether or not it is also running here: a card
   // whose app is live only remotely still says LIVE, it just says where.
   const remote = (ctx.remote instanceof Map && ctx.remote.get(app.id)) || [];
+  // v0.11 [stop] — what getState().running says about this app, and the Stop
+  // bundle every strip below shares. `null` (no stopApp in this build, or a
+  // process the hub has no handle on) removes the control everywhere at once.
+  const runRow = (ctx.running instanceof Map && ctx.running.get(app.id)) || null;
+  const stop = stopOptions(app, runRow, { caps, stopping: ctx.stopping });
 
   const pinNotes = (app.artifacts || [])
     .filter(
@@ -484,8 +490,17 @@ export function renderAppCard(app, ctx = {}) {
         }
         <a class="repo-link" href="#" data-act="open" data-url="${esc(githubUrl(app.repo))}" title="${esc(app.repo)}">${icons.external}<span>${esc(app.repo)}</span></a>
       </div>
-      ${renderStatusStrip(client, app.connectorFields, { now: ctx.now })}
-      ${renderRemoteStrips(remote, app.connectorFields, { now: ctx.now })}
+      ${renderStatusStrip(client, app.connectorFields, { now: ctx.now, stop })}
+      ${renderRemoteStrips(remote, app.connectorFields, { now: ctx.now, stop })}
+      ${
+        // Running here, but silent: no bus client to draw a LIVE strip from, and
+        // yet a process this hub started and can end. A row with `canStop:false`
+        // is by SPEC's own definition NOT running — no live pid, no presence —
+        // so it is a stale launch record, and saying "RUNNING" for it would lie.
+        !client && runRow && runRow.canStop !== false
+          ? renderRunningStrip(runRow, { now: ctx.now, appName: app.name, stop })
+          : ''
+      }
     </div>
     ${supBanners}
     ${crashBanners}
