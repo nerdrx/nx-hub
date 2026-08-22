@@ -574,3 +574,44 @@ test("postInstallCmd passes through from the overlay to the artifact", () => {
   );
   assert.strictEqual(app.artifacts[0].postInstallCmd, "systemctl --user restart plasma-plasmashell.service");
 });
+
+test("discovery: blender-theme carries its fan-out overlay fields and never launches", () => {
+  const rel = helpers.release("v1.0.0", [
+    { name: "nx-blender-1.0.0-theme.tar.gz", id: 1, size: 8192, url: "u1" },
+    { name: "nx-blender-1.0.0-theme.tar.gz.sig", id: 2, size: 129, url: "u2" },
+  ]);
+  const overlay = {
+    apps: {
+      "nx-blender": {
+        name: "NX for Blender",
+        artifacts: [
+          {
+            assetPattern: "nx-blender-*-theme.tar.gz",
+            label: "Blender theme",
+            kind: "blender-theme",
+            platform: "linux",
+            defaultBlenderVersion: "5.2",
+            postInstallNote: "Preferences → Themes → Presets → NX",
+          },
+        ],
+      },
+    },
+  };
+  const app = discovery.buildApps({
+    repos: [repoFor("nx-blender")],
+    releases: { "nerdrx/nx-blender": rel },
+    overlay,
+    installedState: { installed: {} },
+    adb: {},
+    primaryOwner: "nerdrx",
+  })[0];
+
+  const theme = app.artifacts.find((a) => a.kind === "blender-theme");
+  assert.ok(theme, "the tarball classifies as blender-theme");
+  // The engine reads this to decide where to create a config tree when Blender
+  // has never been launched — it has to survive the overlay pass-through.
+  assert.strictEqual(theme.defaultBlenderVersion, "5.2");
+  assert.strictEqual(theme.hasSignature, true);
+  assert.strictEqual(theme.launchable, false, "a theme is applied inside Blender");
+  assert.match(theme.postInstallNote, /Presets/);
+});

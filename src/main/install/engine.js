@@ -20,6 +20,7 @@ const archiveDir = require("./archive-dir");
 const tarballPrefix = require("./tarball-prefix");
 const apkAdb = require("./apk-adb");
 const blenderAddon = require("./blender-addon");
+const blenderTheme = require("./blender-theme");
 const genericZip = require("./generic-zip");
 const windows = require("./windows");
 
@@ -29,6 +30,7 @@ const KINDS = {
   "tarball-prefix": tarballPrefix,
   "apk-adb": apkAdb,
   "blender-addon": blenderAddon,
+  "blender-theme": blenderTheme,
   "generic-zip": genericZip,
   "windows-portable": windows,
   "windows-zip": windows,

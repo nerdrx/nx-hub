@@ -377,7 +377,9 @@ function buildArtifacts(release, ovl) {
     // overlay pass-through consumed by the install engines
     // v0.8: `sandbox` (bwrap profile) and `configPaths` may also be pinned per
     // artifact; the app-level values below are the fallback.
-    for (const key of ["packageId", "stripPrefix", "prefix", "binHint", "addonsDir", "launchCmd", "postInstallCmd", "args", "sandbox", "configPaths"]) {
+    for (const key of ["packageId", "stripPrefix", "prefix", "binHint", "addonsDir", "launchCmd", "postInstallCmd", "args", "sandbox", "configPaths",
+      // v0.10.1: blender-theme fan-out controls
+      "blenderVersions", "blenderConfigRoot", "defaultBlenderVersion"]) {
       if (entry && entry[key] != null) artifact[key] = entry[key];
     }
     rows.push({ artifact, ovlIndex: ovlIndex >= 0 ? ovlIndex : Number.MAX_SAFE_INTEGER, assetIndex, asset });
@@ -563,6 +565,7 @@ function prevInstallInfo(installPath) {
 function kindLaunchable(artifact) {
   switch (artifact.kind) {
     case "blender-addon":
+    case "blender-theme":
     case "generic-zip":
       return false;
     case "tarball-prefix":

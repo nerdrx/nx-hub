@@ -117,6 +117,15 @@ from the artifact when possible.
   falls back to state-recorded version with a "device offline" hint.
 - `blender-addon` — overlay-only. Unzip into overlay `addonsDir`; manifest lists
   the created addon folder.
+- `blender-theme` — overlay-only. Copy every `.xml` in the asset (bare file or
+  archive) into `scripts/presets/interface_theme/` of EVERY Blender config tree
+  found (`~/.config/blender/<major.minor>`, the Flatpak tree, `%APPDATA%` on
+  Windows) so a machine with several Blender versions gets all of them and a
+  later upgrade is picked up on the next install. Overlay may pin
+  `blenderVersions`, redirect `blenderConfigRoot` (tests), or name a
+  `defaultBlenderVersion` to create when Blender has never been launched;
+  without one, install fails with that instruction rather than guessing. Every
+  written file is recorded absolutely for exact uninstall.
 - `windows-portable` / `windows-zip` — same layout under installRoot on win32;
   Start-menu shortcut instead of .desktop (PowerShell WScript.Shell). Code ships
   v1 but is exercised only when the hub runs on Windows; on Linux these artifacts
@@ -125,7 +134,7 @@ Launch semantics per kind (engine exports `launch(install)`): `appimage` →
 spawn AppRun (detached); `archive-dir` → manifest-recorded binary; `tarball-prefix`
 → overlay `launchCmd` (e.g. WiVRn dashboard binary in ~/.local/bin), hidden if
 none; `apk-adb` → `adb shell monkey -p <packageId> 1` on the connected device;
-`blender-addon` → no launch; windows kinds → spawn exe (win32 only).
+`blender-addon` / `blender-theme` → no launch; windows kinds → spawn exe (win32 only).
 
 - Self-update: nx-hub is itself an app in the list (its repo has releases);
   installing it replaces the hub's own install dir and relaunches

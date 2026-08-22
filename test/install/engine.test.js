@@ -25,6 +25,7 @@ test("engine: exports exactly the frozen interface", () => {
       "appimage",
       "archive-dir",
       "blender-addon",
+      "blender-theme",
       "generic-zip",
       "tarball-prefix",
       "windows-portable",
