@@ -293,6 +293,21 @@
           "postInstallNote": "Enable it in Blender: Edit → Preferences → Add-ons → search \"NX Atelier\". Then open the 3D viewport sidebar (N) → Atelier tab → Build Brush Library. That generates all 176 brushes on this machine and takes a few seconds, once."
         }
       ]
+    },
+    "nx-flick": {
+      "name": "NX Flick",
+      "tagline": "Motorola-style motion shortcuts — chop for the flashlight, twist for the camera",
+      "order": 14,
+      "artifacts": [
+        {
+          "assetPattern": "nx-flick-*.apk",
+          "label": "Android APK",
+          "kind": "apk-adb",
+          "platform": "android",
+          "packageId": "com.nxflick",
+          "postInstallNote": "Open NX Flick and work through the Setup checklist. Unrestricted battery is the one that matters — without it Android eventually dozes the watcher and gestures stop firing. Chop chop and twist twist are on by default."
+        }
+      ]
     }
   }
 }
