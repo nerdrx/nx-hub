@@ -512,6 +512,69 @@ deleteSnapshot. Rollback UI offers "also restore config from before the
 update" when a matching pre-update snapshot exists. CLI `nx snapshots <app>`,
 `nx restore <app> [file]`.
 
+## v0.11 "stop" (frozen 2026-08-22)
+
+Launching is one-way today: the hub starts an app, tracks its pid, watches it
+for crashes — and offers no way to end it. The only stop in the product belongs
+to stacks, and it works (`shutdown-request` → wait → SIGTERM, never SIGKILL).
+This section makes that same ladder reachable for a single app.
+
+### What is running ([stopper])
+New `src/main/running.js`, pure node, deps injected (`connector` getter, `jobs`,
+`config`). `list()` returns the union of two truths, newest first:
+
+- **hub-launched** — `jobs` launch tracking (pid → app/artifact/version/startedAt).
+- **on the bus** — `connector.getClients()`, whose `app` is an app id and whose
+  `pid` the client reported at hello.
+
+```
+{appId, appName, artifactId|null, version, pid|null, since, source: "hub"|"bus"|"both", canStop}
+```
+
+One entry per (appId, artifactId) — a hub launch that is also on the bus is
+`"both"`, not two rows. `artifactId` is null for a bus-only client (the hub did
+not start it and cannot know which build it is). `canStop` is false only when
+there is neither a live pid nor bus presence.
+
+`getState().running` carries this array. It is always present and always an
+array, so a renderer never has to ask whether this build can stop things.
+
+### Stopping one app ([stopper])
+`running.stop(appId, artifactId?, {peer}?)` → `{ok, how, pid, appId}` where
+`how` ∈ `shutdown-request | sigterm | remote | gone | not-running`:
+
+1. On the bus → `connector.requestShutdown(appId)`, then wait up to
+   `shutdownWaitMs` (2500, injectable) for the client to leave. A client that
+   ignores the request is not an error; it just falls through.
+2. Still there and a pid is known → `jobs.noteHubStop({appId, artifactId, pid})`
+   **before** `killTree(pid, "SIGTERM")`. The attribution is not optional: without
+   it a user pressing Stop three times trips the crash-loop banner and suspends
+   keepAlive for a perfectly healthy app.
+3. `{peer}` → `fleet.remoteStop` (that is the only thing that reaches another
+   machine), `how: "remote"`.
+4. Never SIGKILL. Nothing running → `{ok: false, how: "not-running"}`.
+
+An app under `keepAlive` (the watchdog) must STAY stopped: `stop()` marks it
+hub-stopped, which the supervisor already reads as "do not resurrect".
+
+IPC `stopApp(appId, artifactId?, opts?)` + preload. CLI `nx stop <app>
+[artifact] [--peer <name>] [--json]`, exit 0 when it stopped or was already
+gone, 2 when a stop was attempted and the process is still there.
+
+### The button ([stop-ui])
+Wherever the UI says an app is LIVE it must also offer to end it:
+
+- The card's status strip gets a ghost **Stop** control on its right.
+- Launcher tiles that show presence get one too (the tile stays a launch target;
+  Stop is a separate small control, never the tile's main click).
+- A peer-tagged remote strip stops through its peer.
+
+One click, no confirmation — this matches stacks, and stopping is not
+destructive. The control shows "Stopping…" while the ladder runs and resolves
+when presence drops; a stop that reports `gone` is a success, not an error.
+Angular geometry, DESIGN §12 surfaces, cyan reserved for live values (Stop is
+ghost, never red — it is a normal action, not a danger).
+
 ## v0.10 "nervous system" (frozen 2026-08-20)
 
 ### Bus federation ([fabric2])
