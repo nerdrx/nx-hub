@@ -1,254 +1,283 @@
 {
- "version": 1,
- "hidden": [
-  "nerdrx/CDRP-for-Claude",
-  "nerdrx/petri"
- ],
- "apps": {
-  "vencord-nx-plugins": {
-   "name": "Vencord NX Plugins",
-   "tagline": "Voice-focused Vencord userplugins — auto-rejoin, soundboard, net HUD, fake deafen & more",
-   "order": 10,
-   "artifacts": [
-    {
-     "assetPattern": "nx-vencord-plugins-*-linux.tar.gz",
-     "label": "Vencord build (Linux)",
-     "kind": "tarball-prefix",
-     "platform": "linux",
-     "stripPrefix": "",
-     "prefix": "~/.config/Vencord",
-     "postInstallNote": "Fully restart Discord (or Ctrl+R) to load the plugins, then enable them in Vencord → Plugins. Turn OFF Vencord's auto-updater so it doesn't overwrite this build."
-    }
-   ]
-  },
-  "wivrn-nx": {
-   "name": "WiVRn NX",
-   "tagline": "OpenXR streaming to the Pico — NX transport stack",
-   "order": 1,
-   "artifacts": [
-    {
-     "assetPattern": "wivrn-nx-release*.apk",
-     "label": "Pico headset APK",
-     "kind": "apk-adb",
-     "platform": "android",
-     "packageId": "org.meumeu.wivrn.nx"
+  "version": 1,
+  "hidden": [
+    "nerdrx/CDRP-for-Claude",
+    "nerdrx/petri"
+  ],
+  "apps": {
+    "vencord-nx-plugins": {
+      "name": "Vencord NX Plugins",
+      "tagline": "Voice-focused Vencord userplugins — auto-rejoin, soundboard, net HUD, fake deafen & more",
+      "order": 10,
+      "artifacts": [
+        {
+          "assetPattern": "nx-vencord-plugins-*-linux.tar.gz",
+          "label": "Vencord build (Linux)",
+          "kind": "tarball-prefix",
+          "platform": "linux",
+          "stripPrefix": "",
+          "prefix": "~/.config/Vencord",
+          "postInstallNote": "Fully restart Discord (or Ctrl+R) to load the plugins, then enable them in Vencord → Plugins. Turn OFF Vencord's auto-updater so it doesn't overwrite this build."
+        }
+      ]
     },
-    {
-     "assetPattern": "wivrn-nx-server-*-linux-x86_64.tar.gz",
-     "label": "Linux server + dashboard",
-     "kind": "tarball-prefix",
-     "platform": "linux",
-     "stripPrefix": "usr/",
-     "prefix": "~/.local",
-     "launchCmd": "~/.local/bin/wivrn-dashboard",
-     "postInstallNote": "Re-run: sudo setcap cap_sys_nice+ep ~/.local/bin/wivrn-server (required after every update)",
-     "postInstallCmd": "sudo setcap cap_sys_nice+ep ~/.local/bin/wivrn-server"
-    }
-   ]
-  },
-  "wivrn-nx-windows": {
-   "name": "WiVRn NX for SteamVR",
-   "tagline": "Windows port — real SteamVR streamed to the Pico",
-   "order": 2,
-   "artifacts": [
-    {
-     "assetPattern": "*windows*.zip",
-     "label": "SteamVR driver + helper",
-     "kind": "windows-zip",
-     "platform": "windows"
-    }
-   ]
-  },
-  "pulsenx": {
-   "name": "PulseNX",
-   "tagline": "Heart-rate bridge — watch to VRChat, OBS, Discord",
-   "order": 3,
-   "artifacts": [
-    {
-     "assetPattern": "*.apk",
-     "label": "Android bridge APK",
-     "kind": "apk-adb",
-     "platform": "android",
-     "packageId": "com.pulsenx.bridge"
+    "wivrn-nx": {
+      "name": "WiVRn NX",
+      "tagline": "OpenXR streaming to the Pico — NX transport stack",
+      "order": 1,
+      "artifacts": [
+        {
+          "assetPattern": "wivrn-nx-release*.apk",
+          "label": "Pico headset APK",
+          "kind": "apk-adb",
+          "platform": "android",
+          "packageId": "org.meumeu.wivrn.nx"
+        },
+        {
+          "assetPattern": "wivrn-nx-server-*-linux-x86_64.tar.gz",
+          "label": "Linux server + dashboard",
+          "kind": "tarball-prefix",
+          "platform": "linux",
+          "stripPrefix": "usr/",
+          "prefix": "~/.local",
+          "launchCmd": "~/.local/bin/wivrn-dashboard",
+          "postInstallNote": "Re-run: sudo setcap cap_sys_nice+ep ~/.local/bin/wivrn-server (required after every update)",
+          "postInstallCmd": "sudo setcap cap_sys_nice+ep ~/.local/bin/wivrn-server"
+        }
+      ]
     },
-    {
-     "assetPattern": "*.AppImage",
-     "label": "PC dashboard (Linux)",
-     "kind": "appimage",
-     "platform": "linux"
+    "wivrn-nx-windows": {
+      "name": "WiVRn NX for SteamVR",
+      "tagline": "Windows port — real SteamVR streamed to the Pico",
+      "order": 2,
+      "artifacts": [
+        {
+          "assetPattern": "*windows*.zip",
+          "label": "SteamVR driver + helper",
+          "kind": "windows-zip",
+          "platform": "windows"
+        }
+      ]
     },
-    {
-     "assetPattern": "*.exe",
-     "label": "PC dashboard (Windows)",
-     "kind": "windows-portable",
-     "platform": "windows"
+    "pulsenx": {
+      "name": "PulseNX",
+      "tagline": "Heart-rate bridge — watch to VRChat, OBS, Discord",
+      "order": 3,
+      "artifacts": [
+        {
+          "assetPattern": "*.apk",
+          "label": "Android bridge APK",
+          "kind": "apk-adb",
+          "platform": "android",
+          "packageId": "com.pulsenx.bridge"
+        },
+        {
+          "assetPattern": "*.AppImage",
+          "label": "PC dashboard (Linux)",
+          "kind": "appimage",
+          "platform": "linux"
+        },
+        {
+          "assetPattern": "*.exe",
+          "label": "PC dashboard (Windows)",
+          "kind": "windows-portable",
+          "platform": "windows"
+        }
+      ],
+      "connector": {
+        "fields": [
+          {
+            "key": "hr",
+            "label": "Heart rate",
+            "unit": "bpm",
+            "kind": "number"
+          },
+          {
+            "key": "connected",
+            "label": "Watch",
+            "kind": "bool"
+          }
+        ]
+      }
+    },
+    "OscGoesBrrr-NX-Patches": {
+      "name": "OGB NX-Patches",
+      "tagline": "OscGoesBrrr with the Smooth mutator",
+      "order": 4,
+      "artifacts": [
+        {
+          "assetPattern": "*linux*.AppImage",
+          "label": "Linux app",
+          "kind": "appimage",
+          "platform": "linux"
+        },
+        {
+          "assetPattern": "*windows-portable*.exe",
+          "label": "Windows portable",
+          "kind": "windows-portable",
+          "platform": "windows"
+        },
+        {
+          "assetPattern": "*windows-setup*.exe",
+          "skip": true
+        },
+        {
+          "assetPattern": "*.rpm",
+          "skip": true
+        }
+      ]
+    },
+    "quadforge": {
+      "name": "QuadForge",
+      "tagline": "Auto-retopology for Blender",
+      "order": 5,
+      "artifacts": [
+        {
+          "assetPattern": "quadforge-*.zip",
+          "label": "Blender addon",
+          "kind": "blender-addon",
+          "platform": "linux",
+          "addonsDir": "~/.config/blender/5.2/scripts/addons"
+        }
+      ]
+    },
+    "nx-loom": {
+      "name": "NX Loom",
+      "tagline": "Authored topology for Blender",
+      "order": 12,
+      "artifacts": [
+        {
+          "assetPattern": "nx-loom-*.zip",
+          "label": "Blender addon",
+          "kind": "blender-addon",
+          "platform": "linux",
+          "addonsDir": "~/.config/blender/5.2/scripts/addons"
+        }
+      ]
+    },
+    "banish-protocol": {
+      "name": "LIMBO PROTOCOL",
+      "tagline": "Co-op roguelite — invade a rogue AI",
+      "order": 6,
+      "artifacts": [
+        {
+          "assetPattern": "*linux*.zip",
+          "label": "Linux build",
+          "kind": "archive-dir",
+          "platform": "linux"
+        },
+        {
+          "assetPattern": "*windows*.zip",
+          "label": "Windows build",
+          "kind": "windows-zip",
+          "platform": "windows"
+        }
+      ]
+    },
+    "vrcx-modschnitstelle": {
+      "name": "VRCX with Mods",
+      "tagline": "VRCX fork with mod API — Wrapped, GlobalDB chat, voice sidecar",
+      "order": 8,
+      "artifacts": [
+        {
+          "assetPattern": "VRCX_*_x64.AppImage",
+          "label": "Linux app",
+          "kind": "appimage",
+          "platform": "linux",
+          "postInstallNote": "Shares its database with a regular VRCX installation — close one before starting the other."
+        },
+        {
+          "assetPattern": "VRCX-with-Mods-*.zip",
+          "label": "Windows portable",
+          "kind": "windows-zip",
+          "platform": "windows",
+          "postInstallNote": "Shares its database with a regular VRCX installation — close one before starting the other."
+        },
+        {
+          "assetPattern": "VRCX_*_Setup.exe",
+          "skip": true
+        }
+      ]
+    },
+    "nxtakt": {
+      "name": "NxTakt",
+      "tagline": "Session-first native DAW for Linux",
+      "order": 7
+    },
+    "nx-hub": {
+      "name": "NX Hub",
+      "tagline": "This launcher — installs and updates itself",
+      "order": 90,
+      "artifacts": [
+        {
+          "assetPattern": "*-android.apk",
+          "label": "Android/Pico companion",
+          "kind": "apk-adb",
+          "platform": "android",
+          "packageId": "com.nxhub.android"
+        },
+        {
+          "assetPattern": "*linux.AppImage",
+          "label": "Desktop hub (Linux)",
+          "kind": "appimage",
+          "platform": "linux"
+        },
+        {
+          "assetPattern": "*windows-portable.exe",
+          "label": "Desktop hub (Windows)",
+          "kind": "windows-portable",
+          "platform": "windows"
+        }
+      ]
+    },
+    "nx-nebula": {
+      "name": "NX Nebula",
+      "tagline": "Living nebula wallpaper for KDE Plasma — clock, gallery, ultrawide-aware",
+      "order": 8,
+      "artifacts": [
+        {
+          "assetPattern": "nx-nebula-*-linux.tar.gz",
+          "label": "Plasma live wallpaper",
+          "kind": "tarball-prefix",
+          "platform": "linux",
+          "stripPrefix": "",
+          "prefix": "~/.local",
+          "postInstallNote": "Right-click the desktop → Desktop and Wallpaper → type 'NX Nebula (Live)'. After an update, run the restart command so Plasma reloads the QML and the pointer-bridge helper picks up its new binary.",
+          "postInstallCmd": "systemctl --user try-restart nx-cursor.service; systemctl --user restart plasma-plasmashell.service"
+        }
+      ]
+    },
+    "nx-kde": {
+      "name": "NX for KDE",
+      "tagline": "The whole desktop in NX — Global Theme for Plasma 6",
+      "order": 9,
+      "artifacts": [
+        {
+          "assetPattern": "nx-kde-*-linux.tar.gz",
+          "label": "Plasma 6 theme suite",
+          "kind": "tarball-prefix",
+          "platform": "linux",
+          "stripPrefix": "",
+          "prefix": "~/.local",
+          "postInstallNote": "Apply via System Settings → Colors & Themes → Global Theme → NX. Pairs with NX Nebula for a living wallpaper. Login screen (SDDM) needs root: clone the repo and run ./install.sh --sddm",
+          "postInstallCmd": "systemctl --user restart plasma-plasmashell.service"
+        }
+      ]
+    },
+    "nx-blender": {
+      "name": "NX for Blender",
+      "tagline": "The NX design language as a complete Blender theme",
+      "order": 11,
+      "artifacts": [
+        {
+          "assetPattern": "nx-blender-*-theme.tar.gz",
+          "label": "Blender theme",
+          "kind": "blender-theme",
+          "platform": "linux",
+          "defaultBlenderVersion": "5.2",
+          "postInstallNote": "Apply it in Blender: Edit → Preferences → Themes → Presets → NX. Installed into every Blender version found on this machine."
+        }
+      ]
     }
-   ],
-   "connector": {
-    "fields": [
-     {
-      "key": "hr",
-      "label": "Heart rate",
-      "unit": "bpm",
-      "kind": "number"
-     },
-     {
-      "key": "connected",
-      "label": "Watch",
-      "kind": "bool"
-     }
-    ]
-   }
-  },
-  "OscGoesBrrr-NX-Patches": {
-   "name": "OGB NX-Patches",
-   "tagline": "OscGoesBrrr with the Smooth mutator",
-   "order": 4,
-   "artifacts": [
-    {
-     "assetPattern": "*linux*.AppImage",
-     "label": "Linux app",
-     "kind": "appimage",
-     "platform": "linux"
-    },
-    {
-     "assetPattern": "*windows-portable*.exe",
-     "label": "Windows portable",
-     "kind": "windows-portable",
-     "platform": "windows"
-    },
-    {
-     "assetPattern": "*windows-setup*.exe",
-     "skip": true
-    },
-    {
-     "assetPattern": "*.rpm",
-     "skip": true
-    }
-   ]
-  },
-  "quadforge": {
-   "name": "QuadForge",
-   "tagline": "Auto-retopology for Blender",
-   "order": 5,
-   "artifacts": [
-    {
-     "assetPattern": "quadforge-*.zip",
-     "label": "Blender addon",
-     "kind": "blender-addon",
-     "platform": "linux",
-     "addonsDir": "~/.config/blender/5.2/scripts/addons"
-    }
-   ]
-  },
-  "banish-protocol": {
-   "name": "LIMBO PROTOCOL",
-   "tagline": "Co-op roguelite — invade a rogue AI",
-   "order": 6,
-   "artifacts": [
-    {
-     "assetPattern": "*linux*.zip",
-     "label": "Linux build",
-     "kind": "archive-dir",
-     "platform": "linux"
-    },
-    {
-     "assetPattern": "*windows*.zip",
-     "label": "Windows build",
-     "kind": "windows-zip",
-     "platform": "windows"
-    }
-   ]
-  },
-  "vrcx-modschnitstelle": {
-   "name": "VRCX with Mods",
-   "tagline": "VRCX fork with mod API — Wrapped, GlobalDB chat, voice sidecar",
-   "order": 8,
-   "artifacts": [
-    {
-     "assetPattern": "VRCX_*_x64.AppImage",
-     "label": "Linux app",
-     "kind": "appimage",
-     "platform": "linux",
-     "postInstallNote": "Shares its database with a regular VRCX installation — close one before starting the other."
-    },
-    {
-     "assetPattern": "VRCX-with-Mods-*.zip",
-     "label": "Windows portable",
-     "kind": "windows-zip",
-     "platform": "windows",
-     "postInstallNote": "Shares its database with a regular VRCX installation — close one before starting the other."
-    },
-    {
-     "assetPattern": "VRCX_*_Setup.exe",
-     "skip": true
-    }
-   ]
-  },
-  "nxtakt": {
-   "name": "NxTakt",
-   "tagline": "Session-first native DAW for Linux",
-   "order": 7
-  },
-  "nx-hub": {
-   "name": "NX Hub",
-   "tagline": "This launcher — installs and updates itself",
-   "order": 90,
-   "artifacts": [
-    {
-     "assetPattern": "*-android.apk",
-     "label": "Android/Pico companion",
-     "kind": "apk-adb",
-     "platform": "android",
-     "packageId": "com.nxhub.android"
-    },
-    {
-     "assetPattern": "*linux.AppImage",
-     "label": "Desktop hub (Linux)",
-     "kind": "appimage",
-     "platform": "linux"
-    },
-    {
-     "assetPattern": "*windows-portable.exe",
-     "label": "Desktop hub (Windows)",
-     "kind": "windows-portable",
-     "platform": "windows"
-    }
-   ]
-  },
-  "nx-nebula": {
-   "name": "NX Nebula",
-   "tagline": "Living nebula wallpaper for KDE Plasma — clock, gallery, ultrawide-aware",
-   "order": 8,
-   "artifacts": [
-    {
-     "assetPattern": "nx-nebula-*-linux.tar.gz",
-     "label": "Plasma live wallpaper",
-     "kind": "tarball-prefix",
-     "platform": "linux",
-     "stripPrefix": "",
-     "prefix": "~/.local",
-     "postInstallNote": "Right-click the desktop → Desktop and Wallpaper → type 'NX Nebula (Live)'. After an update, run the restart command so Plasma reloads the QML and the pointer-bridge helper picks up its new binary.",
-     "postInstallCmd": "systemctl --user try-restart nx-cursor.service; systemctl --user restart plasma-plasmashell.service"
-    }
-   ]
-  },
-  "nx-kde": {
-   "name": "NX for KDE",
-   "tagline": "The whole desktop in NX — Global Theme for Plasma 6",
-   "order": 9,
-   "artifacts": [
-    {
-     "assetPattern": "nx-kde-*-linux.tar.gz",
-     "label": "Plasma 6 theme suite",
-     "kind": "tarball-prefix",
-     "platform": "linux",
-     "stripPrefix": "",
-     "prefix": "~/.local",
-     "postInstallNote": "Apply via System Settings → Colors & Themes → Global Theme → NX. Pairs with NX Nebula for a living wallpaper. Login screen (SDDM) needs root: clone the repo and run ./install.sh --sddm",
-     "postInstallCmd": "systemctl --user restart plasma-plasmashell.service"
-    }
-   ]
   }
- }
 }
