@@ -278,6 +278,21 @@
           "postInstallNote": "Apply it in Blender: Edit → Preferences → Themes → Presets → NX. Installed into every Blender version found on this machine."
         }
       ]
+    },
+    "nx-atelier": {
+      "name": "NX Atelier",
+      "tagline": "A painting suite for Blender — 176 procedural brushes",
+      "order": 13,
+      "artifacts": [
+        {
+          "assetPattern": "nx-atelier-*.zip",
+          "label": "Blender addon",
+          "kind": "blender-addon",
+          "platform": "linux",
+          "addonsDir": "~/.config/blender/5.2/scripts/addons",
+          "postInstallNote": "Enable it in Blender: Edit → Preferences → Add-ons → search \"NX Atelier\". Then open the 3D viewport sidebar (N) → Atelier tab → Build Brush Library. That generates all 176 brushes on this machine and takes a few seconds, once."
+        }
+      ]
     }
   }
 }
