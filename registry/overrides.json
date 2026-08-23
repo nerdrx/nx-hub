@@ -308,6 +308,26 @@
           "postInstallNote": "Open NX Flick and work through the Setup checklist. Unrestricted battery is the one that matters — without it Android eventually dozes the watcher and gestures stop firing. Chop chop and twist twist are on by default."
         }
       ]
+    },
+    "nx-wisp": {
+      "name": "NX Wisp",
+      "tagline": "A creature that lives on your desktop",
+      "artifacts": [
+        {
+          "assetPattern": "NX-Wisp-*-linux-x86_64.AppImage",
+          "label": "Desktop companion",
+          "kind": "appimage",
+          "platform": "linux",
+          "postInstallNote": "Her language models (~1-19 GB, pinned sha256) are fetched once, on demand: click Run, or `nx-wisp models fetch` in a terminal. You can also just ask her to fetch them, once model.allow_downloads is on.",
+          "postInstallCmd": "$HOME/Applications/nx/nx-wisp/appimage-linux/AppRun models fetch"
+        }
+      ],
+      "connector": {
+        "fields": {
+          "tier": "Tier",
+          "said": "Last said"
+        }
+      }
     }
   }
 }
