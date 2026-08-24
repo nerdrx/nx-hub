@@ -344,6 +344,20 @@
           "said": "Last said"
         }
       }
+    },
+    "nx-schatzi": {
+      "name": "NX Schatzi",
+      "tagline": "Share your sleep with your Schatzi — nightstand tracker that posts to your Discord channel",
+      "order": 16,
+      "artifacts": [
+        {
+          "assetPattern": "*.apk",
+          "label": "Android app",
+          "kind": "apk-adb",
+          "platform": "android",
+          "packageId": "com.nxschatzi.app"
+        }
+      ]
     }
   }
 }
