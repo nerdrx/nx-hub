@@ -204,6 +204,22 @@
       "tagline": "Session-first native DAW for Linux",
       "order": 7
     },
+    "nx-deck": {
+      "name": "NX Deck",
+      "tagline": "Your phone as a control deck — media, volume, trackpad, keyboard over the LAN",
+      "order": 15,
+      "artifacts": [
+        {
+          "assetPattern": "nx-deck-*-linux-x86_64.tar.gz",
+          "label": "Desktop daemon (Linux)",
+          "kind": "archive-dir",
+          "platform": "linux",
+          "binHint": "nx-deck",
+          "postInstallNote": "Needs Node ≥ 22 on PATH. Launch it, then read the deck URL it prints (or run ~/Applications/nx/nx-deck/archive-dir-linux/nx-deck in a terminal to see it) and open that on your phone — the token in the URL is the key, keep it on your own LAN. Trackpad & keyboard need a writable /dev/uinput: sudo setfacl -m u:$USER:rw /dev/uinput (see the README for a persistent udev rule).",
+          "postInstallCmd": "sudo setfacl -m u:$USER:rw /dev/uinput"
+        }
+      ]
+    },
     "nx-hub": {
       "name": "NX Hub",
       "tagline": "This launcher — installs and updates itself",
