@@ -230,6 +230,12 @@ function createBus(opts) {
   const pingMs = Number(opts.pingMs) > 0 ? Number(opts.pingMs) : DEFAULT_PING_MS;
   const reapMs = Number(opts.reapMs) > 0 ? Number(opts.reapMs) : DEFAULT_REAP_MS;
   const helloGraceMs = Math.min(HELLO_GRACE_MS, reapMs);
+  // v0.12: a client says the name IT knows itself by ("vrcx-modschnitstelle"),
+  // but the hub may key that repo as "<owner>--<name>" when it came from a
+  // non-primary source. Everything downstream — presence, stop, stack gates,
+  // the federated roster, the LIVE strip — matches on the hub's id, so the
+  // translation happens once, here, at the door. Identity when unwired.
+  const resolveAppId = typeof opts.resolveAppId === "function" ? opts.resolveAppId : (id) => id;
 
   const secret = ensureToken(dataDir);
 
@@ -451,11 +457,22 @@ function createBus(opts) {
       fail(conn, "unauthorized", frame.CLOSE_POLICY_VIOLATION);
       return;
     }
-    const appId = normalizeAppId(msg.app);
-    if (!appId) {
+    const said = normalizeAppId(msg.app);
+    if (!said) {
       fail(conn, "hello requires an app id", frame.CLOSE_POLICY_VIOLATION);
       return;
     }
+    // Resolve to the hub's own id for this app. A resolver that throws, or that
+    // answers with nothing, leaves the client's own name in place — a bus that
+    // cannot reach discovery still has to work.
+    let appId = said;
+    try {
+      const resolved = normalizeAppId(resolveAppId(said));
+      if (resolved) appId = resolved;
+    } catch (e) {
+      log(`connector: app-id resolver failed for ${said}: ${e.message}`);
+    }
+    if (appId !== said) log(`connector: ${said} -> ${appId}`);
 
     // Latest hello wins: an older socket for the same id is evicted. Clear its
     // appId first so its teardown does not delete our fresh registration.

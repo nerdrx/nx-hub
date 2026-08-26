@@ -110,6 +110,31 @@ export function normalizeArtifact(artifact, latestVersion) {
     // ALWAYS present, so `false` here means "no signature", never "old build":
     // that is what lets the unsigned marker be trusted.
     hasSignature: !!a.hasSignature,
+    // v0.12 — where the "one more step" sentence came from: the central
+    // overlay, or the app's own nx-app.json. A hub without v0.12 sends
+    // neither, and `null` must stay distinguishable from "overlay" — it is
+    // "this build cannot tell us", which renders exactly as it always did.
+    postInstallNoteFrom: NOTE_SOURCES.includes(a.postInstallNoteFrom)
+      ? a.postInstallNoteFrom
+      : null,
+  };
+}
+
+/** SPEC v0.12: the only two provenances a note can carry. */
+const NOTE_SOURCES = ['overlay', 'manifest'];
+
+/**
+ * v0.12 — what the hub knows about this repo's own nx-app.json. Absent on a
+ * pre-v0.12 hub, so `null` means "unknown", never "untrusted": the provenance
+ * marker needs an explicit `trusted === false` and gets it from nowhere else.
+ */
+export function normalizeManifest(manifest) {
+  const m = manifest && typeof manifest === 'object' ? manifest : null;
+  if (!m) return null;
+  return {
+    present: !!m.present,
+    source: m.source === 'repo' ? 'repo' : 'asset',
+    trusted: typeof m.trusted === 'boolean' ? m.trusted : true,
   };
 }
 
@@ -174,6 +199,8 @@ export function normalizeApp(app) {
     configPaths: asArray(a.configPaths)
       .map((p) => (typeof p === 'string' ? p : String(p || '')))
       .filter(Boolean),
+    // v0.12 — the repo's own nx-app.json, if discovery found one.
+    manifest: normalizeManifest(a.manifest),
   };
 }
 

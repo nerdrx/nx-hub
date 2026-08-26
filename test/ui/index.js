@@ -37,5 +37,7 @@ import './checkpoint.test.js';
 import './audit.test.js';
 // v0.11 — the Stop button, the running roster and the pending ladder
 import './stop.test.js';
+// v0.12 — where a post-install note was written, and who wrote it
+import './manifest.test.js';
 // Last on purpose: this one installs a stub DOM on globalThis and boots app.js.
 import './smoke.test.js';

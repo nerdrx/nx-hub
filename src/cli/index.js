@@ -33,6 +33,9 @@ const auditCli = require("./audit");
 const checkpointCli = require("./checkpoint");
 // v0.11 [stopper]: `nx stop <app> [artifact]` over src/main/running.js.
 const stopCli = require("./stop");
+// v0.12 [manifest]: `nx manifest check|init` over src/main/manifest.js — no
+// network, no running hub.
+const manifestCli = require("./manifest");
 
 const EXIT_OK = 0;
 const EXIT_USER = 1;
@@ -196,6 +199,8 @@ async function run(argv, opts = {}) {
     checkpoint: checkpointCli.cmdCheckpoint,
     // v0.11 [stopper]
     stop: stopCli.cmdStop,
+    // v0.12 [manifest]
+    manifest: manifestCli.cmdManifest,
     shim: cmdShim,
   };
 

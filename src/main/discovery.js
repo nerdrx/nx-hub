@@ -8,6 +8,8 @@ const path = require("path");
 const config = require("./config");
 const githubMod = require("./github");
 const stateStore = require("./state");
+// v0.12 [manifest]: what an app repo is allowed to say about itself.
+const manifestMod = require("./manifest");
 
 const OVERLAY_REPO = "nerdrx/nx-hub";
 const OVERLAY_REF = "main";
@@ -16,6 +18,17 @@ const BUNDLED_OVERLAY = path.join(__dirname, "..", "..", "registry", "overrides.
 
 // checksums / signatures / builder metadata / v0.6 delta patches — never artifacts
 const IGNORE_RE = /\.(sha256|sha512|md5|sig|asc|yml|yaml|blockmap|zpatch)$/i;
+
+/**
+ * v0.12 [manifest]: everything the classifier must never turn into an
+ * installable row. IGNORE_RE is EXTENSION-based and `.json` is not in it, so
+ * the `nx-app.json` release asset needs its own rule — otherwise the file that
+ * describes the app would show up as a download the user could "install".
+ */
+function ignoredAsset(name) {
+  const n = String(name || "");
+  return !n || IGNORE_RE.test(n) || manifestMod.isManifestAsset(n);
+}
 
 const DEFAULT_LABELS = {
   "apk-adb": "Android APK",
@@ -44,6 +57,7 @@ let cached = {
   rateLimit: null, // { resetAt } while GitHub is throttling us
   releases: {}, // appId → full release list (v0.2 getReleases/installVersion)
   overlay: { hidden: [], apps: {} }, // last overlay, so artifacts can be rebuilt per release
+  manifests: {}, // v0.12 [manifest]: repo full_name (lower) → validated nx-app.json
 };
 let inflight = null;
 
@@ -170,7 +184,7 @@ function releaseSummary(release) {
  */
 function classifyAsset(asset, allAssets = []) {
   const name = String((asset && asset.name) || "");
-  if (!name || IGNORE_RE.test(name)) return null;
+  if (ignoredAsset(name)) return null; // v0.12 [manifest]: incl. nx-app.json
   const lower = name.toLowerCase();
   const isWin = /win(dows|32|64)?[-_. ]|windows/.test(lower);
   const isLinux = /linux/.test(lower);
@@ -304,25 +318,35 @@ function isHidden(overlay, repo, primaryOwner) {
 /**
  * Build the artifacts array for one release.
  * Overlay entries match by assetPattern and win over the default classification.
+ *
+ * v0.12 [manifest]: `man` is the app's VALIDATED manifest (already trust
+ * filtered — an untrusted repo's executable fields are gone before they get
+ * here). Precedence is PER FIELD, overlay > manifest > derived default: an
+ * overlay entry that only sets `label` must not discard the manifest's note.
  */
-function buildArtifacts(release, ovl) {
+function buildArtifacts(release, ovl, man) {
   const assets = Array.isArray(release && release.assets) ? release.assets : [];
   const ovlArtifacts = Array.isArray(ovl && ovl.artifacts) ? ovl.artifacts : [];
+  const manArtifacts = Array.isArray(man && man.artifacts) ? man.artifacts : [];
   const rows = [];
 
   assets.forEach((asset, assetIndex) => {
     const name = String((asset && asset.name) || "");
-    if (!name || IGNORE_RE.test(name)) return;
+    if (ignoredAsset(name)) return;
 
     const ovlIndex = ovlArtifacts.findIndex((a) => a && a.assetPattern && globMatch(a.assetPattern, name));
     const entry = ovlIndex >= 0 ? ovlArtifacts[ovlIndex] : null;
     if (entry && entry.skip) return;
 
+    // v0.12 [manifest]
+    const manIndex = manArtifacts.findIndex((a) => a && a.assetPattern && globMatch(a.assetPattern, name));
+    const manEntry = manIndex >= 0 ? manArtifacts[manIndex] : null;
+
     const auto = classifyAsset(asset, assets);
-    const kind = (entry && entry.kind) || (auto && auto.kind);
-    if (!kind) return; // neither overlay nor heuristics know what this is
-    const platform = (entry && entry.platform) || (auto && auto.platform) || "linux";
-    const label = (entry && entry.label) || (auto && auto.label) || DEFAULT_LABELS[kind] || kind;
+    const kind = (entry && entry.kind) || (manEntry && manEntry.kind) || (auto && auto.kind);
+    if (!kind) return; // neither overlay, manifest nor heuristics know what this is
+    const platform = (entry && entry.platform) || (manEntry && manEntry.platform) || (auto && auto.platform) || "linux";
+    const label = (entry && entry.label) || (manEntry && manEntry.label) || (auto && auto.label) || DEFAULT_LABELS[kind] || kind;
 
     const artifact = {
       id: null, // assigned below (kind-platform [+ -n])
@@ -335,8 +359,17 @@ function buildArtifacts(release, ovl) {
       size: Number(asset.size || 0),
       installed: null,
       updateAvailable: false,
-      postInstallNote: (entry && entry.postInstallNote) || null,
+      postInstallNote: null, // v0.12 [manifest]: resolved just below
+      postInstallNoteFrom: null, // "overlay" | "manifest" | null
     };
+    // v0.12 [manifest]: the overlay's note is the escape hatch and wins; the
+    // manifest's own note (per artifact, else the app-level one) is the
+    // fallback. `postInstallNoteFrom` is what lets the UI mark a sentence that
+    // came out of a foreign repo instead of out of this one.
+    const overlayNote = (entry && entry.postInstallNote) || null;
+    const manifestNote = (manEntry && manEntry.postInstallNote) || (man && man.postInstallNote) || null;
+    artifact.postInstallNote = overlayNote || manifestNote || null;
+    artifact.postInstallNoteFrom = overlayNote ? "overlay" : artifact.postInstallNote ? "manifest" : null;
     // sibling checksum asset, used by github.downloadAsset to verify
     const sidecar = assets.find((a) => a && a.name === `${name}.sha256`);
     if (sidecar) {
@@ -380,12 +413,21 @@ function buildArtifacts(release, ovl) {
     for (const key of ["packageId", "stripPrefix", "prefix", "binHint", "addonsDir", "launchCmd", "postInstallCmd", "args", "sandbox", "configPaths",
       // v0.10.1: blender-theme fan-out controls
       "blenderVersions", "blenderConfigRoot", "defaultBlenderVersion"]) {
+      // v0.12 [manifest]: per-key fallback, so an overlay that pins one value
+      // keeps the manifest's answer for every other key.
       if (entry && entry[key] != null) artifact[key] = entry[key];
+      else if (manEntry && manEntry[key] != null) artifact[key] = manEntry[key];
     }
-    rows.push({ artifact, ovlIndex: ovlIndex >= 0 ? ovlIndex : Number.MAX_SAFE_INTEGER, assetIndex, asset });
+    rows.push({
+      artifact,
+      ovlIndex: ovlIndex >= 0 ? ovlIndex : Number.MAX_SAFE_INTEGER,
+      manIndex: manIndex >= 0 ? manIndex : Number.MAX_SAFE_INTEGER,
+      assetIndex,
+      asset,
+    });
   });
 
-  rows.sort((a, b) => a.ovlIndex - b.ovlIndex || a.assetIndex - b.assetIndex);
+  rows.sort((a, b) => a.ovlIndex - b.ovlIndex || a.manIndex - b.manIndex || a.assetIndex - b.assetIndex);
 
   const counts = new Map();
   return rows.map((r) => {
@@ -405,12 +447,16 @@ function buildArtifacts(release, ovl) {
  * @param {object} o.installedState  state.json contents
  * @param {object} o.adb       { available, devices, apkVersions }
  * @param {string} o.primaryOwner
+ * @param {object|null} [o.manifestEntry] v0.12 [manifest]: the repo's validated
+ *        nx-app.json — {present, source, trusted, manifest} — or null.
  */
-function buildApp({ repo, release, overlay, installedState, adb, primaryOwner, settings }) {
+function buildApp({ repo, release, overlay, installedState, adb, primaryOwner, settings, manifestEntry }) {
   const repoName = repo.name;
   const owner = (repo.owner && repo.owner.login) || String(repo.full_name || "").split("/")[0] || primaryOwner;
   const ovl = overlayFor(overlay, repoName);
   const id = appIdFor(repo, primaryOwner);
+  // v0.12 [manifest]: already trust-filtered by src/main/manifest.js.
+  const man = (manifestEntry && manifestEntry.manifest) || null;
 
   const s = settings || config.load();
   const prefs = config.getAppPref(s, id);
@@ -429,7 +475,7 @@ function buildApp({ repo, release, overlay, installedState, adb, primaryOwner, s
   const seenBases = new Set(); // `${kind}-${platform}` — coarse identity across releases
   const tagArtifacts = (rel, isLatest) => {
     const relVersion = parseVersion(rel.tag_name);
-    for (const artifact of buildArtifacts(rel, ovl)) {
+    for (const artifact of buildArtifacts(rel, ovl, man)) {
       const base = `${artifact.kind}-${artifact.platform}`;
       // An older release may only FILL A GAP: contribute a kind+platform the
       // newer releases don't ship at all. Matching exact ids instead would let
@@ -467,8 +513,9 @@ function buildApp({ repo, release, overlay, installedState, adb, primaryOwner, s
     id,
     repo: repo.full_name || `${owner}/${repoName}`,
     owner,
-    name: ovl.name || repoName,
-    tagline: ovl.tagline || repo.description || "",
+    // v0.12 [manifest]: overlay > manifest > derived default, per field.
+    name: ovl.name || (man && man.name) || repoName,
+    tagline: ovl.tagline || (man && man.tagline) || repo.description || "",
     private: Boolean(repo.private),
     order: Number.isFinite(Number(ovl.order)) ? Number(ovl.order) : 100,
     unpublished: !release || artifacts.length === 0,
@@ -480,23 +527,40 @@ function buildApp({ repo, release, overlay, installedState, adb, primaryOwner, s
   };
   if (primaryOwner && String(owner).toLowerCase() !== String(primaryOwner).toLowerCase()) app.foreignOwner = true;
 
+  // ---- v0.12 [manifest]: provenance, for the UI's quiet marker ----
+  // Always present (null when the repo ships none), so a renderer never has to
+  // ask whether this build knows about manifests.
+  app.manifest = manifestEntry
+    ? { present: true, source: manifestEntry.source, trusted: Boolean(manifestEntry.trusted) }
+    : null;
+  const manHomepage = ovl.homepage || (man && man.homepage) || null;
+  if (manHomepage) app.homepage = manHomepage;
+
   // v0.5: how the UI labels this app's connector status fields (SPEC "Status
   // rendering"). Absent → the UI renders fields generically.
+  // v0.12 [manifest]: the manifest's fields are the fallback — presentation
+  // only, so they need no trust.
   if (ovl.connector && Array.isArray(ovl.connector.fields)) {
     app.connectorFields = ovl.connector.fields
       .filter((f) => f && typeof f.key === "string")
       .map((f) => ({ key: f.key, label: f.label || f.key, unit: f.unit || "", kind: f.kind || "text" }));
+  } else if (man && man.connector && Array.isArray(man.connector.fields) && man.connector.fields.length) {
+    app.connectorFields = man.connector.fields.map((f) => ({ key: f.key, label: f.label || f.key, unit: f.unit || "", kind: f.kind || "text" }));
   }
 
   // ---- v0.8 overlay pass-through: sandbox profile + config locations ----
   // Both are plain MODEL fields: discovery neither sandboxes nor snapshots
   // anything. `sandbox` is read by jobs.launch ([guardian]) and `configPaths`
   // by the sandbox binds AND by src/main/snapshots.js ([timemachine]).
-  if (typeof ovl.sandbox === "string" && SANDBOX_PROFILE_VALUES.includes(ovl.sandbox.trim().toLowerCase())) {
-    app.sandbox = ovl.sandbox.trim().toLowerCase();
+  // v0.12 [manifest]: both are trusted-only manifest fields (they were dropped
+  // upstream for an untrusted owner), and the overlay still wins.
+  const sandboxSource = typeof ovl.sandbox === "string" ? ovl.sandbox : man && man.sandbox;
+  if (typeof sandboxSource === "string" && SANDBOX_PROFILE_VALUES.includes(sandboxSource.trim().toLowerCase())) {
+    app.sandbox = sandboxSource.trim().toLowerCase();
   }
-  if (Array.isArray(ovl.configPaths)) {
-    const paths = ovl.configPaths.filter((p) => typeof p === "string" && p.trim()).map((p) => p.trim());
+  const configPathsSource = Array.isArray(ovl.configPaths) ? ovl.configPaths : (man && man.configPaths) || null;
+  if (Array.isArray(configPathsSource)) {
+    const paths = configPathsSource.filter((p) => typeof p === "string" && p.trim()).map((p) => p.trim());
     if (paths.length) app.configPaths = paths;
   }
 
@@ -690,15 +754,18 @@ function sortApps(apps) {
 /**
  * Pure assembly step — used directly by unit tests.
  */
-function buildApps({ repos, releases, overlay, installedState, adb, primaryOwner, settings }) {
+function buildApps({ repos, releases, overlay, installedState, adb, primaryOwner, settings, manifests }) {
   const ovl = normalizeOverlay(overlay); // idempotent
   const s = settings || config.load(); // read once, not per app
 
   const out = [];
   for (const repo of repos) {
     if (!repo || !repo.name) continue;
-    const release = releases ? releases[String(repo.full_name || repo.name).toLowerCase()] || null : null;
-    const app = buildApp({ repo, release, overlay: ovl, installedState, adb, primaryOwner, settings: s });
+    const key = String(repo.full_name || repo.name).toLowerCase();
+    const release = releases ? releases[key] || null : null;
+    // v0.12 [manifest]: keyed by lowercased repo full_name, exactly like releases.
+    const manifestEntry = (manifests && manifests[key]) || null;
+    const app = buildApp({ repo, release, overlay: ovl, installedState, adb, primaryOwner, settings: s, manifestEntry });
     // Overlay-hidden repos are still listed (bottom section), just flagged —
     // the user asked to SEE everything that exists, installable or not.
     app.overlayHidden = isHidden(ovl, repo, primaryOwner);
@@ -829,6 +896,43 @@ async function refresh({ force = false, signal } = {}) {
         }
       });
 
+      // ---- v0.12 [manifest]: what the apps say about themselves ----
+      // A release ASSET named nx-app.json is always read (the asset list is
+      // already in hand). The repo-root fetchRaw is a per-repo request, so it
+      // is skipped outright when the hub is anonymous or already throttled —
+      // discovery scans every repo, and that is exactly how a working hub
+      // turns into a rate-limited one.
+      let manifests = {};
+      try {
+        const token = await config.resolveToken(settings);
+        const tight = Boolean(cached.rateLimit) || errors.some((e) => e.rateLimited);
+        const disabled = process.env.NX_HUB_NO_MANIFEST_FETCH === "1";
+        const allowRepoFetch = Boolean(token) && !tight && !disabled;
+        if (!allowRepoFetch) {
+          const why = !token ? "hub is anonymous" : tight ? "rate limit is tight" : "disabled by NX_HUB_NO_MANIFEST_FETCH";
+          config.log(`manifest: repo-root ${manifestMod.MANIFEST_FILE} lookups skipped this pass (${why}) — release assets still read`);
+        }
+        const collected = await manifestMod.collect({
+          repos: visible,
+          releases,
+          github: gh(),
+          settings,
+          allowRepoFetch,
+          force,
+          signal,
+        });
+        manifests = collected.manifests;
+        const found = Object.keys(manifests).length;
+        if (found) {
+          config.log(
+            `manifest: ${found} app(s) ship ${manifestMod.MANIFEST_FILE} (${collected.stats.asset} from a release asset, ${collected.stats.repo} from the repo root)`
+          );
+        }
+      } catch (e) {
+        // SPEC: a manifest NEVER breaks discovery.
+        config.log(`manifest: pass failed (${e.message}) — continuing without manifests`);
+      }
+
       const adb = await getAdbStatus(settings);
       const apps = buildApps({
         // ALL repos — hidden ones skip the release fetch above but must still
@@ -840,10 +944,12 @@ async function refresh({ force = false, signal } = {}) {
         adb,
         primaryOwner: (settings.owners || [])[0] || null,
         settings,
+        manifests, // v0.12 [manifest]
       });
 
       cached.releases = releasesByApp;
       cached.overlay = overlay;
+      cached.manifests = manifests; // v0.12 [manifest]: rebuild() needs them
       cached.repos = visible;
       cached.releasesByRepo = releases;
       cached.apps = apps;
@@ -913,6 +1019,7 @@ function rebuild() {
     adb: cached.adb,
     primaryOwner: (settings.owners || [])[0] || null,
     settings,
+    manifests: cached.manifests || {}, // v0.12 [manifest]: no network on a rebuild
   });
   return cached.apps;
 }
@@ -960,7 +1067,20 @@ function findRelease(appId, tag) {
  */
 function artifactsForRelease(appId, release) {
   const ovl = overlayFor(cached.overlay, appId);
-  return buildArtifacts(release, ovl);
+  // v0.12 [manifest]: the same manifest the live model used, so ids, kinds and
+  // notes line up with what `installVersion` is asked to match.
+  const entry = manifestFor(appId);
+  return buildArtifacts(release, ovl, entry && entry.manifest);
+}
+
+/**
+ * v0.12 [manifest]: the cached manifest entry for an app — {present, source,
+ * trusted, manifest, problems, dropped} — or null.
+ */
+function manifestFor(appId) {
+  const app = findApp(appId);
+  if (!app || !cached.manifests) return null;
+  return cached.manifests[String(app.repo || "").toLowerCase()] || null;
 }
 
 /**
@@ -1002,7 +1122,23 @@ function getCached() {
 }
 
 function findApp(appId) {
-  return cached.apps.find((a) => a.id === String(appId).toLowerCase()) || null;
+  const want = String(appId == null ? "" : appId).trim().toLowerCase();
+  if (!want) return null;
+  const exact = cached.apps.find((a) => a.id === want);
+  if (exact) return exact;
+
+  // v0.12: a repo from a non-primary source is keyed "<owner>--<name>" so two
+  // owners' same-named repos cannot collide. Anything that only knows the bare
+  // repo name — a connector client saying hello as itself, a person typing it —
+  // would otherwise never find it.
+  //
+  // The fallback is deliberately refused when it is AMBIGUOUS: if two owners
+  // both ship a "vrcx-mods", answering with either one defeats the entire point
+  // of owner-scoping. Better to find nothing than to find the wrong app and
+  // then stop, gate or attribute against it.
+  if (want.includes("--")) return null;
+  const matches = cached.apps.filter((a) => a.id === want || a.id.endsWith(`--${want}`));
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function findArtifact(appId, artifactId) {
@@ -1028,6 +1164,7 @@ module.exports = {
   releasesFor,
   findRelease,
   artifactsForRelease,
+  manifestFor, // v0.12 [manifest]
   matchArtifactInRelease,
   selectRelease,
   releaseSummary,

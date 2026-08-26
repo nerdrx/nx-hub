@@ -615,3 +615,57 @@ test("discovery: blender-theme carries its fan-out overlay fields and never laun
   assert.strictEqual(theme.launchable, false, "a theme is applied inside Blender");
   assert.match(theme.postInstallNote, /Presets/);
 });
+
+/* ------------------------------------------------- v0.12: id resolution */
+
+test("findApp resolves a bare repo name to an owner-scoped app, but not ambiguously", () => {
+  // A repo from a non-primary source is keyed "<owner>--<name>". A connector
+  // client says hello as the name IT knows — the bare repo name — so without a
+  // fallback its LIVE strip, its Stop button and any stack gate naming it would
+  // silently never match. See the bus's resolveAppId.
+  discovery._setCached({
+    apps: [
+      { id: "pulsenx", name: "PulseNX", artifacts: [] },
+      { id: "arikazei--vrcx-modschnitstelle", name: "VRCX with Mods", artifacts: [] },
+    ],
+  });
+
+  assert.strictEqual(discovery.findApp("pulsenx").id, "pulsenx", "an exact id still wins");
+  assert.strictEqual(
+    discovery.findApp("arikazei--vrcx-modschnitstelle").id,
+    "arikazei--vrcx-modschnitstelle",
+    "the scoped id itself resolves"
+  );
+  assert.strictEqual(
+    discovery.findApp("vrcx-modschnitstelle").id,
+    "arikazei--vrcx-modschnitstelle",
+    "the bare name finds the one app that carries it"
+  );
+  assert.strictEqual(discovery.findApp("VRCX-Modschnitstelle").id, "arikazei--vrcx-modschnitstelle");
+  assert.strictEqual(discovery.findApp("nothing-like-this"), null);
+  assert.strictEqual(discovery.findApp(""), null);
+  assert.strictEqual(discovery.findApp(null), null);
+
+  // Two owners shipping the same repo name is exactly what owner-scoping exists
+  // for. Answering with either would stop, gate or attribute against the wrong
+  // app, so an ambiguous bare name resolves to NOTHING.
+  discovery._setCached({
+    apps: [
+      { id: "arikazei--vrcx-mods", name: "VRCX (Arikazei)", artifacts: [] },
+      { id: "someone--vrcx-mods", name: "VRCX (someone)", artifacts: [] },
+    ],
+  });
+  assert.strictEqual(discovery.findApp("vrcx-mods"), null, "ambiguous — refuse rather than guess");
+  assert.strictEqual(discovery.findApp("arikazei--vrcx-mods").id, "arikazei--vrcx-mods");
+
+  // An exact id must beat a bare-name match even when both exist.
+  discovery._setCached({
+    apps: [
+      { id: "vrcx-mods", name: "mine", artifacts: [] },
+      { id: "arikazei--vrcx-mods", name: "theirs", artifacts: [] },
+    ],
+  });
+  assert.strictEqual(discovery.findApp("vrcx-mods").name, "mine");
+
+  discovery._setCached({ apps: [] });
+});

@@ -305,9 +305,47 @@ export function renderSupervisorBanner(entry) {
     </div>`;
 }
 
+/* --------------------------------------------------- v0.12 note provenance */
+
+/**
+ * Is this "one more step" sentence foreign text?
+ *
+ * Only when BOTH halves say so: the hub got the note from the repo's own
+ * nx-app.json AND that repo's owner is not trusted. Our own apps ship
+ * manifests too — the marker is about who wrote the sentence, not about
+ * whether a manifest exists. Both fields are absent on a pre-v0.12 hub, and
+ * `manifest.trusted` must be an explicit `false`, so an older build (or a
+ * shape surprise) renders exactly as it always did.
+ */
+export function isForeignNote(app, artifact) {
+  if (!artifact || artifact.postInstallNoteFrom !== 'manifest') return false;
+  const m = app && app.manifest;
+  return !!m && m.trusted === false;
+}
+
+/**
+ * The marker itself. Muted, one line, no icon of its own: this is provenance,
+ * not a warning. Amber would claim attention the sentence has not earned and
+ * red would claim danger that isn't there (DESIGN §1) — a third party writing
+ * a sentence is simply a fact about authorship, so it is said in `--muted` at
+ * the same size as a caption and left alone.
+ */
+export function renderNoteSource(app) {
+  const repo = (app && app.repo) || '';
+  return `<p class="pin-src" title="NX Hub shows this sentence as the app’s repository wrote it — the hub did not write or check it">Written by ${esc(
+    repo
+  )}, the app’s own repo — not by NX Hub.</p>`;
+}
+
 export function renderPostInstallNote(app, artifact, caps = {}) {
   // Overlay-declared command wins; the heuristic is only a fallback.
   const cmd = artifact.postInstallCmd || extractCommand(artifact.postInstallNote);
+  // Belt and braces. [manifest] already drops postInstallCmd for an untrusted
+  // owner, so a command should never reach here with a foreign note — but the
+  // Run button is the one control that hands a stranger's shell line to
+  // pkexec, and it must be impossible to reach from foreign text even if a
+  // command somehow arrives anyway. Copy stays: the user reads it first.
+  const foreign = isForeignNote(app, artifact);
   return `
     <div class="pin-note" data-note="${esc(artifactKey(app.id, artifact.id))}">
       <div class="pin-head">
@@ -315,11 +353,12 @@ export function renderPostInstallNote(app, artifact, caps = {}) {
         <button class="btn btn-icon" data-act="dismiss-note" data-app="${esc(app.id)}" data-art="${esc(artifact.id)}" title="Dismiss">${icons.close}</button>
       </div>
       <p class="pin-body">${esc(artifact.postInstallNote)}</p>
+      ${foreign ? renderNoteSource(app) : ''}
       ${
         cmd
           ? `<div class="pin-cmd"><code>${esc(cmd)}</code>
         ${
-          artifact.postInstallCmd && caps.runPostInstallCmd !== false
+          artifact.postInstallCmd && caps.runPostInstallCmd !== false && !foreign
             ? `<button class="btn btn-violet btn-sm" data-act="run-cmd" data-app="${esc(app.id)}" data-art="${esc(artifact.id)}">${icons.terminal}<span>Run</span></button>`
             : ''
         }

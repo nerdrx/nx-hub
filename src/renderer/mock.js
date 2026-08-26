@@ -57,6 +57,11 @@ function artifact(a) {
     size: a.size || 0,
     packageId: a.packageId || '',
     postInstallNote: a.postInstallNote || '',
+    // v0.12 — where that sentence came from. null is what a pre-v0.12 hub
+    // sends, and the default here so the renderer's absent-caps path stays
+    // the one the whole roster exercises.
+    postInstallNoteFrom: a.postInstallNoteFrom || null,
+    postInstallCmd: a.postInstallCmd || '',
     installed: a.installed || null,
     updateAvailable: false,
     // Set when this artifact survived from an older release because the newest
@@ -143,6 +148,10 @@ function baseApps() {
       sandbox: 'confined',
       configPaths: ['~/.config/wivrn', '~/.local/share/wivrn'],
       latest: { tag: 'v1.9.2', version: '1.9.2', publishedAt: iso(3), notes: NOTES_WIVRN, prerelease: false },
+      // v0.12 — one of ours: it ships a manifest AND its owner is trusted, so
+      // nothing about it is ever marked. Present here to prove the marker keys
+      // on the owner, not on the existence of an nx-app.json.
+      manifest: { present: true, source: 'asset', trusted: true },
       // The overlay describes one of the two fields this app streams — the
       // other one has to render generically, which is the interesting case.
       connectorFields: [{ key: 'bitrate', label: 'Bitrate', unit: 'Mbit/s', kind: 'number' }],
@@ -166,6 +175,9 @@ function baseApps() {
           size: 18_300_000,
           postInstallNote:
             'Re-run: sudo setcap cap_sys_nice+ep ~/.local/bin/wivrn-server (required after every update)',
+          // v0.12 — the classic case: this sentence is in registry/overrides.json,
+          // written by the hub's own maintainer. No provenance marker, ever.
+          postInstallNoteFrom: 'overlay',
           installed: { version: '1.9.2', path: '/home/nerdrx/.local', installedAt: iso(3) },
           // the engine kept the replaced install one level deep
           rollbackAvailable: true,
@@ -211,6 +223,9 @@ function baseApps() {
       // an unnoticed exit is exactly what keepAlive exists for.
       keepAlive: true,
       configPaths: ['~/.config/pulsenx'],
+      // v0.12 — ours, and its manifest came from the branch root rather than a
+      // release asset. Trusted either way: `source` is trivia, `trusted` is not.
+      manifest: { present: true, source: 'repo', trusted: true },
       latest: { tag: 'v2.3.0', version: '2.3.0', publishedAt: iso(11), notes: NOTES_PULSE, prerelease: false },
       connectorFields: [
         { key: 'hr', label: 'Heart rate', unit: 'bpm', kind: 'number' },
@@ -363,6 +378,10 @@ function baseApps() {
       private: false,
       order: 100,
       unpublished: false,
+      // v0.12 — the foreign case: a repo we do not own, shipping its own
+      // nx-app.json. Presentation fields are honoured, everything executable
+      // was dropped by [manifest], and anything of theirs we print says so.
+      manifest: { present: true, source: 'asset', trusted: false },
       latest: { tag: 'v0.9.1', version: '0.9.1', publishedAt: iso(27), notes: '', prerelease: false },
       artifacts: [
         artifact({
@@ -2591,6 +2610,57 @@ export function createMock() {
       return state.settings.requireSignatures;
     },
 
+    /**
+     * v0.12 — arm the two manifest-authored notes, so the three-way provenance
+     * matrix is on screen at once:
+     *
+     *   WiVRn NX      overlay note, trusted owner     → no marker (always on)
+     *   PulseNX       manifest note, trusted owner    → no marker
+     *   WiVRn upstream manifest note, foreign owner   → marker
+     *
+     * The foreign one is armed WITH a postInstallCmd on purpose. [manifest]
+     * drops that field for an untrusted owner so it should never arrive — this
+     * is the mock reproducing the thing that should not happen, so the missing
+     * Run button can be seen rather than taken on trust.
+     */
+    toggleManifestNotes() {
+      const pulse = find('pulsenx', 'appimage-linux').art;
+      const upstream = find('wivrn', 'appimage-linux').art;
+      if (!pulse || !upstream) return null;
+      const on = !pulse.postInstallNote;
+      if (on) {
+        pulse.postInstallNote =
+          'Pair the watch before first launch: open PulseNX on the phone and accept the prompt.';
+        pulse.postInstallNoteFrom = 'manifest';
+        upstream.installed = {
+          version: '0.9.1',
+          path: '/home/nerdrx/Applications/nx/wivrn/appimage-linux',
+          installedAt: new Date().toISOString(),
+        };
+        upstream.postInstallNote =
+          'Grant the streaming service realtime priority: run `sudo setcap cap_sys_nice+ep ./wivrn-server` inside the install directory.';
+        upstream.postInstallNoteFrom = 'manifest';
+        upstream.postInstallCmd = 'sudo setcap cap_sys_nice+ep ./wivrn-server';
+      } else {
+        pulse.postInstallNote = '';
+        pulse.postInstallNoteFrom = null;
+        upstream.installed = null;
+        upstream.postInstallNote = '';
+        upstream.postInstallNoteFrom = null;
+        upstream.postInstallCmd = '';
+      }
+      recompute(state.apps, state.settings);
+      changed();
+      emit({
+        type: 'toast',
+        level: 'info',
+        message: on
+          ? 'Manifest-authored notes armed — PulseNX (ours) and WiVRn upstream (foreign)'
+          : 'Manifest-authored notes cleared',
+      });
+      return on;
+    },
+
     /** Flip keepAlive on an app, the way the options sheet would. */
     toggleKeepAlive(appId = 'pulsenx') {
       const app = state.apps.find((a) => a.id === appId);
@@ -2860,6 +2930,7 @@ function toolbar(dev) {
     <button class="btn btn-ghost btn-sm" data-mock="dev-gone">toggle dev folder missing</button>
     <button class="btn btn-ghost btn-sm" data-mock="sig">toggle require signatures</button>
     <button class="btn btn-ghost btn-sm" data-mock="keepalive">toggle keep alive (PulseNX)</button>
+    <button class="btn btn-ghost btn-sm" data-mock="manifest-notes">toggle manifest-authored notes</button>
     <button class="btn btn-ghost btn-sm" data-mock="restarting">watchdog: restarting</button>
     <button class="btn btn-ghost btn-sm" data-mock="gave-up">watchdog: gave up</button>
     <button class="btn btn-ghost btn-sm" data-mock="arm-rollback">arm rollback + config snapshot</button>
@@ -2904,6 +2975,7 @@ function toolbar(dev) {
     else if (what === 'dev-gone') dev.toggleDevExists();
     else if (what === 'sig') dev.toggleRequireSignatures();
     else if (what === 'keepalive') dev.toggleKeepAlive();
+    else if (what === 'manifest-notes') dev.toggleManifestNotes();
     else if (what === 'restarting') dev.simulateSupervisor('restarting');
     else if (what === 'gave-up') dev.simulateSupervisor('gave-up');
     else if (what === 'arm-rollback') dev.armRollback();

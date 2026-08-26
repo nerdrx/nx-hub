@@ -100,6 +100,12 @@ function defaults() {
     // (src/main/fleet). Off means this hub is neither discoverable nor
     // reachable; already-paired peers simply go offline.
     fleet: true,
+    // v0.12 [manifest]: owners whose repo `nx-app.json` may carry EXECUTABLE
+    // fields (postInstallCmd, prefix, addonsDir, sandbox…). settings.owners are
+    // trusted implicitly; this is the list for anyone else. Empty by default —
+    // adding a name here says "this owner may propose commands the Run button
+    // will offer to run as root".
+    trustedManifestOwners: [],
     // v0.10: exchange appPrefs and stacks with paired hubs (SPEC "Fleet
     // settings sync"). Gates BOTH directions — off means this hub neither
     // sends its preferences nor accepts a peer's.
@@ -258,6 +264,11 @@ function sanitize(raw) {
   // Default upgrade: installs still on the ORIGINAL default source list get the
   // new default (an explicit custom list — anything else — is left alone).
   if (s.owners.length === 1 && s.owners[0] === "nerdrx") s.owners = defaults().owners;
+  // v0.12 [manifest]: same shape as `owners`, and just as much a security
+  // decision — a junk entry is dropped rather than guessed at.
+  s.trustedManifestOwners = Array.isArray(s.trustedManifestOwners)
+    ? [...new Set(s.trustedManifestOwners.filter((o) => typeof o === "string" && o.trim()).map((o) => o.trim()))]
+    : [];
   s.extraRepos = Array.isArray(s.extraRepos)
     ? s.extraRepos.filter((r) => typeof r === "string" && r.includes("/")).map((r) => r.trim())
     : [];

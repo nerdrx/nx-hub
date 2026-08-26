@@ -1,0 +1,228 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/nerdrx/nx-hub/main/registry/nx-app.schema.json",
+  "title": "nx-app.json",
+  "description": "The NX Hub app manifest: a file an app repository ships so the hub can present and install it without central curation. Publish it as a release asset named exactly `nx-app.json`, or keep it at the default branch root. See docs/PUBLISHING.md. Fields marked TRUSTED in their description are honoured only when the hub's user trusts the repository owner (settings.owners + settings.trustedManifestOwners); from any other owner they are dropped with a log line. The hub ignores unknown keys and never fails discovery over a bad manifest; this schema is stricter than the hub on purpose, so `nx manifest check` can tell you about a typo the hub would silently discard.",
+  "type": "object",
+  "additionalProperties": false,
+  "minProperties": 1,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "maxLength": 300,
+      "description": "Optional pointer to this schema, for editor completion. Ignored by the hub."
+    },
+    "nxApp": {
+      "type": "integer",
+      "enum": [
+        1
+      ],
+      "description": "Manifest format version. 1 is the only version. Recommended, not required."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "Display name of the app. Falls back to the repository name. Accepted from any owner (presentation only, escaped on render)."
+    },
+    "tagline": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "One line under the name on the card. Falls back to the repository description. Accepted from any owner."
+    },
+    "homepage": {
+      "type": "string",
+      "pattern": "^https?://",
+      "maxLength": 300,
+      "description": "http(s) URL for the app's own page. Accepted from any owner."
+    },
+    "sandbox": {
+      "type": "string",
+      "enum": [
+        "confined",
+        "offline",
+        "none"
+      ],
+      "description": "TRUSTED. Default sandbox profile for launches when bwrap is available: `confined` = fresh tmpfs $HOME with only the install dir and `configPaths` bound rw, network shared; `offline` = confined without network; `none` = no wrapping. The user's per-app preference wins. Never applied to tarball-prefix or apk-adb artifacts."
+    },
+    "configPaths": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300,
+        "description": "A path, `~` allowed."
+      },
+      "description": "TRUSTED. Where this app keeps its user configuration. Used to bind config into a sandbox and to snapshot config before an update, an uninstall or a restore."
+    },
+    "keepAlive": {
+      "type": "boolean",
+      "description": "TRUSTED. Suggests the watchdog default for this app: relaunch it with backoff when it exits unexpectedly. Suitable for daemons, wrong for anything a user closes on purpose. The user's per-app preference wins, and a crash loop suspends it."
+    },
+    "artifacts": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/definitions/artifact"
+      },
+      "description": "Per-asset refinements, matched against the release's asset names. Assets you do not mention are still classified by the hub's own rules; artifacts here that match no asset are ignored."
+    },
+    "connector": {
+      "$ref": "#/definitions/connector",
+      "description": "How to render the live status this app streams over the NX Connector bus. See docs/connector/PROTOCOL.md."
+    }
+  },
+  "definitions": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assetPattern"
+      ],
+      "properties": {
+        "assetPattern": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Glob matched against the release asset's file name (`*` and `?`), e.g. `Halyard-*-linux-x86_64.AppImage`. The first entry that matches an asset wins, so order from most specific to least."
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Row label for this artifact, e.g. \"Desktop app (Linux)\". Falls back to the kind's default label. Accepted from any owner."
+        },
+        "platform": {
+          "type": "string",
+          "enum": [
+            "linux",
+            "windows",
+            "android"
+          ],
+          "description": "TRUSTED. Which platform this asset is for. Should agree with the file name; the classifier decides it on its own when the name is clear."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "appimage",
+            "archive-dir",
+            "tarball-prefix",
+            "apk-adb",
+            "blender-addon",
+            "blender-theme",
+            "windows-portable",
+            "windows-zip"
+          ],
+          "description": "TRUSTED. Which install engine handles this asset. `tarball-prefix`, `blender-addon` and `blender-theme` only work together with the trusted-only path fields they need (`prefix`/`stripPrefix`, `addonsDir`), so an untrusted manifest cannot reach them."
+        },
+        "packageId": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$",
+          "maxLength": 200,
+          "description": "TRUSTED. Android application id, for `apk-adb` artifacts. Used to read the installed version off the device and to launch it."
+        },
+        "binHint": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "TRUSTED. For `archive-dir`: the executable inside the extracted tree, relative to its root. Without it the engine guesses (largest executable file / name match)."
+        },
+        "stripPrefix": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "TRUSTED. For `tarball-prefix`: leading path removed from every archive entry, e.g. `usr/`. Empty string means strip nothing."
+        },
+        "prefix": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "TRUSTED. For `tarball-prefix`: the directory the stripped tree is written into, e.g. `~/.local`. Every written file is recorded for an exact uninstall."
+        },
+        "addonsDir": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "TRUSTED. For `blender-addon`: the Blender add-ons directory the zip is unpacked into."
+        },
+        "launchCmd": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400,
+          "description": "TRUSTED. What Launch runs for a `tarball-prefix` artifact, e.g. `~/.local/bin/halyard`. Without it that artifact has no Launch button."
+        },
+        "args": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "description": "TRUSTED. Default arguments appended when the app is launched. The user's own launch arguments still apply."
+        },
+        "postInstallNote": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600,
+          "description": "Prose shown after this artifact installs: the one thing a user must still do. Accepted from any owner, escaped on render, and marked with its origin when the owner is not trusted."
+        },
+        "postInstallCmd": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600,
+          "description": "TRUSTED. A single shell command offered behind a Run button beside the note, with `sudo` rewritten to `pkexec`. From an untrusted owner it is dropped \u2014 put the command in `postInstallNote` as prose instead and let the user run it."
+        }
+      }
+    },
+    "connector": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fields": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/definitions/connectorField"
+          },
+          "description": "Labels and units for the status keys this app sends. Unlisted keys still render, as `key: value`."
+        }
+      }
+    },
+    "connectorField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+$",
+          "maxLength": 32,
+          "description": "The key as sent in a `status` message's `fields` object."
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 48,
+          "description": "Human label for the value, e.g. \"Boat speed\"."
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16,
+          "description": "Unit appended to the value, e.g. \"kn\"."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "number",
+            "text",
+            "bool"
+          ],
+          "description": "How to format the value. `number` fields also get a sparkline of their last ten minutes \u2014 send them as JSON numbers, not strings."
+        }
+      }
+    }
+  }
+}

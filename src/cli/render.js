@@ -408,6 +408,12 @@ function renderDoctor(info, { style } = {}) {
         ["adb", adbText, adb.available && online.length ? ok : warn],
         ["cli shim", `${info.shimPath}${info.shimState ? ` (${info.shimState})` : ""}`, info.shimState === "current" ? ok : warn],
         ["apps", info.lastRefresh ? `${info.appCount} discovered, ${info.updateCount} with updates` : "not checked (--offline)", st.muted],
+        // v0.12 [manifest]: how many apps describe themselves (SPEC "The publishing contract").
+        [
+          "manifests",
+          info.lastRefresh ? `${Number(info.manifestCount || 0)} of ${info.appCount} discovered apps ship nx-app.json` : "not checked (--offline)",
+          st.muted,
+        ],
         ["installs", `${info.installedCount} recorded in state.json`, st.muted],
         ["last refresh", info.lastRefresh ? `${dateOnly(info.lastRefresh)} ${String(info.lastRefresh).slice(11, 19)} UTC` : "never", st.muted],
         ["log", info.logFile, st.dim],
@@ -744,6 +750,8 @@ const COMMANDS = [
   ["daemon", "run | install | uninstall | status", "the hub as a background service, no window"],
   // v0.10 [replay]
   ["checkpoint", "show <when> | restore <when> [--configs]", "what was installed then — and put it back"],
+  // v0.12 [manifest]
+  ["manifest", "check [--file <path>] | init <app>", "nx-app.json: validate one, or print ours"],
   ["help", "", "this text"],
 ];
 

@@ -354,6 +354,8 @@ function createRuntime() {
       errors: state.errors || [],
       lastRefresh: state.lastRefresh || null,
       appCount: appList.length,
+      // v0.12 [manifest]: how many discovered apps ship an nx-app.json.
+      manifestCount: appList.filter((a) => a && a.manifest && a.manifest.present).length,
       installedCount: installs.length,
       updateCount: appList.filter((a) => (a.artifacts || []).some((x) => x.updateAvailable)).length,
       shimPath: shimInfo.path,

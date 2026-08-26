@@ -219,6 +219,13 @@ async function start(opts = {}) {
           emit,
           log: (m) => log(`[connector] ${m}`),
           hubVersion: hubVersion(),
+          // v0.12: translate the name a client calls itself into the hub's own app
+          // id, so an app discovered under "<owner>--<name>" is still matched by a
+          // client that only knows its bare repo name.
+          resolveAppId: (id) => {
+            const app = discovery.findApp(id);
+            return (app && app.id) || id;
+          },
         },
         opts.connectorOpts || {}
       )

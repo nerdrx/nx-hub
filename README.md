@@ -269,6 +269,10 @@ everywhere.
 > The overlay is a public file. It may reference private repository names —
 > that is intentional and harmless. **Secrets never belong in the overlay.**
 
+An app can also describe itself, by shipping `nx-app.json` in its own releases —
+see [**docs/PUBLISHING.md**](docs/PUBLISHING.md), the contract for publishing
+any program through NX Hub.
+
 <br>
 
 ## Architecture

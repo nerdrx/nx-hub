@@ -31,7 +31,8 @@ const BOOL_FLAGS = new Set([
 // v0.7 [dev-tools]: `nx dev link <path> [--app <id>] [--cmd <c>] [--name <n>]`.
 // v0.8 [recorder]: `nx log [--since 24h] [--type a,b] [--app x] [--limit n]`.
 // v0.11 [stopper]: `nx stop <app> [artifact] --peer <name>`.
-const VALUE_FLAGS = new Set(["tag", "port", "app", "cmd", "name", "since", "type", "limit", "peer"]);
+// v0.12 [manifest]: `nx manifest check --file <path>`.
+const VALUE_FLAGS = new Set(["tag", "port", "app", "cmd", "name", "since", "type", "limit", "peer", "file"]);
 
 const SHORT = { h: "help", y: "yes", v: "verbose", f: "follow" };
 
