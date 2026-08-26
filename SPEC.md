@@ -512,6 +512,78 @@ deleteSnapshot. Rollback UI offers "also restore config from before the
 update" when a matching pre-update snapshot exists. CLI `nx snapshots <app>`,
 `nx restore <app> [file]`.
 
+## v0.12 "app manifest" (frozen 2026-08-22)
+
+Today every curated detail — display name, tagline, install strategy, the "one
+more step" note — lives in ONE file in this repo: `registry/overrides.json`.
+That works while every app is ours. It also means WiVRn's setcap requirement is
+written in a different repo from the code that requires it, so changing one and
+forgetting the other is a single edit away.
+
+An app should describe itself. This section lets a repo ship `nx-app.json` and
+makes that the documented contract for anyone who wants their program published
+through NX Hub.
+
+### Where a manifest comes from ([manifest])
+New `src/main/manifest.js`, pure node. Two sources, first hit wins:
+
+1. **A release asset named exactly `nx-app.json`** — preferred. It costs no extra
+   API call (the release's asset list is already in hand), it travels with the
+   version it describes, and it works for private repos through the token.
+   Classifier-ignored, exactly like `.sig` / `.sha256` / `.zpatch`, so it never
+   becomes an installable row.
+2. **`nx-app.json` at the default branch root** — one `fetchRaw`, used only when
+   the release ships no manifest asset. Cached by commit sha / ETag. **Skipped
+   entirely when the rate limit is tight or the hub is anonymous**: discovery
+   scans many repos and a per-repo fetch is the kind of thing that turns a
+   working hub into a rate-limited one.
+
+Precedence: **`registry/overrides.json` > the repo's manifest > derived
+defaults.** The central overlay stays the escape hatch — it is how a repo we do
+not control gets curated at all, and how a bad note is fixed on every hub at the
+next refresh without waiting for that app to cut a release.
+
+### Trust ([manifest])
+A manifest is data from a repo, not instructions. Two tiers:
+
+**Accepted from any repo** — presentation only, escaped like every other
+foreign string: `name`, `tagline`, per-artifact `label`, `postInstallNote`,
+`connector.fields` (key/label/unit/kind), `homepage`.
+
+**Accepted only from a trusted owner** — every field that executes something or
+decides where bytes land: `postInstallCmd`, `launchCmd`, `args`, `sandbox`,
+`configPaths`, `prefix`, `stripPrefix`, `addonsDir`, `binHint`, `packageId`,
+`keepAlive`. Trusted = `settings.owners` (nerdrx, Arikazei) plus
+`settings.trustedManifestOwners` (default `[]`). From anyone else these are
+dropped with a log line — never honoured, never half-honoured.
+
+The reason is concrete: `postInstallCmd` is what the Run button executes after
+`sudo`→`pkexec` rewriting, and `prefix`/`addonsDir`/`configPaths` write outside
+the install root. "Show this sentence" and "offer to run this command as root"
+must not be the same privilege.
+
+Caps, because this crosses a wire: manifest ≤32KB, `postInstallNote` ≤600 chars,
+≤16 artifacts, ≤16 connector fields, strings clipped, unknown keys dropped. A
+malformed manifest is ignored with one log line and NEVER breaks discovery.
+
+### Provenance ([manifest-ui])
+A note the hub got from the app's own repo, for an app whose owner is not
+trusted, renders with a quiet marker saying where the sentence came from. Our
+own apps (trusted owners) show nothing new — the marker is about foreign text,
+not about manifests.
+
+### The publishing contract ([publish])
+`docs/PUBLISHING.md`: what a program must do to be published through NX Hub —
+a GitHub release whose assets are classifiable per platform, `nx-app.json`
+alongside them, checksums, optional `.sig`. Documents the schema field by field,
+which fields need a trusted owner and why, and a complete worked example.
+
+`nx manifest check [--file <path>] [--json]` validates a manifest — exit 0 valid,
+1 invalid — so an app repo can run it in CI. `nx manifest init <app>` prints the
+manifest for an app the hub already curates, generated from the overlay entry,
+so our own repos can adopt this by pasting one file. `nx doctor` reports how many
+discovered apps ship a manifest.
+
 ## v0.11 "stop" (frozen 2026-08-22)
 
 Launching is one-way today: the hub starts an app, tracks its pid, watches it
