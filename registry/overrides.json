@@ -5,6 +5,20 @@
     "nerdrx/petri"
   ],
   "apps": {
+    "openwhip-nx": {
+      "name": "OpenWhip NX",
+      "tagline": "Whip Claude into shape — tray whip that interrupts Claude Code and demands FASTER",
+      "order": 60,
+      "artifacts": [
+        {
+          "assetPattern": "openwhip-nx-*-linux-x86_64.AppImage",
+          "label": "Tray app (Linux)",
+          "kind": "appimage",
+          "platform": "linux",
+          "postInstallNote": "Wayland needs the ydotoold daemon once: sudo pacman -S ydotool, then install ydotoold.service from the openwhip-nx repo (socket /run/ydotoold.sock)."
+        }
+      ]
+    },
     "vencord-nx-plugins": {
       "name": "Vencord NX Plugins",
       "tagline": "Voice-focused Vencord userplugins — auto-rejoin, soundboard, net HUD, fake deafen & more",
