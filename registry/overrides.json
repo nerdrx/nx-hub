@@ -15,7 +15,8 @@
           "label": "Tray app (Linux)",
           "kind": "appimage",
           "platform": "linux",
-          "postInstallNote": "Wayland needs the ydotoold daemon once: sudo pacman -S ydotool, then install ydotoold.service from the openwhip-nx repo (socket /run/ydotoold.sock)."
+          "postInstallNote": "Wayland needs the ydotoold daemon (one-time): installs the ydotool package and enables a ydotoold.service with its socket at /run/ydotoold.sock, owned by your user.",
+          "postInstallCmd": "sudo pacman -S --needed --noconfirm ydotool && printf '[Unit]\\nDescription=ydotool daemon\\n\\n[Service]\\nExecStart=/usr/bin/ydotoold --socket-path=/run/ydotoold.sock --socket-own=1000:1000\\nRestart=on-failure\\n\\n[Install]\\nWantedBy=multi-user.target\\n' > /etc/systemd/system/ydotoold.service && systemctl daemon-reload && systemctl enable --now ydotoold.service"
         }
       ]
     },
