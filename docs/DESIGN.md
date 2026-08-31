@@ -1,11 +1,14 @@
 # The NX Design Language
 
-**Version 1.5 · extracted from NX Hub v0.9.0 · amendments from PulseNX v1.2.1,
+**Version 1.6 · extracted from NX Hub v0.13.0 · amendments from PulseNX v1.2.1,
 the pointer-bound specular rule (2026-08-16), §12 reskin rules from the
-Vencord NX theme, and §12's opacity rule promoted app-wide (2026-08-20)**
+Vencord NX theme, §12's opacity rule promoted app-wide (2026-08-20), and the
+OLED ground — §13, true black, 2026-08-26**
 
 This document is the canonical specification of the NX visual language —
-"liquid glass on deep space." It is written to be dropped into any project's
+"liquid glass on deep space." Since v1.6 that space is **actually black**: the
+ground is `#000000`, and every colour in the system is light laid on top of it
+(§13). It is written to be dropped into any project's
 context (Electron, web, Android, or native) and applied without access to the
 original codebase. Where this document and an implementation disagree, NX Hub's
 `src/renderer/styles.css` is ground truth; update this file when it changes.
@@ -65,17 +68,20 @@ Copy these verbatim into `:root` (CSS) or mirror them as resources (Android
 ```css
 :root {
   /* brand (frozen — never restyle these) */
-  --bg-top: #0a0714;
-  --bg-bottom: #12091f;
-  --panel: #171028;
-  --panel-2: #1d1433;
+  /* v1.6: the ground is TRUE BLACK. On an OLED those pixels are off, which is
+     what makes the violet read as emitted light rather than as a tinted panel.
+     Both stops are #000 so a field that spans the viewport cannot band. */
+  --bg-top: #000000;
+  --bg-bottom: #000000;
+  --panel: #0c0818;
+  --panel-2: #120c22;
   --violet: #7700ff;
   --violet-soft: #9a3cff;
   --cyan: #00e5ff;
   --amber: #ffb300;
   --text: #efeaff;
   --muted: #9a8fc0;
-  --line: #2a1f45;
+  --line: #241a3c;
   --danger: #ff5470;
 
   /* geometry — ANGULAR. Corners are cut, not rounded; sharpness echoes the
@@ -88,16 +94,17 @@ Copy these verbatim into `:root` (CSS) or mirror them as resources (Android
   --mono: ui-monospace, "JetBrains Mono", "Fira Code", Consolas, monospace;
 
   /* glass fills — light collects top-left and drains to a cool shadow */
-  --glass-bar: linear-gradient(180deg, rgba(46, 30, 78, 0.62) 0%, rgba(18, 11, 34, 0.72) 100%);
+  --glass-bar: linear-gradient(180deg, rgba(22, 14, 40, 0.72) 0%, rgba(4, 2, 10, 0.86) 100%);
   --glass-1: linear-gradient(157deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0.026) 34%,
       rgba(23, 16, 40, 0.34) 100%);
   --glass-2: linear-gradient(158deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.03) 30%,
       rgba(19, 12, 34, 0.66) 100%);
   --glass-chip: linear-gradient(180deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0.028) 100%);
-  --well: linear-gradient(180deg, rgba(7, 4, 16, 0.5) 0%, rgba(7, 4, 16, 0.32) 100%);
-  /* v1.5: STRUCTURAL surfaces are opaque elevation steps (see §4) */
-  --surface-1: linear-gradient(157deg, #221739 0%, #1a1130 44%, #140c24 100%);
-  --surface-1-hover: linear-gradient(157deg, #271b41 0%, #1d1335 44%, #170e29 100%);
+  --well: linear-gradient(180deg, rgba(0, 0, 0, 0.62) 0%, rgba(0, 0, 0, 0.42) 100%);
+  /* v1.5: STRUCTURAL surfaces are opaque elevation steps (see §4)
+     v1.6: and those steps sit just BARELY off black — a lift, not a slab (§13) */
+  --surface-1: linear-gradient(157deg, #130d24 0%, #0d0819 46%, #070410 100%);
+  --surface-1-hover: linear-gradient(157deg, #181031 0%, #110c22 46%, #0a0616 100%);
   --well-deep: linear-gradient(180deg, rgba(4, 2, 10, 0.62) 0%, rgba(4, 2, 10, 0.46) 100%);
 
   /* blur strengths — ONLY these three exist */
@@ -369,7 +376,13 @@ are invisible in a diff. Before shipping any NX-branded surface, verify:
 - [ ] Every sheen is position-driven (pointer/tilt/progress), never a one-shot
       triggered sweep — except where nothing continuous exists to bind to.
 - [ ] `prefers-reduced-motion` fully honored.
-- [ ] Text contrast comfortable over every fill it sits on.
+- [ ] Text contrast comfortable over every fill it sits on — and never pure
+      `#fff` on the black ground (§13).
+- [ ] The ground is actually `#000000`, and the corners of the vignette reach it.
+- [ ] Cards separate from the page by their lit edge, not by a lighter fill.
+- [ ] No banding rings in the nebula: look at a full-screen grab on a real OLED,
+      not at a scaled-down screenshot, which hides them.
+- [ ] Nothing large, bright and permanently in the same place (§13, burn-in).
 - [ ] Mixed-height collections pack (masonry), never leave ragged holes.
 - [ ] No pill shapes; every radius is in the 3–6px band (circles = dots/spinners only).
 - [ ] The mark is pointy-top, correct variant for the size — and an app's own
@@ -433,3 +446,56 @@ every structural panel shares one fill and one separator.
 (component markup), `assets/` (the mark). Reskin reference:
 [nerdrx/vencord-nx-plugins](https://github.com/nerdrx/vencord-nx-plugins) —
 `themes/nx.theme.css`.*
+
+## 13. The OLED ground (v1.6)
+
+The field is `#000000`. Not "very dark violet" — black, so the panel switches
+those pixels **off**. Everything else in this document is light laid on that
+black, and the whole system gets sharper for it: `#7700FF` stops competing with
+a lit violet-grey background and starts behaving like what it is, an emitter.
+
+This is not a palette swap. Five things change about how you build a surface.
+
+**1. Shadow stops working, so edges carry elevation.** You cannot darken black.
+A drop shadow under a card on a `#000` page is invisible — the pixels it falls
+on are already off. Depth now comes from the two things that still read: the
+1px lit edge (§4) and a surface that sits *just* off black. Keep shadows for
+where surfaces overlap each other, and give them a violet ambient
+(`0 0 26px -14px rgba(119,0,255,.22)`) — coloured light IS visible on black
+where neutral shade is not.
+
+**2. Structural surfaces are a lift, not a slab.** `--surface-1` tops out
+around `#130d24`. That is roughly a third of the luminance v1.5 used, and it is
+deliberate: on black, a few percent of lift plus a lit top edge is already a
+legible card. A lighter fill does not read as "more elevated", it reads as
+"grey box on an OLED", which is the exact look this ground exists to avoid.
+Floating layers (§4, §12) still fill ≥0.85 — being clearly above the page
+matters more than being dark.
+
+**3. Big soft gradients band, so dither them.** A nebula blob is an enormous
+gradient at a few percent alpha. Over a lifted background its steps hide in the
+noise floor; over true black each step is visible as a ring, and worst on the
+panel that renders black perfectly. Lay a static noise texture over the
+background layers at **3–4% opacity** (an inline `feTurbulence` SVG is enough).
+At that strength nobody sees grain; they see the bands not being there. Prefer
+flat fills for large areas and keep gradients short in range.
+
+**4. Never pure white on pure black.** `--text: #efeaff` is already off-white
+and stays that way. Full `#ffffff` on `#000000` halates on OLED — the text
+blooms and thin strokes smear on subpixel layouts that are not RGB stripe. The
+same applies inverted: no huge sheet of near-white anywhere.
+
+**5. A launcher sits open, so mind burn-in.** The hub is a window people leave
+running for months, which makes any permanently-bright, permanently-positioned
+element a real risk — not a theoretical one. Keep static chrome (header, rails,
+tab strip) dark and translucent; let the bright violet appear on things that
+move, change, or are transient (the active tab, a primary button, a progress
+fill, a toast). Nothing large, bright and fixed.
+
+**What does not change:** `#7700FF` is still the accent and still dominates;
+cyan is still light *inside* materials (live values, meters, progress) and never
+a surface; amber is still attention and `#ff5470` still danger; geometry is
+still angular (§2); light still rides the pointer (§4). The nebula still
+drifts — it just drifts over black now, which is what "deep space" meant all
+along.
+

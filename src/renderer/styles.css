@@ -18,17 +18,17 @@
 
 :root {
   /* ---------------------------------------------------------- brand (frozen) */
-  --bg-top: #0a0714;
-  --bg-bottom: #12091f;
-  --panel: #171028;
-  --panel-2: #1d1433;
+  --bg-top: #000000;
+  --bg-bottom: #000000;
+  --panel: #0c0818;
+  --panel-2: #120c22;
   --violet: #7700ff;
   --violet-soft: #9a3cff;
   --cyan: #00e5ff;
   --amber: #ffb300;
   --text: #efeaff;
   --muted: #9a8fc0;
-  --line: #2a1f45;
+  --line: #241a3c;
   --danger: #ff5470;
 
   /* ------------------------------------------------------------- geometry */
@@ -41,20 +41,20 @@
 
   /* --------------------------------------------------------------- glass */
   /* Fills: light collects at the top-left and drains to a cool shadow. */
-  --glass-bar: linear-gradient(180deg, rgba(46, 30, 78, 0.62) 0%, rgba(18, 11, 34, 0.72) 100%);
+  --glass-bar: linear-gradient(180deg, rgba(22, 14, 40, 0.72) 0%, rgba(4, 2, 10, 0.86) 100%);
   --glass-1: linear-gradient(157deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0.026) 34%,
       rgba(23, 16, 40, 0.34) 100%);
   /* Floating layers only (sheets/menus/toasts). §12 floor: fill ≥0.85 so
      nothing behind a floating pane ever shows through its body. */
-  --glass-2: linear-gradient(158deg, rgba(46, 32, 74, 0.92) 0%, rgba(30, 20, 52, 0.9) 30%,
-      rgba(19, 12, 34, 0.9) 100%);
+  --glass-2: linear-gradient(158deg, rgba(27, 18, 48, 0.94) 0%, rgba(16, 10, 30, 0.93) 30%,
+      rgba(8, 5, 18, 0.93) 100%);
   --glass-chip: linear-gradient(180deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0.028) 100%);
-  --well: linear-gradient(180deg, rgba(7, 4, 16, 0.5) 0%, rgba(7, 4, 16, 0.32) 100%);
+  --well: linear-gradient(180deg, rgba(0, 0, 0, 0.62) 0%, rgba(0, 0, 0, 0.42) 100%);
   /* v0.9 (§12): STRUCTURAL surfaces are opaque — depth from elevation steps,
      never see-through. The nebula lives BETWEEN the cards, not behind them. */
-  --surface-1: linear-gradient(157deg, #221739 0%, #1a1130 44%, #140c24 100%);
-  --surface-1-hover: linear-gradient(157deg, #271b41 0%, #1d1335 44%, #170e29 100%);
-  --well-deep: linear-gradient(180deg, rgba(4, 2, 10, 0.62) 0%, rgba(4, 2, 10, 0.46) 100%);
+  --surface-1: linear-gradient(157deg, #130d24 0%, #0d0819 46%, #070410 100%);
+  --surface-1-hover: linear-gradient(157deg, #181031 0%, #110c22 46%, #0a0616 100%);
+  --well-deep: linear-gradient(180deg, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.6) 100%);
 
   /* Blur strengths — only these three, so the cost is easy to reason about. */
   --blur-bar: blur(22px) saturate(170%);
@@ -66,7 +66,7 @@
       rgba(255, 255, 255, 0.015) 52%, rgba(0, 0, 0, 0.34) 100%);
   --edge-lit: linear-gradient(147deg, rgba(226, 200, 255, 0.62) 0%, rgba(154, 60, 255, 0.28) 30%,
       rgba(0, 229, 255, 0.1) 58%, rgba(0, 0, 0, 0.3) 100%);
-  --edge-top: rgba(255, 255, 255, 0.18);
+  --edge-top: rgba(255, 255, 255, 0.24);
   --hairline: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.09) 18%,
       rgba(255, 255, 255, 0.13) 50%, rgba(255, 255, 255, 0.09) 82%, rgba(255, 255, 255, 0) 100%);
   /* The specular band that slides across glass on hover. */
@@ -74,7 +74,7 @@
       rgba(214, 190, 255, 0.05) 52%, rgba(255, 255, 255, 0) 68%);
 
   /* ------------------------------------------------------------ elevation */
-  --shadow: 0 14px 34px -12px rgba(0, 0, 0, 0.72), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow: 0 14px 34px -12px rgba(0, 0, 0, 0.9), 0 0 26px -14px rgba(119, 0, 255, 0.22);
   --shadow-lift: 0 26px 54px -16px rgba(0, 0, 0, 0.8), 0 0 40px -8px rgba(119, 0, 255, 0.34);
   --shadow-bar: 0 20px 44px -24px rgba(0, 0, 0, 0.9), 0 1px 0 rgba(255, 255, 255, 0.04);
   --shadow-sheet: 0 48px 96px -32px rgba(0, 0, 0, 0.86), 0 0 0 1px rgba(255, 255, 255, 0.06);
@@ -114,8 +114,8 @@ body {
 
 body {
   min-height: 100%;
-  background: radial-gradient(120% 90% at 50% 0%, #140b26 0%, transparent 55%),
-    linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%) fixed;
+  background: radial-gradient(120% 90% at 50% 0%, rgba(28, 12, 52, 0.85) 0%, transparent 58%),
+    var(--bg-top) fixed;
   color: var(--text);
   font-family: var(--font);
   font-size: 14px;
@@ -191,12 +191,28 @@ body {
   background: radial-gradient(closest-side, rgba(186, 0, 156, 0.32), rgba(119, 0, 255, 0.13) 44%, transparent 72%);
   animation: neb-drift-c 110s ease-in-out infinite alternate;
 }
+/* Grain. The nebula is three enormous gradients at a few percent alpha, and on
+   a true-black ground that is exactly the case an 8-bit panel renders as
+   concentric BANDS — most visibly on an OLED, where the darkest step is off
+   rather than dark grey. A little static noise dithers the steps into each
+   other. It is not texture for its own sake: at 3% it is invisible as grain and
+   only shows up by the bands it removes. Static, so it costs one paint. */
+.nebula::before {
+  content: "";
+  position: absolute;
+  inset: -50%;
+  opacity: 0.035;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+}
+
 /* A vignette keeps the corners deep-space dark so the blobs read as light. */
 .nebula::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: radial-gradient(120% 80% at 50% 42%, transparent 30%, rgba(6, 3, 14, 0.55) 100%);
+  background: radial-gradient(120% 80% at 50% 42%, transparent 26%, rgba(0, 0, 0, 0.72) 100%);
 }
 @keyframes neb-drift-a {
   from { transform: translate3d(0, 0, 0) scale(1); }
@@ -2170,7 +2186,12 @@ select.input option {
   text-align: left;
   gap: var(--sp-1);
   padding: var(--sp-2);
-  background: radial-gradient(70% 120% at 12% 0%, rgba(119, 0, 255, 0.2), transparent 68%), var(--glass-1);
+  /* v1.6: opaque like every other always-present surface (§12). It was still
+     translucent from v1.5, which nobody noticed while the page behind it was a
+     lifted violet-grey — on the black ground it was suddenly the brightest slab
+     on screen, with the nebula pouring straight through it. The violet corner
+     stays, as light ON the surface. */
+  background: radial-gradient(70% 120% at 12% 0%, rgba(119, 0, 255, 0.2), transparent 68%), var(--surface-1);
 }
 /* A stack is not an app: the lit edge says so before the label does. */
 .tile-stack .tile-hit::before { background: var(--edge-lit); }
