@@ -19,6 +19,7 @@ const {
   throwIfAborted, stagedInstall, launchExtras,
 } = require("./util");
 const { standardUninstall } = require("./common");
+const { updateDesktopDatabase } = require("./desktop");
 
 function normStrip(stripPrefix) {
   return String(stripPrefix || "")
@@ -154,6 +155,13 @@ async function install({ app, artifact, filePath, ctx }) {
       },
     });
   });
+
+  // The tarball ships its own .desktop files (desktopEntries stays []), so the
+  // menu database refresh that entry-writing engines get for free has to
+  // happen here or the new entry may not appear until the DE rescans.
+  if (written.some((f) => /\/share\/applications\/[^/]+\.desktop$/.test(f))) {
+    await updateDesktopDatabase(ctx).catch(() => {});
+  }
 
   const launchTarget = resolveLaunch(artifact.launchCmd);
   const launchable = Boolean(launchTarget && (await exists(launchTarget.cmd)));

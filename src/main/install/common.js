@@ -49,7 +49,14 @@ async function standardUninstall({ installDir, ctx, keepInstallDir = false }) {
   for (const entry of manifest.desktopEntries || []) {
     if (await removeDesktopEntry(entry, ctxSafe)) removed.desktop++;
   }
-  if (removed.desktop) await updateDesktopDatabase(ctxSafe).catch(() => {});
+  // Prefix installs carry their .desktop files in `files` rather than
+  // desktopEntries; their removal above needs the same database refresh.
+  const removedShippedDesktop = (manifest.files || []).some((f) =>
+    /\/share\/applications\/[^/]+\.desktop$/.test(f),
+  );
+  if (removed.desktop || removedShippedDesktop) {
+    await updateDesktopDatabase(ctxSafe).catch(() => {});
+  }
 
   ctxSafe.emitProgress?.("cleanup", 80, "Removing install directory");
   if (!keepInstallDir && (await exists(installDir))) await rmrf(installDir);
