@@ -2907,6 +2907,12 @@ function toolbar(dev) {
   bar.className = 'mock-bar';
   bar.innerHTML = `
     <span class="tag">mock</span>
+    <!-- v0.14 — both grounds reachable without touching the OS. These carry
+         data-act (not data-mock) on purpose: they ride app.js's own delegated
+         handler, so the toolbar exercises the real control path. -->
+    <button class="btn btn-ghost btn-sm" data-act="set-theme" data-theme="light">theme: light</button>
+    <button class="btn btn-ghost btn-sm" data-act="set-theme" data-theme="dark">theme: dark</button>
+    <button class="btn btn-ghost btn-sm" data-act="set-theme" data-theme="system">theme: system</button>
     <button class="btn btn-ghost btn-sm" data-mock="update">simulate update available</button>
     <button class="btn btn-ghost btn-sm" data-mock="update-event">simulate update-available event</button>
     <button class="btn btn-ghost btn-sm" data-mock="staged">stage downloaded updates</button>

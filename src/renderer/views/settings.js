@@ -7,6 +7,7 @@
 
 import { esc } from '../lib/html.js';
 import { isValidRepoRef } from '../lib/model.js';
+import { THEMES, normalizeTheme, resolveTheme, themeLabel } from '../lib/theme.js';
 import { GLOBAL_POLICIES, policyLabel } from '../lib/prefs.js';
 import { usageRows, usageTotalLabel } from '../lib/storage.js';
 import { problemLabel, problemChip, auditSummaryText, rowSummaryText } from '../lib/audit.js';
@@ -23,6 +24,40 @@ function check(field, label, checked, note) {
       <span class="check-box" aria-hidden="true"></span>
       <span class="check-text">${esc(label)}${note ? `<span class="check-note">${esc(note)}</span>` : ''}</span>
     </label>`;
+}
+
+/**
+ * v0.14 — the theme segmented control (SPEC v0.14, DESIGN §14).
+ *
+ * Unlike everything else in this panel it is NOT part of the settings draft: it
+ * is a renderer preference stored beside `view`, so it lands on click and there
+ * is nothing to Save. `system` is the default and the honest answer to "what
+ * does this machine want" — the note under the control says which way it
+ * currently resolves, and that answer follows the desktop live.
+ *
+ * @param {string} theme   'light' | 'dark' | 'system'
+ * @param {boolean} systemDark what prefers-color-scheme says right now
+ */
+export function renderThemeControl(theme, systemDark) {
+  const current = normalizeTheme(theme);
+  const resolved = resolveTheme(current, systemDark);
+  const note =
+    current === 'system'
+      ? `Following the desktop — ${resolved} right now.`
+      : `Always ${current}, whatever the desktop does.`;
+
+  return `
+    <div class="seg" role="radiogroup" aria-label="Theme" data-theme-choice="${esc(current)}" data-theme-resolved="${esc(resolved)}">
+      ${THEMES.map((t) => {
+        const on = t === current;
+        // .seg / .seg-btn / .is-on is the sheet's segmented-toggle contract —
+        // the trough is the pill, the chosen segment carries the accent.
+        return `<button type="button" class="btn btn-sm seg-btn${on ? ' is-on' : ''}"
+          role="radio" aria-checked="${on ? 'true' : 'false'}"
+          data-act="set-theme" data-theme="${esc(t)}">${esc(themeLabel(t))}</button>`;
+      }).join('')}
+    </div>
+    <p class="field-note">${esc(note)}</p>`;
 }
 
 /**
@@ -272,6 +307,12 @@ export function renderSettingsPanel(draft, ctx = {}) {
         ${check('createDesktopEntries', 'Create desktop entries for installed apps', d.createDesktopEntries !== false, 'menu entries + icons under ~/.local/share/applications')}
         ${check('cliShim', 'Install the nx terminal command', d.cliShim !== false, 'keeps ~/.local/bin/nx pointing at this hub — list, install, update and launch from any shell')}
         ${check('autoRunPostInstallCmd', 'Auto-run post-install commands', !!d.autoRunPostInstallCmd, 'runs an app’s declared command right after install; privileged commands are never auto-run by background updates')}
+      </section>
+
+      <section class="fieldset">
+        <h3>Appearance</h3>
+        <span class="lbl">Theme</span>
+        ${renderThemeControl(ctx.theme, ctx.systemDark)}
       </section>
 
       <section class="fieldset">

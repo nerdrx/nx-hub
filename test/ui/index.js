@@ -39,5 +39,7 @@ import './audit.test.js';
 import './stop.test.js';
 // v0.12 — where a post-install note was written, and who wrote it
 import './manifest.test.js';
+// v0.14 — NX Clear: the theme choice, the root stamp and the live follow
+import './theme.test.js';
 // Last on purpose: this one installs a stub DOM on globalThis and boots app.js.
 import './smoke.test.js';

@@ -30,6 +30,13 @@ import {
   crashKey,
 } from './views/card.js';
 import { detectPlatform } from './lib/actions.js';
+import {
+  DEFAULT_THEME,
+  normalizeTheme,
+  stampTheme,
+  systemPrefersDark,
+  watchSystemTheme,
+} from './lib/theme.js';
 import { launchTiles, orderTiles, defaultView } from './lib/launcher.js';
 import { renderLaunchGrid, renderSkeletonTiles } from './views/tile.js';
 import { renderAppOptions, renderArgsPreview } from './views/appoptions.js';
@@ -202,6 +209,11 @@ const ui = {
   loaded: false,
   view: 'manage', // 'launch' | 'manage'
   viewRemembered: false,
+  // v0.14 — NX Clear. 'light' | 'dark' | 'system'; `system` stamps nothing and
+  // lets prefers-color-scheme decide. `systemDark` is what that query says RIGHT
+  // NOW — kept live by initTheme(), never sampled once.
+  theme: DEFAULT_THEME,
+  systemDark: false,
   filter: '',
   expandedNotes: new Set(),
   dismissedNotes: new Set(),
@@ -296,6 +308,8 @@ function loadUiPrefs() {
       ui.view = saved.view;
       ui.viewRemembered = true;
     }
+    // Anything unrecognised (or absent) falls back to 'system'.
+    ui.theme = normalizeTheme(saved.theme);
   } catch {
     /* first run / storage disabled — defaults are fine */
   }
@@ -314,6 +328,7 @@ function saveUiPrefs() {
         showHidden: ui.showHidden,
         recents: ui.recents,
         view: ui.view,
+        theme: ui.theme,
       })
     );
   } catch {
@@ -327,6 +342,46 @@ function noteLaunch(appId, artifactId) {
   const key = `${appId}::${artifactId || ''}`;
   ui.recents = [key, ...ui.recents.filter((k) => k !== key)].slice(0, RECENTS_MAX);
   saveUiPrefs();
+}
+
+/* ----------------------------------------------------------------- theming */
+
+/**
+ * v0.14 — put the stored choice on the document root.
+ *
+ * light/dark stamp `data-theme`; `system` removes the stamp entirely so
+ * `prefers-color-scheme` inside the sheet is what answers. Nothing here paints:
+ * every colour is a token, this only says which token block wins.
+ */
+function applyTheme() {
+  ui.systemDark = systemPrefersDark(window);
+  if (typeof document !== 'undefined') stampTheme(document.documentElement, ui.theme);
+}
+
+let stopThemeWatch = null;
+
+/** Apply the stored theme and follow the desktop for as long as we run. */
+function initTheme() {
+  applyTheme();
+  if (stopThemeWatch) return; // one listener per window, even if boot() re-runs
+  stopThemeWatch = watchSystemTheme(window, (dark) => {
+    if (dark === ui.systemDark) return;
+    ui.systemDark = dark;
+    // Under `system` the ground is already following in CSS; what needs the
+    // news is the renderer's own copy of the answer (Settings says which way
+    // system resolved), so re-render rather than re-stamp.
+    schedule();
+  });
+}
+
+/** The segmented control in Settings. Takes effect at once — no Save. */
+function setTheme(next) {
+  const theme = normalizeTheme(next);
+  if (theme === ui.theme) return;
+  ui.theme = theme;
+  saveUiPrefs();
+  applyTheme();
+  schedule();
 }
 
 /* --------------------------------------------------------------- api access */
@@ -773,6 +828,10 @@ function render() {
       panelHost,
       ui.settingsOpen
         ? renderSettingsPanel(ui.draft, {
+            // v0.14 — the theme lives in the renderer store, not in settings,
+            // so it rides ctx rather than the draft.
+            theme: ui.theme,
+            systemDark: ui.systemDark,
             hubVersion: state.hubVersion,
             tokenSource: state.tokenSource,
             repoError: ui.repoError,
@@ -1832,6 +1891,13 @@ async function onAction(act, el, ev) {
     case 'save-settings':
       await saveSettings();
       break;
+    // v0.14 — the theme is a renderer preference, not a hub setting: it lands
+    // the moment it is clicked and never waits for Save. Reading the panel
+    // first means the re-render cannot swallow a half-typed token.
+    case 'set-theme':
+      readPanelInputs();
+      setTheme(el.getAttribute('data-theme'));
+      break;
     case 'check-hub':
       toast('info', 'Checking for a hub update…');
       await call('refresh', true);
@@ -2661,37 +2727,10 @@ function onHubEvent(ev) {
 }
 
 function wireDom() {
-  // DESIGN v1.3 "light rides motion": one rAF-throttled pointermove for the
-  // whole document writes a normalized --mx onto the hovered card/tile, and
-  // the sheen's background-position derives from it — the highlight tracks
-  // the cursor instead of sweeping once on hover. Off under reduced motion.
-  if (!window.matchMedia || !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    let sheenRaf = 0;
-    let sheenEl = null;
-    document.addEventListener(
-      'pointermove',
-      (ev) => {
-        if (sheenRaf) return;
-        const x = ev.clientX;
-        const t = ev.target instanceof Element ? ev.target : null;
-        sheenRaf = window.requestAnimationFrame(() => {
-          sheenRaf = 0;
-          const surface = t && t.closest ? t.closest('.card, .tile-hit') : null;
-          if (sheenEl && sheenEl !== surface) {
-            sheenEl.style.removeProperty('--mx');
-            sheenEl = null;
-          }
-          if (!surface) return;
-          const r = surface.getBoundingClientRect();
-          if (!r.width) return;
-          surface.style.setProperty('--mx', String(Math.min(1, Math.max(0, (x - r.left) / r.width))));
-          sheenEl = surface;
-        });
-      },
-      { passive: true }
-    );
-  }
-
+  // v0.14 — the pointer-bound sheen writer that used to live here is gone with
+  // the glass it lit (DESIGN §14: Clear surfaces are matte, and a moving
+  // highlight looks out of place on them). Nothing tracks the cursor now; the
+  // only listeners below are click, input and keydown.
   document.addEventListener('click', (ev) => {
     const target = ev.target instanceof Element ? ev.target : null;
     if (!target) return;
@@ -2870,111 +2909,13 @@ function wireDom() {
   });
 }
 
-/* --------------------------------------------------------------- starfield */
-
-// Two canvases drifting at different speeds. Both are drawn once and animated
-// with transform only — no per-frame canvas work, nothing that can reflow.
-const sky = { raf: 0, last: 0, far: null, near: null, width: 0, offFar: 0, offNear: 0, running: false };
-
-function paintLayer(canvas, opts) {
-  if (!canvas || typeof canvas.getContext !== 'function') return 0;
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = canvas.clientWidth || (canvas.parentElement && canvas.parentElement.clientWidth) || 900;
-  const h = canvas.clientHeight || 90;
-  const tile = Math.max(200, Math.round(w / 2)); // the canvas is 200% wide: two identical tiles
-  canvas.width = Math.round(tile * 2 * dpr);
-  canvas.height = Math.round(h * dpr);
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return tile;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, tile * 2, h);
-
-  // Deterministic PRNG so the sky is stable across re-renders/screenshots.
-  let seed = opts.seed;
-  const rnd = () => {
-    seed = (seed * 1664525 + 1013904223) % 4294967296;
-    return seed / 4294967296;
-  };
-  const count = Math.max(6, Math.round((tile / 7) * opts.density));
-  for (let i = 0; i < count; i++) {
-    const x = rnd() * tile;
-    const y = rnd() * h;
-    const r = (rnd() * 0.9 + 0.25) * opts.scale;
-    const a = (0.12 + rnd() * 0.5) * opts.alpha;
-    const cyan = rnd() > 0.88;
-    for (const dx of [0, tile]) {
-      ctx.beginPath();
-      ctx.arc(x + dx, y, r, 0, Math.PI * 2);
-      ctx.fillStyle = cyan ? `rgba(0,229,255,${a})` : `rgba(239,234,255,${a})`;
-      ctx.fill();
-    }
-  }
-  return tile;
-}
-
-function paintSky() {
-  sky.far = document.getElementById('stars');
-  sky.near = document.getElementById('stars-near');
-  const tile = paintLayer(sky.far, { seed: 1337, density: 1, scale: 1, alpha: 1 });
-  paintLayer(sky.near, { seed: 90210, density: 0.45, scale: 1.5, alpha: 1.15 });
-  sky.width = tile || sky.width;
-}
-
-function skyFrame(ts) {
-  sky.raf = 0;
-  if (!sky.running) return;
-  const dt = sky.last ? Math.min(64, ts - sky.last) : 16;
-  sky.last = ts;
-  const w = sky.width || 450;
-  sky.offFar = (sky.offFar + dt * 0.0045) % w;
-  sky.offNear = (sky.offNear + dt * 0.014) % w;
-  if (sky.far && sky.far.style) sky.far.style.transform = `translate3d(${-sky.offFar.toFixed(2)}px,0,0)`;
-  if (sky.near && sky.near.style) sky.near.style.transform = `translate3d(${-sky.offNear.toFixed(2)}px,0,0)`;
-  requestSkyFrame();
-}
-
-function requestSkyFrame() {
-  if (sky.raf || !sky.running) return;
-  if (typeof window.requestAnimationFrame !== 'function') return;
-  sky.raf = window.requestAnimationFrame(skyFrame);
-}
-
-function setSkyRunning(on) {
-  const want = on && !prefersReducedMotion() && !document.hidden;
-  // The nebula is pure CSS; park it on the same signal as the starfield so a
-  // hidden window costs nothing.
-  if (document.body && document.body.classList) document.body.classList.toggle('sky-parked', !want);
-  if (want === sky.running) return;
-  sky.running = want;
-  sky.last = 0;
-  if (want) requestSkyFrame();
-  else if (sky.raf && typeof window.cancelAnimationFrame === 'function') {
-    window.cancelAnimationFrame(sky.raf);
-    sky.raf = 0;
-  }
-}
-
-function startStarfield() {
-  paintSky();
-  setSkyRunning(true);
-  window.addEventListener('resize', () => {
-    paintSky();
-  });
-  document.addEventListener('visibilitychange', () => setSkyRunning(true));
-  try {
-    const mq = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)');
-    if (mq && typeof mq.addEventListener === 'function') {
-      mq.addEventListener('change', () => setSkyRunning(true));
-    }
-  } catch {
-    /* matchMedia unavailable — the static sky is fine */
-  }
-}
-
 /* -------------------------------------------------------------------- boot */
 
 async function boot() {
   loadUiPrefs();
+  // Before the first paint: the ground has to be right in the frame the window
+  // first shows, not one render later.
+  initTheme();
   const logoHost = document.getElementById('logo');
   if (logoHost) logoHost.innerHTML = icons.logo(34);
   const refreshBtn = document.getElementById('refresh');
@@ -2994,7 +2935,6 @@ async function boot() {
   const searchIcon = document.getElementById('filter-icon');
   if (searchIcon) searchIcon.innerHTML = icons.search;
 
-  startStarfield();
   wireDom();
   render();
 
@@ -3049,4 +2989,6 @@ if (typeof document !== 'undefined') {
 
 // Exposed for the e2e hooks / dev toolbar.
 export const __ui = ui;
-export { toast, pullState, onHubEvent, boot, paint };
+// loadUiPrefs + applyTheme are exactly what boot() runs on a fresh load, so a
+// test can replay a reload with them without re-wiring the DOM twice.
+export { toast, pullState, onHubEvent, boot, paint, loadUiPrefs, applyTheme };

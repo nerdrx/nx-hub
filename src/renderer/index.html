@@ -11,18 +11,10 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <!-- The light the glass refracts: three slow blobs under everything. -->
-    <div id="nebula" class="nebula" aria-hidden="true">
-      <span class="neb neb-1"></span>
-      <span class="neb neb-2"></span>
-      <span class="neb neb-3"></span>
-    </div>
+    <!-- v0.14 NX Clear: no nebula, no starfield, no decorative layers at all.
+         The ground is a token on <body> and the theme is a data-theme stamp on
+         <html> — nothing here is painted by JS. -->
     <header id="header">
-      <canvas id="stars" class="star-layer star-far" aria-hidden="true"></canvas>
-      <canvas id="stars-near" class="star-layer star-near" aria-hidden="true"></canvas>
-      <div class="star-glow s1" aria-hidden="true"></div>
-      <div class="star-glow s2" aria-hidden="true"></div>
-      <div class="star-glow s3" aria-hidden="true"></div>
       <div class="head-inner">
         <span id="logo" class="logo-slot"></span>
         <h1>NX Hub</h1>

@@ -5,9 +5,11 @@
 // the reconstruction as a table (app · now → then · what happens), an optional
 // config toggle, and — once confirmed — the same rows again as progress.
 //
-// Tier-2 sheet, DESIGN §4: the table inside it is a WELL, never a second frosted
-// layer. Every app id and version in here came out of the flight recorder, which
-// recorded what other programs said, so it all goes through esc().
+// A sheet, DESIGN §14: the table inside it is a recessed tile, never a second
+// raised surface — depth in Clear is one shadow plus one hairline, and stacking
+// them reads as clutter. Every app id and version in here came out of the
+// flight recorder, which recorded what other programs said, so it all goes
+// through esc().
 
 import { esc } from '../lib/html.js';
 import { renderSheet, renderSheetLoading, renderSheetError } from './sheet.js';

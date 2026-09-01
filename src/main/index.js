@@ -3,7 +3,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { app, BrowserWindow, Tray, Menu, shell, nativeImage, Notification } = require("electron");
+const { app, BrowserWindow, Tray, Menu, shell, nativeImage, Notification, nativeTheme } = require("electron");
 
 const config = require("./config");
 const github = require("./github");
@@ -115,7 +115,14 @@ function createWindow({ minimized = false } = {}) {
     y: prev && Number.isFinite(prev.y) ? prev.y : undefined,
     minWidth: 900,
     minHeight: 600,
-    backgroundColor: "#0a0714",
+    // v0.14: the fill Chromium paints BEFORE the renderer's first frame. It was
+    // deep-space near-black; on a light-default Clear hub that is a black flash
+    // on every launch. The renderer owns the real theme choice (it lives in the
+    // UI store, not settings), so main cannot know an explicit pick — the OS
+    // preference is the closest guess, and it is exactly right for the default
+    // "system". A user who forced the opposite theme sees one frame of the
+    // wrong ground instead of one frame of the wrong PRODUCT.
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#000000" : "#fafafc",
     title: "NX Hub",
     icon: fs.existsSync(ICON_PNG) ? ICON_PNG : undefined,
     autoHideMenuBar: true,

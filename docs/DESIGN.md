@@ -601,30 +601,51 @@ change between themes; components read tokens.
   --clear-bg: #fafafc;          /* page ground */
   --clear-surface: #ffffff;     /* cards, panels, tiles */
   --clear-tile: #faf9fd;        /* recessed tile fill */
-  --clear-ink: #1a1823;         /* body text (never pure #000) */
-  --clear-muted: #78748a;       /* secondary text */
-  --clear-faint: #a7a3b8;       /* tertiary, placeholders */
+  --clear-ink: #1a1823;         /* body text (never pure #000) — 17.5:1 on surface */
+  /* Measured, not chosen by eye. The first draft printed #78748a, which is
+     4.30:1 on --clear-tile and 3.95:1 on --violet-soft — under AA for the
+     11–13px secondary text these UIs are full of. Darkened until it clears
+     4.5:1 on every surface it is allowed to sit on. */
+  --clear-muted: #6c687e;       /* secondary text — 5.1–5.4:1 */
+  /* Ornament ONLY: separators, disabled glyphs, inert marks. It never carries a
+     word anyone has to read — placeholders use --clear-muted — but it still
+     clears 3:1. The first draft's #a7a3b8 was 2.45:1 on white. */
+  --clear-faint: #8b8799;       /* tertiary — 3.3–3.5:1, never body text */
   --clear-line: #ece9f4;        /* 1px hairline — solid, low contrast */
+  --clear-line-strong: #ddd8ea; /* where a hairline must survive on white: table rules, inputs */
+  --clear-line-accent: #ded0ff; /* hairline warmed toward the accent on hover/active */
 
   /* identity — the ONE accent, used sparingly */
   --violet: #7700ff;            /* actions, focus, identity (shared with §2) */
-  --violet-2: #9a4dff;          /* gradient partner on primary controls */
+  --violet-2: #9a4dff;          /* hover brighten, marks */
   --violet-soft: #f4edff;       /* accent wash: active tile, icon well */
+  /* White on --violet-2 is 4.30:1, so a literal violet→violet-2 fill puts a
+     sub-AA band across the top of every primary button. The gradient stays; its
+     light stop is the darkest violet that still clears AA under white (5.12:1).
+     Dark's --violet (#a566ff) gives white only 3.53:1, hence --on-accent. */
+  --accent-fill: linear-gradient(180deg, #8c37ff 0%, var(--violet) 100%);
+  --on-accent: #ffffff;         /* dark theme: #140b22 */
 
   /* status (optional; borrow §1 semantics) */
-  --clear-good: #12894a;  --clear-good-soft: #e6f6ec;
+  /* Brand cyan #00e5ff is unreadable as text on white (1.6:1) — on the light
+     ground the LIVE-value colour is this darkened cyan. Dark keeps #00e5ff. */
+  --cyan: #00707f;        --cyan-soft: #e4f5f8;
+  --clear-good: #0c6f3c;  --clear-good-soft: #e6f6ec;   /* #12894a was 3.99:1 on its own tint */
   --clear-warn: #8a6100;  --clear-danger: #c22030;
 
   /* geometry — ROUNDED (inverts §2) */
   --clear-r-panel: 20px;   /* flyouts, sheets */
   --clear-r-card: 14px;    /* cards, tiles */
   --clear-r-control: 11px; /* buttons, inputs */
+  --clear-r-mini: 9px;     /* micro-tags, inline code — the floor of the band */
   --clear-r-chip: 999px;   /* pills ARE allowed here */
 
   /* elevation — soft diffuse shadow is the primary depth cue */
   --clear-shadow-card: 0 1px 2px rgba(40,20,90,.05), 0 4px 12px -4px rgba(40,20,90,.10);
   --clear-shadow-pop:  0 24px 60px -20px rgba(40,20,90,.35), 0 6px 20px -8px rgba(40,20,90,.18);
-  --clear-focus: 0 0 0 3px var(--violet-soft), 0 0 0 1px var(--violet);
+  /* Order matters: a 3px spread listed FIRST paints over a 1px one and the
+     violet never renders — the ring becomes an invisible lilac wash. */
+  --clear-focus: 0 0 0 2px var(--violet), 0 0 0 5px var(--violet-soft);
 }
 
 @media (prefers-color-scheme: dark) {

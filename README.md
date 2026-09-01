@@ -304,16 +304,22 @@ screenshot-reviewed visual passes.
 
 ## Design system
 
-The interface is built on a tiered liquid-glass system: true backdrop blur is
-budgeted to the few floating surfaces that earn it (bars, sheets, menus,
-toasts), while cards synthesize their glass from layered translucent gradients
-over a slow-drifting nebula field — which is why a full grid stays fluid on
-modest GPUs. Cards flow in a masonry layout that packs by height, the content
-column scales to ultrawide displays, and every decorative motion collapses
-under `prefers-reduced-motion` to opacity-only transitions. The mark itself is
-a beveled glass crystal with a sculpted monogram, shipped as three
+The interface is built on **NX Clear** — light-first, rounded and flat, chosen
+because the hub is the thing people meet first and it should read clean and
+professional rather than atmospheric. Depth is one soft shadow plus a single
+1px hairline; nothing is translucent except the modal scrim. The dark variant
+is grounded at true black for OLED panels, where a shadow cannot fall on the
+page and the hairline carries the separation instead. Violet `#7700FF` is the
+one accent, spent on the primary action, the active state, focus and the mark —
+never as a field. Cards flow in a masonry layout that packs by height, the
+content column scales to ultrawide displays, and every decorative motion
+collapses under `prefers-reduced-motion` to opacity-only transitions. The mark
+is a faceted crystal hexagon with a sculpted monogram, shipped as three
 size-specific variants so it stays crisp from a 16-pixel tray to a 512-pixel
 tile.
+
+The full language — including the deep-space dark sheet the immersive NX apps
+still wear — is documented in [docs/DESIGN.md](docs/DESIGN.md).
 
 <br>
 

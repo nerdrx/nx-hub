@@ -154,20 +154,6 @@ export class StubElement {
   select() {}
   blur() {}
   scrollIntoView() {}
-  getContext() {
-    // Canvas calls used by the starfield — all no-ops.
-    return {
-      setTransform() {},
-      clearRect() {},
-      beginPath() {},
-      arc() {},
-      fill() {},
-      set fillStyle(_v) {},
-      get fillStyle() {
-        return '';
-      },
-    };
-  }
 }
 
 class StubDocument {
@@ -244,8 +230,6 @@ const IDS = [
   'toasts',
   'import-file',
   'boot-warning',
-  'stars',
-  'stars-near',
 ];
 
 /**
@@ -255,7 +239,7 @@ const IDS = [
 export function installDom() {
   const doc = new StubDocument();
   for (const id of IDS) {
-    const el = doc.createElement(id === 'stars' || id === 'stars-near' ? 'canvas' : 'div');
+    const el = doc.createElement('div');
     el.id = id;
     doc.body.appendChild(el);
   }
@@ -269,6 +253,12 @@ export function installDom() {
   }
 
   const store = new Map();
+  /** query → { matches, listeners } for the fake matchMedia below. */
+  const media = new Map();
+  const mediaEntry = (query) => {
+    if (!media.has(query)) media.set(query, { matches: false, listeners: new Set() });
+    return media.get(query);
+  };
   const win = {
     document: doc,
     localStorage: {
@@ -288,7 +278,30 @@ export function installDom() {
     clearInterval: (t) => globalThis.clearInterval(t),
     requestAnimationFrame: (fn) => globalThis.setTimeout(() => fn(Date.now()), 0),
     cancelAnimationFrame: (t) => globalThis.clearTimeout(t),
-    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    // Query-aware so a test can flip `(prefers-color-scheme: dark)` and fire a
+    // change at whoever is listening — everything starts false (light desktop,
+    // full motion), which is what the app assumes when matchMedia is missing.
+    matchMedia: (query) => {
+      const entry = mediaEntry(String(query));
+      return {
+        media: String(query),
+        get matches() {
+          return entry.matches;
+        },
+        addEventListener(type, fn) {
+          if (type === 'change') entry.listeners.add(fn);
+        },
+        removeEventListener(type, fn) {
+          if (type === 'change') entry.listeners.delete(fn);
+        },
+        addListener(fn) {
+          entry.listeners.add(fn);
+        },
+        removeListener(fn) {
+          entry.listeners.delete(fn);
+        },
+      };
+    },
     addEventListener() {},
     removeEventListener() {},
     devicePixelRatio: 1,
@@ -326,6 +339,13 @@ export function installDom() {
     win,
     store,
     html: (id) => (doc.getElementById(id) || { innerHTML: '' }).innerHTML,
+    /** Flip a media query and tell every listener — e.g. the OS going dark. */
+    setMedia(query, matches) {
+      const entry = mediaEntry(String(query));
+      entry.matches = !!matches;
+      for (const fn of [...entry.listeners]) fn({ matches: entry.matches, media: String(query) });
+      return entry.matches;
+    },
     restore() {
       globalThis.window = prev.window;
       globalThis.document = prev.document;

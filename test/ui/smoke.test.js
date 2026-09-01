@@ -1280,14 +1280,85 @@ test('the controller never throws on a junk event', () => {
   assert.ok(true);
 });
 
-test('hiding the document parks the starfield loop', async () => {
-  // The parallax sky runs on requestAnimationFrame; it must stop dead when the
-  // window is not visible (and it is what lets this process exit).
+/* --------------------------------------------------- v0.14 "NX Clear" theme */
+
+const root = () => doc.documentElement;
+const storedTheme = () => JSON.parse(dom.store.get('nxhub.ui.v1') || '{}').theme;
+const DARK = '(prefers-color-scheme: dark)';
+
+test('Settings offers the three themes and each one lands on click', async () => {
+  await clickAndSettle({ 'data-act': 'settings' });
+  const panel = dom.html('panel-root');
+  assert.ok(panel.includes('<h3>Appearance</h3>'), 'the Appearance section is in the panel');
+  for (const t of ['light', 'dark', 'system']) {
+    assert.ok(panel.includes(`data-theme="${t}"`), `${t} is offered`);
+  }
+
+  // The theme is a renderer preference: no Save, it takes effect at once.
+  await clickAndSettle({ 'data-act': 'set-theme', 'data-theme': 'dark' });
+  assert.equal(root().getAttribute('data-theme'), 'dark', 'the root is stamped dark');
+  assert.equal(storedTheme(), 'dark', 'and remembered beside the view');
+  assert.match(dom.html('panel-root'), /data-theme-choice="dark"/, 'the control shows the choice');
+
+  await clickAndSettle({ 'data-act': 'set-theme', 'data-theme': 'light' });
+  assert.equal(root().getAttribute('data-theme'), 'light');
+  assert.equal(storedTheme(), 'light');
+});
+
+test('system stamps nothing at all, leaving prefers-color-scheme in charge', async () => {
+  await clickAndSettle({ 'data-act': 'set-theme', 'data-theme': 'system' });
+  assert.equal(root().hasAttribute('data-theme'), false, 'the stamp is removed, not set to "system"');
+  assert.equal(storedTheme(), 'system');
+});
+
+test('under system the hub follows the desktop live', async () => {
+  assert.match(dom.html('panel-root'), /Following the desktop — light right now/);
+
+  // The desktop goes dark while the window is open: no reboot, no re-sample.
+  dom.setMedia(DARK, true);
+  await tick(40);
+  assert.match(dom.html('panel-root'), /Following the desktop — dark right now/, 'the change arrived live');
+  assert.equal(root().hasAttribute('data-theme'), false, 'and still no stamp — CSS owns the switch');
+
+  dom.setMedia(DARK, false);
+  await tick(40);
+  assert.match(dom.html('panel-root'), /Following the desktop — light right now/, 'and back again');
+});
+
+test('the choice survives a reload', async () => {
+  await clickAndSettle({ 'data-act': 'set-theme', 'data-theme': 'dark' });
+  assert.equal(storedTheme(), 'dark');
+
+  // Replay what boot() does on a fresh load — with the live copy wiped first,
+  // so localStorage is the only thing that can supply the answer.
+  root().removeAttribute('data-theme');
+  app.__ui.theme = 'system';
+  app.loadUiPrefs();
+  app.applyTheme();
+  assert.equal(app.__ui.theme, 'dark', 'the stored choice was read back');
+  assert.equal(root().getAttribute('data-theme'), 'dark', 'and re-stamped before the first paint');
+
+  await clickAndSettle({ 'data-act': 'close-settings' });
+});
+
+test('the mock toolbar can reach both grounds', () => {
+  const bar = doc.body.querySelector('.mock-bar');
+  assert.ok(bar, 'the dev toolbar installed');
+  for (const t of ['light', 'dark', 'system']) {
+    assert.ok(bar.innerHTML.includes(`data-theme="${t}"`), `${t} is one click away in mock mode`);
+  }
+});
+
+test('a hidden window costs nothing, because there is no loop left to park', async () => {
+  // v0.14 deleted the starfield and the nebula, so nothing has to be parked on
+  // visibilitychange any more — the slow state poll simply skips while hidden.
+  // Stopping the mock's timers here is what lets this process exit.
   doc.hidden = true;
   doc.dispatch('visibilitychange', {});
   await tick(40);
   mock().stop();
   await tick(40);
+  assert.equal(doc.body.classList.contains('sky-parked'), false, 'no parked-sky bookkeeping survives');
   // The globals stay installed on purpose: a late frame from an earlier render
   // must still find its window instead of exploding.
   assert.equal(doc.hidden, true);

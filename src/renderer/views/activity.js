@@ -1,9 +1,9 @@
 // The Activity sheet: the flight recorder as a timeline (SPEC v0.8 [recorder]).
 //
-// Tier-2 sheet, DESIGN §4. Inside it the list is a WELL, not a second frosted
-// layer — glass inside glass reads as fog, and this is the densest surface in
-// the app. Every string that reaches this file came from another program's
-// output (a job message, an app name, a peer's hostname), so nothing is
+// A sheet, DESIGN §14. Inside it the list is a recessed tile, not a second
+// raised surface — this is the densest screen in the app and it stays legible
+// by staying flat. Every string that reaches this file came from another
+// program's output (a job message, an app name, a peer's hostname), so nothing is
 // interpolated without esc().
 
 import { esc } from '../lib/html.js';
