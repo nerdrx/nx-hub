@@ -1,7 +1,7 @@
 {
   "name": "nx-hub",
   "productName": "NX Hub",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "NX Hub \u2014 installer, updater and launcher for the NX app family",
   "main": "src/main/index.js",
   "bin": {
