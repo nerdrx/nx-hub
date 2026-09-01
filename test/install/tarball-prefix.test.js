@@ -345,3 +345,36 @@ test("tarball-prefix: ~ in prefix and launchCmd is expanded", async (t) => {
   assert.strictEqual(normStrip("usr/"), "usr");
   assert.strictEqual(normStrip("./usr//"), "usr");
 });
+
+test("copyEntry replaces a RUNNING executable instead of dying with ETXTBSY", async (t) => {
+  // The exact shape of the nx-recall 0.5.0 → 0.5.2 update failure: the daemon
+  // is running from the installed binary while the engine copies the new one
+  // over it. Writing through the name is ETXTBSY; unlink-then-copy is not.
+  const { copyEntry } = require("../../src/main/install/util");
+  const fsp = require("node:fs/promises");
+  const os = require("node:os");
+  const { spawn, execFileSync } = require("node:child_process");
+
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "nxhub-etxtbsy-"));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+
+  const running = path.join(dir, "daemon");
+  await fsp.copyFile("/bin/sleep", running);
+  await fsp.chmod(running, 0o755);
+  const child = spawn(running, ["30"], { stdio: "ignore" });
+  t.after(() => child.kill("SIGKILL"));
+  await new Promise((r) => child.once("spawn", r));
+
+  // Sanity: the kernel really does refuse a plain write-through while it runs
+  // (skip the assertion rather than fail on filesystems that allow it).
+  const plain = await fsp
+    .copyFile("/bin/true", running)
+    .then(() => "allowed", (e) => e.code);
+  if (plain !== "allowed") assert.strictEqual(plain, "ETXTBSY");
+
+  const src = path.join(dir, "new-daemon");
+  await fsp.copyFile("/bin/true", src);
+  await copyEntry(src, running); // must not throw
+  execFileSync(running); // /bin/true exits 0 — the new inode is in place
+  assert.strictEqual(child.exitCode, null, "the old process kept running on its old inode");
+});

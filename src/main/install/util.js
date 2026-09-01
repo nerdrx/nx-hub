@@ -586,6 +586,12 @@ async function copyEntry(src, dst) {
     await fsp.symlink(target, dst);
     return;
   }
+  // Remove the old entry first: writing THROUGH an existing name fails with
+  // ETXTBSY when that file is a running executable (a daemon updating itself
+  // in place — nx-recall found this), while unlinking the name and creating a
+  // fresh inode is always allowed. The running process keeps its old inode
+  // until restart, which is exactly the update semantics we want.
+  await fsp.rm(dst, { force: true });
   await fsp.copyFile(src, dst);
   await fsp.chmod(dst, st.mode & 0o7777).catch(() => {});
 }
