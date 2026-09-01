@@ -1,9 +1,10 @@
 # The NX Design Language
 
-**Version 1.6 · extracted from NX Hub v0.13.0 · amendments from PulseNX v1.2.1,
+**Version 1.7 · extracted from NX Hub v0.13.0 · amendments from PulseNX v1.2.1,
 the pointer-bound specular rule (2026-08-16), §12 reskin rules from the
-Vencord NX theme, §12's opacity rule promoted app-wide (2026-08-20), and the
-OLED ground — §13, true black, 2026-08-26**
+Vencord NX theme, §12's opacity rule promoted app-wide (2026-08-20), the
+OLED ground — §13, true black, 2026-08-26 — and NX Clear, the modern light
+alternative — §14, 2026-09-01**
 
 This document is the canonical specification of the NX visual language —
 "liquid glass on deep space." Since v1.6 that space is **actually black**: the
@@ -16,6 +17,13 @@ original codebase. Where this document and an implementation disagree, NX Hub's
 The one-sentence version: **dark violet space, frosted glass floating above a
 living nebula, light behaving physically, motion behaving like liquid — and
 restraint everywhere.**
+
+**Two grounds, one identity (v1.7).** §§1–13 describe the flagship dark
+language — the deep-space glass built for surfaces someone stares into. §14 adds
+**NX Clear**, a lighter, calmer, rounded ground for surfaces whose job is to be
+used and left. Same violet, same mark, same restraint and rhythm — a different
+room, not a different brand. Pick the ground by the surface (§14 opens with the
+rule); never mix the two within one window.
 
 ---
 
@@ -499,3 +507,189 @@ still angular (§2); light still rides the pointer (§4). The nebula still
 drifts — it just drifts over black now, which is what "deep space" meant all
 along.
 
+## 14. NX Clear — the modern light ground (v1.7)
+
+Everything above is the dark flagship: deep-space glass, engineered to feel
+expensive on a screen someone stares into. That atmosphere is *wrong* for a
+surface whose job is to be used and left — a tray flyout open for three seconds,
+a menu-bar utility, an installer, onboarding, a marketing page, this document
+rendered as a site. There, "liquid glass on a living nebula" reads as heavy and
+slow; the job wants **air, not atmosphere**. NX Clear is that ground: the same
+identity worn light.
+
+The one-sentence version: **paper-calm neutral, one violet accent, soft rounded
+surfaces with real diffuse shadow — restraint doing the work the nebula did in
+deep space.** First shipped as the NX Toolbox flyout.
+
+**The selection rule — decide once, per surface, before you build:**
+
+- **NX Clear (§14)** — anything a person uses to get something done and then
+  leaves, and anything a stranger sees first: **NX Hub** and its family of
+  tools, tray/menu-bar flyouts, installers, settings, onboarding, marketing,
+  docs. Light-first, flat, rounded, calm. This is the ground that has to look
+  professional to someone who has never heard of us.
+- **Deep space (§§1–13)** — surfaces that ARE the screen and are stared into for
+  hours: in-headset and immersive UI, media and performance tools, live
+  dashboards, and dark hosts we reskin (§12). Dark, glass, angular,
+  atmospheric.
+- **Never mix the two inside one window.** A Clear popover launched from a
+  deep-space app is fine — different windows. A glass card dropped into a Clear
+  panel is the tell that someone reached for the wrong sheet.
+
+> **Amended 2026-09-01.** NX Hub itself moved from deep space to Clear
+> (v0.14.0), on the call that the product people meet first should read clean
+> and professional rather than atmospheric. The reference implementation of
+> Clear is now `nx-hub/src/renderer/styles.css`; §§1–13 stay normative for the
+> deep-space apps, which did not move.
+
+Five axes invert from the flagship. Everything not listed as inverted is
+**shared** and unchanged — read it off §§1–13.
+
+**1. The ground is light, and theme-aware.** No nebula, no starfield, no living
+background — a Clear surface sits on a near-white neutral with a *faint violet
+bias* (chosen, not pure grey), and ships a true dark variant for OS dark mode.
+The default is light; deep space's default is dark. The background is flat or
+carries at most one soft off-screen violet bloom in a corner — never a full
+field behind every panel.
+
+**2. Geometry is rounded — the one hard inversion of §2.** Deep space bans pills
+and clamps radii to 3–6px because it echoes a faceted crystal. NX Clear is soft:
+**radii 9–14px on controls and tiles, 16–20px on panels**, and pills *are*
+allowed for chips and toggles. Rounded is the whole feel; do not carry the
+angular rule across. (The mark itself stays the pointy-top hexagon in-product —
+§8 is identity, not surface — but icon containers and tiles round with
+everything else.)
+
+**3. Depth comes from shadow, because the ground can hold it.** The exact
+opposite of §13: on light, a soft diffuse drop shadow *works* and is the primary
+elevation cue, paired with a **1px solid hairline** in a low-contrast line
+token. No lit gradient edges, no `--edge`/`--edge-lit`, no synthesized glass
+tiers. Cards are flat opaque fills separated by shadow + hairline. Reserve real
+`backdrop-filter` for the one floating layer that overlaps live content (a
+menu-bar flyout over the desktop) — and even there keep it subtle.
+
+**4. Violet is a spark, not a field.** In deep space violet dominates every
+screen. In Clear the surfaces are neutral and violet appears **only** on what
+acts or identifies: the primary button, the active tile, focus rings, the mark,
+one accent line. A Clear panel that is mostly violet is over-painted — pull it
+back to neutral and let the accent land once. Cyan is optional here and, when
+used, stays a value/status colour exactly as in §1; most Clear surfaces skip it
+entirely.
+
+**5. Motion is calmer.** The liquid principles hold (transform/opacity only,
+reduced-motion non-negotiable, §6 durations), but the register is quieter: a
+single spring **pop** on a flyout open (`--ease-spring`, ~220ms scale+fade from
+the anchor corner), soft crossfades between views, gentle tile hovers. No
+pointer-bound specular sheen — that is a glass behaviour; Clear surfaces are
+matte and a moving highlight looks out of place.
+
+**What is shared and does not change:** the violet `#7700FF` identity and the NX
+mark (§8); sentence-case, concrete voice (§9); the 8px rhythm and system-font
+typography (§7); transform/opacity-only, interruptible, reduced-motion-honouring
+motion (§6); and *restraint* — Clear is even more spartan than deep space,
+because it has no atmosphere to hide behind.
+
+### 14.1 NX Clear tokens
+
+A parallel `:root` set. Theme-aware: light on bare `:root`, dark redefined under
+`prefers-color-scheme` and an explicit `[data-theme]` stamp. Only the tokens
+change between themes; components read tokens.
+
+```css
+:root {
+  /* neutrals — a chosen off-white with a faint violet bias, not pure grey */
+  --clear-bg: #fafafc;          /* page ground */
+  --clear-surface: #ffffff;     /* cards, panels, tiles */
+  --clear-tile: #faf9fd;        /* recessed tile fill */
+  --clear-ink: #1a1823;         /* body text (never pure #000) */
+  --clear-muted: #78748a;       /* secondary text */
+  --clear-faint: #a7a3b8;       /* tertiary, placeholders */
+  --clear-line: #ece9f4;        /* 1px hairline — solid, low contrast */
+
+  /* identity — the ONE accent, used sparingly */
+  --violet: #7700ff;            /* actions, focus, identity (shared with §2) */
+  --violet-2: #9a4dff;          /* gradient partner on primary controls */
+  --violet-soft: #f4edff;       /* accent wash: active tile, icon well */
+
+  /* status (optional; borrow §1 semantics) */
+  --clear-good: #12894a;  --clear-good-soft: #e6f6ec;
+  --clear-warn: #8a6100;  --clear-danger: #c22030;
+
+  /* geometry — ROUNDED (inverts §2) */
+  --clear-r-panel: 20px;   /* flyouts, sheets */
+  --clear-r-card: 14px;    /* cards, tiles */
+  --clear-r-control: 11px; /* buttons, inputs */
+  --clear-r-chip: 999px;   /* pills ARE allowed here */
+
+  /* elevation — soft diffuse shadow is the primary depth cue */
+  --clear-shadow-card: 0 1px 2px rgba(40,20,90,.05), 0 4px 12px -4px rgba(40,20,90,.10);
+  --clear-shadow-pop:  0 24px 60px -20px rgba(40,20,90,.35), 0 6px 20px -8px rgba(40,20,90,.18);
+  --clear-focus: 0 0 0 3px var(--violet-soft), 0 0 0 1px var(--violet);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --clear-bg: #000000;  --clear-surface: #121017;  --clear-tile: #17141f;
+    --clear-ink: #f4f3f8; --clear-muted: #9c98ab;    --clear-faint: #6a6678;
+    --clear-line: #262330;
+    --violet: #a566ff;    --violet-2: #c79bff;       --violet-soft: #241a38;
+    --clear-good: #4cd97b; --clear-good-soft: #12291b;
+    --clear-shadow-card: 0 1px 2px rgba(0,0,0,.4), 0 4px 12px -4px rgba(0,0,0,.5);
+    --clear-shadow-pop:  0 24px 60px -20px rgba(0,0,0,.6), 0 6px 20px -8px rgba(0,0,0,.5);
+  }
+}
+/* repeat the dark block under :root[data-theme="dark"] so the toggle wins both ways */
+```
+
+**Clear's dark variant leans OLED (amended 2026-09-01).** The first draft of
+this section kept the dark ground at a lifted `#0b0a10`, reasoning that Clear
+depends on shadow and shadow needs a surface to fall on. That reasoning is
+sound but the conclusion was wrong for our screens: the dark ground is
+`#000000`, and the **hairline takes over from the shadow** as the separator —
+which Clear already has and deep space does not. So on the dark variant:
+surfaces lift to `#121017`, every card keeps its 1px `--clear-line`, and
+shadows stay only where a surface overlaps another surface (a popover over a
+panel), never where it would fall on the page. §13's other rules apply intact:
+no pure `#fff` text, dither large soft gradients, nothing large/bright/fixed.
+The light variant is unchanged and remains the default.
+
+### 14.2 Clear components
+
+- **Panel / flyout** — `--clear-surface`, `--clear-r-panel`, `--clear-line`
+  border, `--clear-shadow-pop`; opens with a corner-anchored spring pop.
+- **Tile / card** — `--clear-tile` fill, `--clear-r-card`, `--clear-line`
+  border, `--clear-shadow-card`; hover lifts to `--clear-surface` and warms the
+  border toward `--violet-soft`; press scales `0.98`. Icon well is a
+  `--violet-soft` rounded square holding a stroked violet glyph.
+- **Primary button** — violet→`--violet-2` gradient, `--clear-r-control`, white
+  text, gentle brighten on hover, `0.98` press. Exactly one per view.
+- **Secondary / ghost** — transparent or `--clear-tile`, `--clear-line` border,
+  ink text.
+- **Chip / status** — pill (`--clear-r-chip`), soft-tinted status backgrounds
+  (`--clear-good-soft` etc.). This is where §2's pill ban is deliberately lifted.
+- **Input** — `--clear-surface`, `--clear-line` border → `--violet` +
+  `--clear-focus` on focus. Never a bare outline.
+- **Row / list** — hairline-separated, generous vertical padding on the 8px
+  grid; hover tints to `--clear-tile`.
+
+### 14.3 Clear review checklist
+
+- [ ] Ground is a chosen off-white (faint violet bias), never flat grey — and a
+      real dark variant exists, grounded at `#000000` with hairlines carrying
+      the separation that shadow cannot on black.
+- [ ] Body text clears WCAG AA against its own surface in BOTH themes — Clear is
+      chosen for legibility, so this is the checklist item that outranks taste.
+- [ ] Depth reads from soft shadow + 1px solid hairline; no lit gradient edges,
+      no synthesized glass.
+- [ ] Violet appears only on actions, the active/selected state, focus, and the
+      mark — surfaces stay neutral; no violet field.
+- [ ] Corners are rounded (9–20px band); pills used only for chips/toggles.
+- [ ] One primary (violet) button per view; everything else neutral.
+- [ ] Text is `--clear-ink`, never pure `#000` on `#fff`; contrast ≥ WCAG AA.
+- [ ] Motion is a calm spring pop + crossfades; no specular sheen; reduced
+      motion fully honoured.
+- [ ] Both themes defined at token level; `body` paints an explicit token
+      background (a transparent body borrows the host ground).
+- [ ] Nothing from the deep-space sheet (glass tiers, nebula, angular radii)
+      leaked into a Clear surface.
+- [ ] Copy is sentence-case, concrete, tells the user what to do next (shared §9).

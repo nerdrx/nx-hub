@@ -512,6 +512,52 @@ deleteSnapshot. Rollback UI offers "also restore config from before the
 update" when a matching pre-update snapshot exists. CLI `nx snapshots <app>`,
 `nx restore <app> [file]`.
 
+## v0.14 "NX Clear" (frozen 2026-09-01)
+
+The hub changes ground. DESIGN §14 (v1.7) — light-first, rounded, flat, calm —
+replaces deep space here, on the call that the product people meet first should
+read clean and professional rather than atmospheric. The deep-space language is
+NOT deleted from the design system; it stays normative for the immersive apps,
+and v0.13.0 remains its reference implementation.
+
+Three constraints outrank taste, in this order:
+1. **Readable.** Body text clears WCAG AA on its own surface in both themes.
+   Where legibility and prettiness disagree, legibility wins and the review
+   checklist says so.
+2. **`#7700FF` is integral.** It stays the accent, unchanged, in both themes —
+   but as a spark (actions, active state, focus, the mark), never a field.
+3. **The dark theme leans OLED.** Ground `#000000`; the hairline carries the
+   separation shadow cannot do on black.
+
+### Themes ([clear-css])
+Three choices, `settings.theme` ∈ `light | dark | system` (default `system`),
+stamped on the root as `data-theme`. Tokens per DESIGN §14.1 with the amended
+dark block. Light is the reference; dark is a real variant, not a filter.
+
+**Deleted, not overridden:** the nebula layers, the starfield canvases, the
+glass tiers, `--edge`/`--edge-lit` lit borders, the pointer-bound sheen and its
+`--mx` plumbing, and the angular radius scale. A Clear surface with a leftover
+glass card in it is the failure this section exists to prevent — the old sheet
+does not survive behind a media query.
+
+Depth is `--clear-shadow-card` + a 1px solid `--clear-line`; radii are the 9–20px
+band; pills return for chips and toggles only.
+
+### What the renderer stops doing ([clear-js])
+No `#nebula`, no `#stars`/`#stars-near` canvases, no rAF starfield loop, no
+pointermove `--mx` writer, no `sky-parked` bookkeeping. Deleting the loops is
+part of the change: a Clear window that still runs a starfield is paying for a
+layer it does not draw.
+
+Theme control lives in Settings (segmented light/dark/system) and persists in
+the existing renderer UI store beside `view`. `prefers-color-scheme` is followed
+live when `system`.
+
+### Unchanged
+Every behaviour, every view, every data path, all of `src/main/**`, and the CLI.
+This is a reskin: no feature moves, no IPC changes, no test of behaviour should
+need editing except where it asserts a colour, a radius, or a removed layer.
+
 ## v0.12 "app manifest" (frozen 2026-08-22)
 
 Today every curated detail — display name, tagline, install strategy, the "one
