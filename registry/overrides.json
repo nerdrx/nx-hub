@@ -321,7 +321,7 @@
           "kind": "blender-addon",
           "platform": "linux",
           "addonsDir": "~/.config/blender/5.2/scripts/addons",
-          "postInstallNote": "Enable it in Blender: Edit → Preferences → Add-ons → search \"NX Atelier\". Then open the 3D viewport sidebar (N) → Atelier tab → Build Brush Library. That generates all 176 brushes on this machine and takes a few seconds, once."
+          "postInstallNote": "Enable it in Blender: Edit → Preferences → Add-ons → search \"NX Atelier\". The brush library builds itself (a progress bar, a few seconds). Brushes appear in the asset shelf and in the Atelier sidebar tab (N) in any paint or sculpt mode."
         }
       ]
     },
