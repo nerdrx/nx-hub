@@ -267,7 +267,14 @@ function createClient(opts = {}) {
     const headers = await authHeaders({ Accept: "application/octet-stream" });
 
     config.ensureDir(path.dirname(destPath));
-    const partPath = `${destPath}.part`;
+    // The part file is private to THIS download. Two hub processes (the app's
+    // update policy and an `nx update` in a terminal) can fetch the same asset
+    // at the same moment, and with a shared `<dest>.part` both write streams
+    // truncate and interleave into one file — seen in the field as "gzip:
+    // invalid compressed data" on a download whose sha256 had just verified.
+    // Each writer now owns its part and the last atomic rename wins; both
+    // renamed files are byte-identical, verified copies.
+    const partPath = `${destPath}.part.${process.pid}.${crypto.randomBytes(4).toString("hex")}`;
 
     // A stream that ends early without a network error would otherwise pass
     // straight to the extractor as a truncated file (seen in the field: S3

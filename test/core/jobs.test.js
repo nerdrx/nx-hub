@@ -538,3 +538,113 @@ test("a missing install engine fails the job with a clear message", async (t) =>
   // Either the real engine exists (sibling agent landed it) or we get the guard message.
   if (evt.type === "job-error") assert.ok(evt.message.length > 0);
 });
+
+/* ---------------- v0.14.1: the cross-process asset lock ---------------- */
+
+function lockFixture(mock, env, engineCalls) {
+  const engine = {
+    async install({ app, artifact, ctx }) {
+      engineCalls.push(artifact.version);
+      const dest = path.join(ctx.installRoot, "nx", app.id, artifact.id);
+      fs.mkdirSync(dest, { recursive: true });
+      return { version: artifact.version, path: dest, launchable: true };
+    },
+  };
+  const h = harness(mock, env, { engine });
+  const app = h.addApp(
+    appFromMock(mock, "nerdrx/wivrn-nx", {
+      overlayArtifacts: [
+        { assetPattern: "*-linux-x86_64.tar.gz", label: "Linux server", kind: "tarball-prefix", platform: "linux" },
+      ],
+    })
+  );
+  const artifact = app.artifacts.find((a) => a.kind === "tarball-prefix");
+  const lockPath = path.join(config.downloadsDir(), `${app.id}-${artifact.assetName}.lock`);
+  return { h, app, artifact, lockPath };
+}
+
+const tick = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test("an install waits while another live hub process holds the asset lock, then proceeds", async (t) => {
+  const env = helpers.useTempEnv();
+  const mock = await helpers.startMockGitHub({});
+  t.after(async () => {
+    await mock.close();
+    env.cleanup();
+  });
+  const calls = [];
+  const { h, app, artifact, lockPath } = lockFixture(mock, env, calls);
+
+  // "another process": a lock naming a pid that is alive — our own
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+
+  const jobId = jobs.install(app.id, artifact.id);
+  await tick(900);
+  assert.strictEqual(mock.stats.downloads, 0, "nothing is downloaded while the lock is held");
+  assert.deepStrictEqual(calls, [], "the engine is not called while the lock is held");
+  assert.ok(
+    h.events.some((e) => e.type === "job-progress" && /waiting for another hub process/.test(e.message || "")),
+    "the wait is reported as progress"
+  );
+
+  fs.unlinkSync(lockPath); // the other process finished
+  const done = await h.wait(jobId);
+  assert.strictEqual(done.type, "job-done", `job failed: ${done.message}`);
+  assert.deepStrictEqual(calls, ["1.4.0"]);
+  assert.ok(mock.stats.downloads >= 1, "downloaded once the lock was free");
+  assert.ok(!fs.existsSync(lockPath), "the lock is released after the job");
+});
+
+test("a lock left by a dead process is stale and does not block an install", async (t) => {
+  const env = helpers.useTempEnv();
+  const mock = await helpers.startMockGitHub({});
+  t.after(async () => {
+    await mock.close();
+    env.cleanup();
+  });
+  const calls = [];
+  const { h, app, artifact, lockPath } = lockFixture(mock, env, calls);
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  // pid 2^22-1 is the Linux maximum and is not a hub; on any box it is dead
+  fs.writeFileSync(lockPath, JSON.stringify({ pid: 4194303, at: "2020-01-01T00:00:00.000Z" }));
+
+  const started = Date.now();
+  const done = await h.wait(jobs.install(app.id, artifact.id));
+  assert.strictEqual(done.type, "job-done", `job failed: ${done.message}`);
+  assert.ok(Date.now() - started < 5000, "a stale lock is broken on sight, not waited out");
+  assert.deepStrictEqual(calls, ["1.4.0"]);
+  assert.ok(!fs.existsSync(lockPath));
+});
+
+test("if the other process installed the same version while we waited, the job finishes without reinstalling", async (t) => {
+  const env = helpers.useTempEnv();
+  const mock = await helpers.startMockGitHub({});
+  t.after(async () => {
+    await mock.close();
+    env.cleanup();
+  });
+  const calls = [];
+  const { h, app, artifact, lockPath } = lockFixture(mock, env, calls);
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+
+  const jobId = jobs.install(app.id, artifact.id);
+  await tick(500);
+  // the other process records the install (state is re-read from disk) …
+  stateStore.recordInstall(app.id, artifact.id, {
+    version: "1.4.0",
+    path: path.join(env.root, "elsewhere"),
+    launchable: true,
+    installedAt: new Date().toISOString(),
+  });
+  // … and releases the lock
+  fs.unlinkSync(lockPath);
+
+  const done = await h.wait(jobId);
+  assert.strictEqual(done.type, "job-done", `job failed: ${done.message}`);
+  assert.deepStrictEqual(calls, [], "no second install of the same version");
+  assert.strictEqual(mock.stats.downloads, 0, "no download either");
+  assert.match(done.message || "", /another hub process/);
+  assert.strictEqual(stateStore.getInstall(app.id, artifact.id).version, "1.4.0");
+});

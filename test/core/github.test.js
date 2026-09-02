@@ -239,3 +239,37 @@ test("base URL override honours NX_HUB_GITHUB_BASE and derives the raw host", ()
     else process.env.NX_HUB_GITHUB_BASE = prev;
   }
 });
+
+test("two concurrent downloads of one asset to one destination do not corrupt each other", async (t) => {
+  // Two hub processes (the app's update policy and `nx update` in a terminal)
+  // fetch the same asset into the same downloads/ path at the same moment.
+  // In-process here, but the mechanism under test is the same: each download
+  // owns a private part file and renames it into place atomically.
+  const env = helpers.useTempEnv();
+  const mock = await helpers.startMockGitHub({});
+  t.after(async () => {
+    await mock.close();
+    env.cleanup();
+  });
+  const gh = clientFor(mock, env);
+  const rel = mock.data.releases["nerdrx/wivrn-nx"];
+  const target = rel.assets.find((a) => a.name.endsWith("linux-x86_64.tar.gz"));
+  const dest = path.join(env.root, "race", target.name);
+
+  const [a, b] = await Promise.all([
+    gh.downloadAsset(target, dest, { siblings: rel.assets, onProgress: () => {} }),
+    gh.downloadAsset(target, dest, { siblings: rel.assets, onProgress: () => {} }),
+  ]);
+  assert.strictEqual(a.sha256, helpers.sha256(target._body));
+  assert.strictEqual(b.sha256, helpers.sha256(target._body));
+  assert.strictEqual(a.verified && b.verified, true);
+  assert.strictEqual(
+    helpers.sha256(fs.readFileSync(dest)),
+    helpers.sha256(target._body),
+    "the file on disk is one intact, verified copy"
+  );
+  const leftovers = fs.readdirSync(path.dirname(dest)).filter((n) => n.includes(".part"));
+  assert.deepStrictEqual(leftovers, [], "no part files survive either download");
+  // the mock counts the sidecar fetch as a download too: two per call
+  assert.ok(mock.stats.downloads >= 2, `both really downloaded (${mock.stats.downloads} fetches)`);
+});

@@ -339,8 +339,15 @@ async function pump(appId) {
   emit({ type: "state-changed" });
 
   try {
-    if (job.type === "install") await runInstall(job);
-    else if (job.type === "uninstall") await runUninstall(job);
+    if (job.type === "install") {
+      try {
+        await runInstall(job);
+      } finally {
+        // the asset lock (see acquireAssetLock) outlives every early return
+        // and every throw inside runInstall, and never a finished job
+        if (typeof job.releaseAssetLock === "function") job.releaseAssetLock();
+      }
+    } else if (job.type === "uninstall") await runUninstall(job);
     else if (job.type === "rollback") await runRollback(job);
     else throw new Error(`Unknown job type ${job.type}`);
     if (job.status === "running") finish(job, "done", job.message || "done");
@@ -844,6 +851,26 @@ async function runInstall(job) {
   const downloads = config.downloadsDir();
   config.ensureDir(downloads);
   const filePath = path.join(downloads, `${app.id}-${artifact.assetName}`);
+
+  // v0.14.1: one hub process at a time per asset file. The app's update policy
+  // and an `nx update` in a terminal are separate processes with separate job
+  // queues; without this they downloaded into the same path, one verified a
+  // file the other was still writing, and one's cleanup unlinked the other's
+  // finished download mid-extract. The lock covers download → verify →
+  // install → cleanup and is released by the dispatcher whatever happens.
+  job.releaseAssetLock = await acquireAssetLock(filePath, job);
+  {
+    // While we waited, the other process may have done the whole job.
+    const meanwhile = stateStore.getInstall(app.id, liveArtifact.id);
+    const wasBefore = replaced && String(replaced.version) === String(version);
+    if (meanwhile && String(meanwhile.version) === String(version) && !wasBefore) {
+      config.log(`${app.id}/${liveArtifact.id} ${version} was installed by another hub process while this job waited`);
+      job.version = version;
+      job.message = `${app.name} ${version} was just installed by another hub process`;
+      return { version, path: meanwhile.path || null, installedElsewhere: true };
+    }
+  }
+
   const cached = stateStore.getDownload(app.id, liveArtifact.id);
   const reusable =
     cached && cached.path === filePath && String(cached.version) === String(version) && fs.existsSync(filePath);
@@ -1493,21 +1520,28 @@ async function predownload(app, artifact, version) {
   const dir = config.downloadsDir();
   config.ensureDir(dir);
   const filePath = path.join(dir, `${app.id}-${artifact.assetName}`);
-  const already = stateStore.getDownload(app.id, artifact.id);
-  if (already && already.path === filePath && String(already.version) === String(version) && fs.existsSync(filePath)) {
-    return { path: filePath, cached: true };
+  // same lock as runInstall: a background pre-download must not land on top
+  // of a file another hub process is verifying or extracting
+  const release = await acquireAssetLock(filePath, null);
+  try {
+    const already = stateStore.getDownload(app.id, artifact.id);
+    if (already && already.path === filePath && String(already.version) === String(version) && fs.existsSync(filePath)) {
+      return { path: filePath, cached: true };
+    }
+    const downloaded = await withDownloadSlot(() =>
+      gh().downloadAsset(assetFromArtifact(artifact), filePath, {
+        siblings: siblingsFromArtifact(artifact),
+        onProgress: () => {},
+      })
+    );
+    stateStore.recordDownload(app.id, artifact.id, { version, path: filePath, assetName: artifact.assetName });
+    // v0.7: a pre-downloaded asset sits in downloads/ until the user installs it
+    // — the longest-lived, most seedable thing this hub owns.
+    if (downloaded && downloaded.verified) noteAsset(filePath, downloaded.sha256);
+    return { path: filePath, cached: false };
+  } finally {
+    release();
   }
-  const downloaded = await withDownloadSlot(() =>
-    gh().downloadAsset(assetFromArtifact(artifact), filePath, {
-      siblings: siblingsFromArtifact(artifact),
-      onProgress: () => {},
-    })
-  );
-  stateStore.recordDownload(app.id, artifact.id, { version, path: filePath, assetName: artifact.assetName });
-  // v0.7: a pre-downloaded asset sits in downloads/ until the user installs it
-  // — the longest-lived, most seedable thing this hub owns.
-  if (downloaded && downloaded.verified) noteAsset(filePath, downloaded.sha256);
-  return { path: filePath, cached: false };
 }
 
 /**
@@ -1592,6 +1626,94 @@ function safeUnlink(p) {
     if (p) fs.unlinkSync(p);
   } catch (_) {
     /* ignore */
+  }
+}
+
+/* ---------------- v0.14.1: cross-process asset lock ---------------- */
+
+const LOCK_POLL_MS = 300;
+/** an unreadable lock younger than this is "being written", not stale */
+const LOCK_INFANT_MS = 5000;
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e && e.code === "EPERM"; // alive, just not ours
+  }
+}
+
+/**
+ * Take `<filePath>.lock` for this process, waiting while another LIVE hub
+ * process holds it. Resolves to a release function (idempotent; only removes
+ * the lock if it is still ours). A lock whose holder pid is gone is stale and
+ * is broken on sight — a crashed hub must not wedge every later install.
+ *
+ * `job` may be null (pre-download). With a job, waiting is reported as
+ * progress and a cancel aborts the wait.
+ */
+async function acquireAssetLock(filePath, job) {
+  const lockPath = `${filePath}.lock`;
+  let saidWaiting = false;
+  for (;;) {
+    try {
+      const fd = fs.openSync(lockPath, "wx");
+      try {
+        fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+      } finally {
+        fs.closeSync(fd);
+      }
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        try {
+          const cur = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+          if (cur && cur.pid === process.pid) fs.unlinkSync(lockPath);
+        } catch (_) {
+          /* already gone, or not ours */
+        }
+      };
+    } catch (e) {
+      if (!e || e.code !== "EEXIST") throw e;
+    }
+
+    // somebody has it — a live process, or a corpse
+    let holder = null;
+    try {
+      holder = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+    } catch (_) {
+      /* empty or half-written */
+    }
+    const pid = holder && Number(holder.pid);
+    if (pid) {
+      if (!processAlive(pid)) {
+        config.log(`breaking a stale asset lock left by pid ${pid}: ${path.basename(lockPath)}`);
+        safeUnlink(lockPath);
+        continue;
+      }
+    } else {
+      let ageMs = 0;
+      try {
+        ageMs = Date.now() - fs.statSync(lockPath).mtimeMs;
+      } catch (_) {
+        continue; // vanished between open and stat — try again
+      }
+      if (ageMs > LOCK_INFANT_MS) {
+        config.log(`breaking an unreadable asset lock: ${path.basename(lockPath)}`);
+        safeUnlink(lockPath);
+        continue;
+      }
+    }
+    if (job && job.cancelRequested) throw new Error("aborted");
+    if (!saidWaiting) {
+      saidWaiting = true;
+      const who = pid ? `pid ${pid}` : "another hub process";
+      config.log(`waiting for ${who} to finish with ${path.basename(filePath)}`);
+      if (job) progress(job, "download", 0, `waiting for another hub process working on ${path.basename(filePath)}`);
+    }
+    await new Promise((r) => setTimeout(r, LOCK_POLL_MS));
   }
 }
 
